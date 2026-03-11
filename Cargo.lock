@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "ctxgraph"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "rusqlite",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "ctxgraph-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "clap",
@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "ctxgraph-extract"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "dirs",
