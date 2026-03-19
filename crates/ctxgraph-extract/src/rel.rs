@@ -163,55 +163,129 @@ impl RelEngine {
     }
 }
 
-/// Heuristic relation extraction based on text patterns and entity co-occurrence.
+/// Heuristic relation extraction using sentence-level co-occurrence.
+///
+/// Splits text on sentence-ending punctuation (`. `, `! `, `? `, `\n\n`) to build
+/// sentence segments, then only pairs entities that appear within the same segment
+/// or adjacent segments. This reduces false positives from the naive global scan
+/// while preserving recall for closely co-located entities.
 fn heuristic_relations(
     text: &str,
     entities: &[ExtractedEntity],
     schema: &ExtractionSchema,
 ) -> Vec<ExtractedRelation> {
-    let lower = text.to_lowercase();
-    let mut relations = Vec::new();
-
     let patterns: &[(&str, &[&str])] = &[
-        ("chose", &["chose", "selected", "picked", "went with", "adopted"]),
-        ("rejected", &["rejected", "ruled out", "decided against", "dropped"]),
-        ("replaced", &["replaced", "migrated from", "switched from", "moved from"]),
-        ("depends_on", &["depends on", "relies on", "requires", "built on", "uses"]),
-        ("fixed", &["fixed", "resolved", "patched", "repaired", "debugged"]),
-        ("introduced", &["introduced", "added", "implemented", "created", "built"]),
-        ("deprecated", &["deprecated", "removed", "phased out", "sunset"]),
-        ("caused", &["caused", "resulted in", "led to", "triggered"]),
+        ("chose",          &["chose", "selected", "picked", "went with", "adopted"]),
+        ("rejected",       &["rejected", "ruled out", "decided against", "dropped"]),
+        ("replaced",       &["replaced", "migrated from", "switched from", "moved from"]),
+        ("depends_on",     &["depends on", "relies on", "requires", "built on", "uses"]),
+        ("fixed",          &["fixed", "resolved", "patched", "repaired", "debugged"]),
+        ("introduced",     &["introduced", "added", "implemented", "created", "built"]),
+        ("deprecated",     &["deprecated", "removed", "phased out", "sunset"]),
+        ("caused",         &["caused", "resulted in", "led to", "triggered"]),
         ("constrained_by", &["constrained by", "limited by", "blocked by", "due to"]),
     ];
 
-    for (relation, keywords) in patterns {
-        let rel_spec = match schema.relation_types.get(*relation) {
-            Some(spec) => spec,
-            None => continue,
-        };
+    // Build sentence boundaries: list of (start_byte, end_byte) pairs.
+    // Sentence end is triggered by `. `, `! `, `? `, or `\n\n`.
+    // We include a generous ±1 sentence window for cross-sentence pairs.
+    let mut sentence_ranges: Vec<(usize, usize)> = Vec::new();
+    {
+        let bytes = text.as_bytes();
+        let len = text.len();
+        let mut seg_start = 0usize;
+        let mut i = 0usize;
+        while i < len {
+            let boundary = if i + 1 < len
+                && (bytes[i] == b'.' || bytes[i] == b'!' || bytes[i] == b'?')
+                && bytes[i + 1] == b' '
+            {
+                Some(i + 1) // end is after the punctuation
+            } else if i + 1 < len && bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
+                Some(i) // end is before the double newline
+            } else {
+                None
+            };
 
-        let keyword_found = keywords.iter().any(|kw| lower.contains(kw));
-        if !keyword_found {
-            continue;
-        }
-
-        for head in entities {
-            if !rel_spec.head.contains(&head.entity_type) {
+            if let Some(end) = boundary {
+                sentence_ranges.push((seg_start, end));
+                seg_start = end + 1;
+                i = seg_start;
                 continue;
             }
-            for tail in entities {
-                if std::ptr::eq(head, tail) {
-                    continue;
+            i += 1;
+        }
+        if seg_start < len {
+            sentence_ranges.push((seg_start, len));
+        }
+    }
+
+    // If no sentence boundaries found, treat entire text as one sentence
+    if sentence_ranges.is_empty() {
+        sentence_ranges.push((0, text.len()));
+    }
+
+    let mut relations = Vec::new();
+    let mut seen = std::collections::HashSet::<(String, String, String)>::new();
+
+    for (sent_idx, &(sent_start, sent_end)) in sentence_ranges.iter().enumerate() {
+        let sent_text = &text[sent_start..sent_end];
+        let sent_lower = sent_text.to_lowercase();
+
+        // Entities whose span_start falls within this sentence
+        let sent_entities: Vec<&ExtractedEntity> = entities
+            .iter()
+            .filter(|e| e.span_start >= sent_start && e.span_start < sent_end)
+            .collect();
+
+        // Expanded window: this sentence ± 1 adjacent sentence
+        let window_start = if sent_idx > 0 { sentence_ranges[sent_idx - 1].0 } else { sent_start };
+        let window_end = if sent_idx + 1 < sentence_ranges.len() {
+            sentence_ranges[sent_idx + 1].1
+        } else {
+            sent_end
+        };
+
+        let window_entities: Vec<&ExtractedEntity> = entities
+            .iter()
+            .filter(|e| e.span_start >= window_start && e.span_start < window_end)
+            .collect();
+
+        for (relation, keywords) in patterns {
+            let rel_spec = match schema.relation_types.get(*relation) {
+                Some(spec) => spec,
+                None => continue,
+            };
+
+            if !keywords.iter().any(|kw| sent_lower.contains(kw)) {
+                continue;
+            }
+
+            for &head in sent_entities.iter().filter(|e| rel_spec.head.contains(&e.entity_type)) {
+                for &tail in window_entities.iter().filter(|&&e| {
+                    !std::ptr::eq(e, head) && rel_spec.tail.contains(&e.entity_type)
+                }) {
+                    let in_same_sentence =
+                        tail.span_start >= sent_start && tail.span_start < sent_end;
+                    let confidence = if in_same_sentence { 0.6 } else { 0.45 };
+
+                    // Use text order to assign head/tail direction
+                    let (actual_head, actual_tail) = if head.span_start <= tail.span_start {
+                        (&head.text, &tail.text)
+                    } else {
+                        (&tail.text, &head.text)
+                    };
+
+                    let key = (actual_head.clone(), relation.to_string(), actual_tail.clone());
+                    if seen.insert(key) {
+                        relations.push(ExtractedRelation {
+                            head: actual_head.clone(),
+                            relation: relation.to_string(),
+                            tail: actual_tail.clone(),
+                            confidence,
+                        });
+                    }
                 }
-                if !rel_spec.tail.contains(&tail.entity_type) {
-                    continue;
-                }
-                relations.push(ExtractedRelation {
-                    head: head.text.clone(),
-                    relation: relation.to_string(),
-                    tail: tail.text.clone(),
-                    confidence: 0.6,
-                });
             }
         }
     }

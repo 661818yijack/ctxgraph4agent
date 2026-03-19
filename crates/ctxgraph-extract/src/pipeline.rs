@@ -80,10 +80,12 @@ impl ExtractionPipeline {
         reference_time: DateTime<Utc>,
     ) -> Result<ExtractionResult, PipelineError> {
         // Step 1: NER — extract entities.
-        // GLiNER v2.1 was trained on standard NER categories; passing schema key
-        // names directly ("Person", "Database", etc.) performs best. Using
-        // natural-language descriptions hurts performance because the combined
-        // label tokens compete with the input text for the 512-token budget.
+        // GLiNER v2.1 span mode works best with schema key names as labels
+        // ("Person", "Database", etc.) — these match the model's training vocabulary
+        // and produce reliable entity_type values without a description→key mapping.
+        // Natural-language descriptions were tested but hurt performance because
+        // the model misclassifies service/component names under "programming language"
+        // and similar too-generic prompts.
         let labels: Vec<&str> = self.schema.entity_labels();
         let mut entities = self
             .ner

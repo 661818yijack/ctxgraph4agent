@@ -259,17 +259,6 @@ impl Storage {
         Ok(result)
     }
 
-    /// Check whether any episode with source='git' has the given commit hash in its metadata.
-    pub fn episode_exists_by_git_hash(&self, hash: &str) -> Result<bool> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM episodes \
-             WHERE source = 'git' AND json_extract(metadata, '$.commit_hash') = ?1",
-            params![hash],
-            |row| row.get(0),
-        )?;
-        Ok(count > 0)
-    }
-
     // ── Edges ──
 
     pub fn insert_edge(&self, edge: &Edge) -> Result<()> {

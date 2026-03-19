@@ -39,38 +39,32 @@ async fn main() {
     let db_path = resolve_db_path();
     eprintln!("ctxgraph-mcp: using database at {}", db_path.display());
 
-    // Open or init graph
-    let graph = if db_path.exists() {
-        match Graph::open(&db_path) {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("ctxgraph-mcp: failed to open graph: {e}");
-                std::process::exit(1);
-            }
-        }
-    } else {
-        // Auto-init if database doesn't exist
-        let dir = db_path.parent().and_then(|p| p.parent()).unwrap_or(std::path::Path::new("."));
-        eprintln!("ctxgraph-mcp: initializing new graph at {}", dir.display());
-        match Graph::init(dir) {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("ctxgraph-mcp: failed to init graph: {e}");
-                std::process::exit(1);
-            }
-        }
-    };
-
-    // Initialize embedding engine (downloads model on first use)
-    eprintln!("ctxgraph-mcp: loading embedding model (all-MiniLM-L6-v2)...");
-    let embed = match EmbedEngine::new() {
-        Ok(e) => e,
-        Err(err) => {
-            eprintln!("ctxgraph-mcp: failed to load embedding model: {err}");
+    // Open or create graph at the given path
+    let graph = match Graph::open_or_create(&db_path) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("ctxgraph-mcp: failed to open/create graph: {e}");
             std::process::exit(1);
         }
     };
-    eprintln!("ctxgraph-mcp: embedding model ready");
+
+    // If CTXGRAPH_NO_EMBED=1, skip embed engine (useful for testing/CI)
+    let embed = if std::env::var("CTXGRAPH_NO_EMBED").as_deref() == Ok("1") {
+        eprintln!("ctxgraph-mcp: embedding disabled (CTXGRAPH_NO_EMBED=1)");
+        None
+    } else {
+        eprintln!("ctxgraph-mcp: loading embedding model...");
+        match EmbedEngine::new() {
+            Ok(e) => {
+                eprintln!("ctxgraph-mcp: embedding model ready");
+                Some(e)
+            }
+            Err(err) => {
+                eprintln!("ctxgraph-mcp: warning: embedding unavailable: {err}");
+                None
+            }
+        }
+    };
 
     let server = McpServer::new(graph, embed);
     server.run().await;

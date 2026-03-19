@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 pub struct ToolContext {
     pub graph: Arc<Mutex<Graph>>,
-    pub embed: Arc<EmbedEngine>,
+    pub embed: Option<Arc<EmbedEngine>>,
     /// In-memory embedding cache: episode_id → 384-dim vector.
     ///
     /// Populated lazily on the first `find_precedents` call, then kept warm.
@@ -17,10 +17,10 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
-    pub fn new(graph: Graph, embed: EmbedEngine) -> Self {
+    pub fn new(graph: Graph, embed: Option<EmbedEngine>) -> Self {
         Self {
             graph: Arc::new(Mutex::new(graph)),
-            embed: Arc::new(embed),
+            embed: embed.map(Arc::new),
             embedding_cache: Mutex::new(None),
         }
     }
@@ -67,23 +67,25 @@ impl ToolContext {
             graph.add_episode(episode).map_err(|e| e.to_string())?
         };
 
-        // Compute embedding and persist to SQLite
-        let embedding = self.embed.embed(&text).map_err(|e| e.to_string())?;
-        {
-            let graph = self.graph.lock().map_err(|e| e.to_string())?;
-            graph
-                .store_embedding(&episode_id, &embedding)
-                .map_err(|e| e.to_string())?;
-        }
-
-        // Insert into in-memory cache so find_precedents sees it immediately
-        // without another SQLite round-trip.
-        if let Ok(mut cache) = self.embedding_cache.lock() {
-            if let Some(ref mut map) = *cache {
-                map.insert(episode_id.clone(), embedding);
+        // Compute embedding and persist to SQLite (skipped if embed engine is unavailable)
+        if let Some(ref embed) = self.embed {
+            let embedding = embed.embed(&text).map_err(|e| e.to_string())?;
+            {
+                let graph = self.graph.lock().map_err(|e| e.to_string())?;
+                graph
+                    .store_embedding(&episode_id, &embedding)
+                    .map_err(|e| e.to_string())?;
             }
-            // If cache is None (never warmed), leave it — it will be populated
-            // from SQLite (including this episode) on the first find_precedents call.
+
+            // Insert into in-memory cache so find_precedents sees it immediately
+            // without another SQLite round-trip.
+            if let Ok(mut cache) = self.embedding_cache.lock() {
+                if let Some(ref mut map) = *cache {
+                    map.insert(episode_id.clone(), embedding);
+                }
+                // If cache is None (never warmed), leave it — it will be populated
+                // from SQLite (including this episode) on the first find_precedents call.
+            }
         }
 
         Ok(json!({
@@ -94,7 +96,7 @@ impl ToolContext {
     }
 
     /// Tool: search
-    /// Fused FTS5 + semantic search via RRF.
+    /// Fused FTS5 + semantic search via RRF. Falls back to FTS5-only if embed is unavailable.
     pub async fn search(&self, args: Value) -> Result<Value, String> {
         let query = args["query"]
             .as_str()
@@ -102,28 +104,46 @@ impl ToolContext {
             .to_string();
         let limit = args["limit"].as_u64().unwrap_or(10) as usize;
 
-        // Compute query embedding
-        let query_embedding = self.embed.embed(&query).map_err(|e| e.to_string())?;
-
-        let results = {
-            let graph = self.graph.lock().map_err(|e| e.to_string())?;
-            graph
-                .search_fused(&query, &query_embedding, limit)
-                .map_err(|e| e.to_string())?
-        };
-
-        let items: Vec<Value> = results
-            .into_iter()
-            .map(|r| {
-                json!({
-                    "id": r.episode.id,
-                    "content": r.episode.content,
-                    "score": r.score,
-                    "source": r.episode.source,
-                    "recorded_at": r.episode.recorded_at.to_rfc3339(),
+        let items: Vec<Value> = if let Some(ref embed) = self.embed {
+            // Fused FTS5 + semantic search via RRF
+            let query_embedding = embed.embed(&query).map_err(|e| e.to_string())?;
+            let results = {
+                let graph = self.graph.lock().map_err(|e| e.to_string())?;
+                graph
+                    .search_fused(&query, &query_embedding, limit)
+                    .map_err(|e| e.to_string())?
+            };
+            results
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "id": r.episode.id,
+                        "content": r.episode.content,
+                        "score": r.score,
+                        "source": r.episode.source,
+                        "recorded_at": r.episode.recorded_at.to_rfc3339(),
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        } else {
+            // FTS5-only search (embedding not available)
+            let results = {
+                let graph = self.graph.lock().map_err(|e| e.to_string())?;
+                graph.search(&query, limit).map_err(|e| e.to_string())?
+            };
+            results
+                .into_iter()
+                .map(|(episode, score)| {
+                    json!({
+                        "id": episode.id,
+                        "content": episode.content,
+                        "score": score,
+                        "source": episode.source,
+                        "recorded_at": episode.recorded_at.to_rfc3339(),
+                    })
+                })
+                .collect()
+        };
 
         Ok(json!(items))
     }
@@ -200,8 +220,15 @@ impl ToolContext {
             .to_string();
         let limit = args["limit"].as_u64().unwrap_or(5) as usize;
 
+        let embed = match self.embed {
+            Some(ref e) => e,
+            None => {
+                return Ok(json!({"error": "embedding not available, start with CTXGRAPH_NO_EMBED unset"}));
+            }
+        };
+
         // Embed the query (always ~20-50ms CPU inference, unavoidable)
-        let context_embedding = self.embed.embed(&context).map_err(|e| e.to_string())?;
+        let context_embedding = embed.embed(&context).map_err(|e| e.to_string())?;
 
         // Ensure the cache is warm (no-op after first call)
         self.warm_cache()?;

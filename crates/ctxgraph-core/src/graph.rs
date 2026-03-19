@@ -60,6 +60,26 @@ impl Graph {
         })
     }
 
+    /// Open an existing database or create a new one at the given path.
+    ///
+    /// Unlike `open()`, this method creates the parent directory and database file
+    /// if they do not exist, making it suitable for explicit `--db <path>` usage
+    /// where the caller controls the full path.
+    pub fn open_or_create(db_path: &Path) -> Result<Self> {
+        if let Some(parent) = db_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+        let storage = Storage::open(db_path)?;
+        Ok(Self {
+            storage,
+            db_path: db_path.to_path_buf(),
+            #[cfg(feature = "extract")]
+            pipeline: None,
+        })
+    }
+
     /// Open in-memory database (for testing).
     pub fn in_memory() -> Result<Self> {
         let storage = Storage::open_in_memory()?;
@@ -251,11 +271,6 @@ impl Graph {
         let id = entity.id.clone();
         self.storage.insert_entity(&entity)?;
         Ok((id, false))
-    }
-
-    /// Check if any episode with source='git' has the given commit hash in metadata.
-    pub fn has_episode_by_git_hash(&self, hash: &str) -> Result<bool> {
-        self.storage.episode_exists_by_git_hash(hash)
     }
 
     /// Get an entity by ID.

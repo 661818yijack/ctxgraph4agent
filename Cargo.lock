@@ -596,6 +596,7 @@ dependencies = [
  "ctxgraph-embed",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
 ]

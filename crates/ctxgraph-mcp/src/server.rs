@@ -13,7 +13,7 @@ pub struct McpServer {
 }
 
 impl McpServer {
-    pub fn new(graph: Graph, embed: EmbedEngine) -> Self {
+    pub fn new(graph: Graph, embed: Option<EmbedEngine>) -> Self {
         Self {
             ctx: Arc::new(ToolContext::new(graph, embed)),
         }

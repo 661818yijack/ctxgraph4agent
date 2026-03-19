@@ -136,50 +136,74 @@ impl Default for ExtractionSchema {
         // budget alongside the input text. They are used as the actual label
         // strings passed to the model for zero-shot extraction, and are more
         // semantically precise than the bare key names.
-        entity_types.insert("Person".into(), "software engineer".into());
-        entity_types.insert("Component".into(), "software library or framework".into());
-        entity_types.insert("Service".into(), "software service or API".into());
-        entity_types.insert("Language".into(), "programming language".into());
-        entity_types.insert("Database".into(), "database system".into());
-        entity_types.insert("Infrastructure".into(), "infrastructure tool".into());
-        entity_types.insert("Decision".into(), "technology decision".into());
-        entity_types.insert("Constraint".into(), "technical constraint or requirement".into());
-        entity_types.insert("Metric".into(), "performance metric".into());
-        entity_types.insert("Pattern".into(), "design pattern".into());
+        entity_types.insert("Person".into(),         "person or engineer".into());
+        entity_types.insert("Component".into(),      "software library or framework".into());
+        entity_types.insert("Service".into(),        "cloud service or API".into());
+        entity_types.insert("Language".into(),       "programming language".into());
+        entity_types.insert("Database".into(),       "database or data store".into());
+        entity_types.insert("Infrastructure".into(), "server or cloud platform".into());
+        entity_types.insert("Decision".into(),       "architectural decision".into());
+        entity_types.insert("Constraint".into(),     "technical constraint".into());
+        entity_types.insert("Metric".into(),         "performance metric".into());
+        entity_types.insert("Pattern".into(),        "design pattern".into());
 
         let mut relation_types = BTreeMap::new();
         relation_types.insert(
             "chose".into(),
             RelationSpec {
-                head: vec!["Person".into()],
-                tail: vec!["Component".into(), "Database".into(), "Language".into()],
-                description: "person chose a technology".into(),
+                head: vec!["Person".into(), "Service".into(), "Component".into()],
+                tail: vec![
+                    "Component".into(),
+                    "Database".into(),
+                    "Language".into(),
+                    "Infrastructure".into(),
+                    "Pattern".into(),
+                ],
+                description: "chose or adopted a technology".into(),
             },
         );
         relation_types.insert(
             "rejected".into(),
             RelationSpec {
-                head: vec!["Person".into()],
-                tail: vec!["Component".into(), "Database".into()],
-                description: "person rejected an alternative".into(),
+                head: vec!["Person".into(), "Service".into(), "Component".into()],
+                tail: vec![
+                    "Component".into(),
+                    "Database".into(),
+                    "Language".into(),
+                    "Infrastructure".into(),
+                ],
+                description: "rejected an alternative".into(),
             },
         );
         relation_types.insert(
             "replaced".into(),
             RelationSpec {
-                head: vec!["Component".into(), "Database".into()],
-                tail: vec!["Component".into(), "Database".into()],
+                head: vec![
+                    "Component".into(),
+                    "Database".into(),
+                    "Infrastructure".into(),
+                    "Service".into(),
+                    "Pattern".into(),
+                ],
+                tail: vec![
+                    "Component".into(),
+                    "Database".into(),
+                    "Infrastructure".into(),
+                    "Pattern".into(),
+                ],
                 description: "one thing replaced another".into(),
             },
         );
         relation_types.insert(
             "depends_on".into(),
             RelationSpec {
-                head: vec!["Service".into(), "Component".into()],
+                head: vec!["Service".into(), "Component".into(), "Infrastructure".into()],
                 tail: vec![
                     "Service".into(),
                     "Component".into(),
                     "Database".into(),
+                    "Infrastructure".into(),
+                    "Pattern".into(),
                 ],
                 description: "dependency relationship".into(),
             },
@@ -187,31 +211,46 @@ impl Default for ExtractionSchema {
         relation_types.insert(
             "fixed".into(),
             RelationSpec {
-                head: vec!["Person".into(), "Component".into()],
-                tail: vec!["Component".into(), "Service".into()],
+                head: vec!["Person".into(), "Component".into(), "Service".into()],
+                tail: vec![
+                    "Component".into(),
+                    "Service".into(),
+                    "Database".into(),
+                    "Pattern".into(),
+                ],
                 description: "something fixed an issue".into(),
             },
         );
         relation_types.insert(
             "introduced".into(),
             RelationSpec {
-                head: vec!["Person".into()],
-                tail: vec!["Component".into(), "Pattern".into()],
-                description: "person introduced a component".into(),
+                head: vec!["Person".into(), "Service".into(), "Infrastructure".into()],
+                tail: vec![
+                    "Component".into(),
+                    "Pattern".into(),
+                    "Infrastructure".into(),
+                    "Database".into(),
+                ],
+                description: "introduced or added a component".into(),
             },
         );
         relation_types.insert(
             "deprecated".into(),
             RelationSpec {
-                head: vec!["Person".into(), "Decision".into()],
-                tail: vec!["Component".into(), "Pattern".into()],
+                head: vec!["Person".into(), "Decision".into(), "Service".into()],
+                tail: vec![
+                    "Component".into(),
+                    "Pattern".into(),
+                    "Infrastructure".into(),
+                    "Database".into(),
+                ],
                 description: "deprecation action".into(),
             },
         );
         relation_types.insert(
             "caused".into(),
             RelationSpec {
-                head: vec!["Component".into(), "Decision".into()],
+                head: vec!["Component".into(), "Decision".into(), "Service".into()],
                 tail: vec!["Metric".into(), "Constraint".into()],
                 description: "causal relationship".into(),
             },
@@ -219,8 +258,8 @@ impl Default for ExtractionSchema {
         relation_types.insert(
             "constrained_by".into(),
             RelationSpec {
-                head: vec!["Decision".into(), "Component".into()],
-                tail: vec!["Constraint".into()],
+                head: vec!["Decision".into(), "Component".into(), "Service".into()],
+                tail: vec!["Constraint".into(), "Pattern".into()],
                 description: "decision constrained by".into(),
             },
         );

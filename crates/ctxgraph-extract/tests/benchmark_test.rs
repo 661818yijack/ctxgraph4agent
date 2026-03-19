@@ -292,6 +292,7 @@ fn test_extraction_f1_against_benchmark() {
 
     let episodes = load_episodes();
     let mut total_entity_f1 = 0.0;
+    let mut total_text_only_f1 = 0.0;
     let mut total_relation_f1 = 0.0;
 
     for (i, ep) in episodes.iter().enumerate() {
@@ -299,7 +300,7 @@ fn test_extraction_f1_against_benchmark() {
             .extract(&ep.text, Utc::now())
             .unwrap_or_else(|e| panic!("Extraction failed on episode {i}: {e}"));
 
-        // Compare entities (name:type format for matching)
+        // Compare entities (name:type format for strict matching)
         let predicted_entities: Vec<String> = result
             .entities
             .iter()
@@ -311,6 +312,19 @@ fn test_extraction_f1_against_benchmark() {
             .map(|e| format!("{}:{}", e.name, e.entity_type))
             .collect();
         let (ep_p, ep_r, ep_f1) = compute_f1(&predicted_entities, &expected_entities);
+
+        // Text-only entity F1 (ignores type — measures raw mention detection)
+        let predicted_texts: Vec<String> = result
+            .entities
+            .iter()
+            .map(|e| e.text.to_lowercase())
+            .collect();
+        let expected_texts: Vec<String> = ep
+            .expected_entities
+            .iter()
+            .map(|e| e.name.to_lowercase())
+            .collect();
+        let (_, _, text_only_f1) = compute_f1(&predicted_texts, &expected_texts);
 
         // Compare relations (head:relation:tail format)
         let predicted_relations: Vec<String> = result
@@ -326,24 +340,27 @@ fn test_extraction_f1_against_benchmark() {
         let (rp_p, rp_r, rp_f1) = compute_f1(&predicted_relations, &expected_relations);
 
         eprintln!(
-            "Episode {i:2}: entities F1={ep_f1:.3} (P={ep_p:.3} R={ep_r:.3}) | relations F1={rp_f1:.3} (P={rp_p:.3} R={rp_r:.3})"
+            "Episode {i:2}: entities F1={ep_f1:.3} (P={ep_p:.3} R={ep_r:.3}) text-only={text_only_f1:.3} | relations F1={rp_f1:.3} (P={rp_p:.3} R={rp_r:.3})"
         );
 
         total_entity_f1 += ep_f1;
+        total_text_only_f1 += text_only_f1;
         total_relation_f1 += rp_f1;
     }
 
     let n = episodes.len() as f64;
     let avg_entity_f1 = total_entity_f1 / n;
+    let avg_text_only_f1 = total_text_only_f1 / n;
     let avg_relation_f1 = total_relation_f1 / n;
     let combined_f1 = (avg_entity_f1 + avg_relation_f1) / 2.0;
 
     eprintln!();
     eprintln!("=== BENCHMARK RESULTS ===");
-    eprintln!("Average entity F1:   {avg_entity_f1:.3}");
-    eprintln!("Average relation F1: {avg_relation_f1:.3}");
-    eprintln!("Combined F1:         {combined_f1:.3}");
-    eprintln!("Target:              0.800");
+    eprintln!("Average entity F1 (name+type): {avg_entity_f1:.3}");
+    eprintln!("Average entity F1 (name only):  {avg_text_only_f1:.3}");
+    eprintln!("Average relation F1:            {avg_relation_f1:.3}");
+    eprintln!("Combined F1 (strict):           {combined_f1:.3}");
+    eprintln!("Target:                         0.800");
     eprintln!("=========================");
 
     assert!(
