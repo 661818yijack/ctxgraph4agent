@@ -231,6 +231,38 @@ crates/
 6. **Embeddable** — Rust library first, CLI second
 7. **Append-only history** — Facts invalidated, never deleted
 
+## Benchmark
+
+The extraction pipeline is evaluated against a corpus of 50 software-engineering episodes covering all 10 entity types and all 9 relation types. Scores are macro-averaged F1 over the full corpus.
+
+```
+cargo test --test benchmark_test -- --ignored --nocapture
+```
+
+Requires ONNX models (`ctxgraph models download` or `./scripts/download_models.sh`).
+
+### Current results — GLiNER large v2.1 INT8 (zero-shot, threshold 0.2)
+
+| | Entity F1 | Relation F1 | Combined F1 |
+|---|---|---|---|
+| **Current baseline** | 0.345 | 0.033 | 0.189 |
+| **Target (v0.3)** | — | — | **0.800** |
+
+**Entity breakdown** — GLiNER v2.1 was trained on standard NER datasets (OntoNotes, CoNLL). It reliably extracts `Person`, `Database`, and `Language` entities but struggles with domain-specific software engineering types like `Infrastructure`, `Pattern`, `Decision`, and `Constraint`, which are not in its training distribution.
+
+**Relation breakdown** — Without the multitask GLiNER model, relation extraction falls back to keyword-pattern heuristics. Keyword matching finds relations in ~7% of episodes.
+
+### Path to 0.80
+
+| Step | Expected gain |
+|---|---|
+| Lower GLiNER threshold (done, 0.2) | entity F1 0.19 → 0.35 |
+| Fine-tuned GLiNER on SE text | entity F1 ~0.65 |
+| Multitask model (`gliner-multitask-large-v0.5`) | relation F1 ~0.50 |
+| LLM fallback (Ollama / Anthropic API, opt-in) | combined F1 ~0.80+ |
+
+The 0.80 target is achievable in v0.3 via an opt-in LLM extraction tier for projects that want higher accuracy. Zero-API mode with a fine-tuned local model is the v0.4 goal.
+
 ## License
 
 MIT

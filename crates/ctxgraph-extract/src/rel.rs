@@ -91,20 +91,18 @@ impl ModelBasedRelEngine {
             .apply(input)
             .map_err(|e| RelError::Inference(e.to_string()))?;
 
-        // Collect entities from NER output
+        // Collect entities from NER output using span character offsets directly
         let mut entities = Vec::new();
         for sequence_spans in &ner_output.spans {
             for span in sequence_spans {
-                let span_text = span.text();
-                if let Some(start) = text.find(span_text) {
-                    entities.push(ExtractedEntity {
-                        text: span_text.to_string(),
-                        entity_type: span.class().to_string(),
-                        span_start: start,
-                        span_end: start + span_text.len(),
-                        confidence: span.probability() as f64,
-                    });
-                }
+                let (start, end) = span.offsets();
+                entities.push(ExtractedEntity {
+                    text: span.text().to_string(),
+                    entity_type: span.class().to_string(),
+                    span_start: start,
+                    span_end: end,
+                    confidence: span.probability() as f64,
+                });
             }
         }
 

@@ -41,7 +41,11 @@ impl ExtractionPipeline {
         let ner_model = find_ner_model(models_dir)?;
         let ner_tokenizer = find_tokenizer(models_dir, "gliner")?;
 
-        let ner = NerEngine::new(&ner_model, &ner_tokenizer).map_err(PipelineError::Ner)?;
+        // Use the pipeline's confidence_threshold as the GLiNER model-level threshold too.
+        // Parameters::default() hardcodes 0.5 which silently drops low-confidence spans
+        // before we ever see them; pass our threshold so callers control the cutoff.
+        let ner = NerEngine::new(&ner_model, &ner_tokenizer, confidence_threshold as f32)
+            .map_err(PipelineError::Ner)?;
 
         // Locate relation model files (multitask GLiNER) — optional
         let rel_model = find_rel_model(models_dir);
@@ -74,11 +78,15 @@ impl ExtractionPipeline {
         text: &str,
         reference_time: DateTime<Utc>,
     ) -> Result<ExtractionResult, PipelineError> {
-        // Step 1: NER — extract entities
+        // Step 1: NER — extract entities.
+        // GLiNER v2.1 was trained on standard NER categories; passing schema key
+        // names directly ("Person", "Database", etc.) performs best. Using
+        // natural-language descriptions hurts performance because the combined
+        // label tokens compete with the input text for the 512-token budget.
         let labels: Vec<&str> = self.schema.entity_labels();
         let mut entities = self
             .ner
-            .extract(text, &labels)
+            .extract(text, &labels, None)
             .map_err(PipelineError::Ner)?;
 
         // Filter by confidence

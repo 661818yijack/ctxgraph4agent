@@ -28,8 +28,11 @@ impl NerEngine {
     ///
     /// - `model_path`: path to `model.onnx` (or `model_int8.onnx`)
     /// - `tokenizer_path`: path to `tokenizer.json`
-    pub fn new(model_path: &Path, tokenizer_path: &Path) -> Result<Self, NerError> {
-        let params = Parameters::default();
+    /// - `threshold`: minimum GLiNER span probability (0.0–1.0). `Parameters::default`
+    ///   uses 0.5 which is too aggressive for domain-specific labels; use a lower
+    ///   value like 0.1–0.3 and let the pipeline apply its own threshold on top.
+    pub fn new(model_path: &Path, tokenizer_path: &Path, threshold: f32) -> Result<Self, NerError> {
+        let params = Parameters::default().with_threshold(threshold);
         let runtime_params = RuntimeParameters::default();
 
         let model = GLiNER::<SpanMode>::new(
@@ -49,11 +52,15 @@ impl NerEngine {
 
     /// Extract entities from text using the given labels.
     ///
-    /// Returns a list of extracted entities with spans and confidence scores.
+    /// `label_to_type` is an optional mapping from GLiNER label string → canonical
+    /// entity type key. Pass `None` to use the label string as-is for `entity_type`.
+    /// Pass `Some(pairs)` when using natural-language descriptions as labels so the
+    /// returned `entity_type` is the short canonical key (e.g. "Database").
     pub fn extract(
         &self,
         text: &str,
         labels: &[&str],
+        label_to_type: Option<&std::collections::HashMap<&str, &str>>,
     ) -> Result<Vec<ExtractedEntity>, NerError> {
         let input = TextInput::from_str(&[text], labels)
             .map_err(|e| NerError::Inference(e.to_string()))?;
@@ -68,17 +75,24 @@ impl NerEngine {
         // output.spans is Vec<Vec<Span>> — outer vec is per-sequence
         for sequence_spans in &output.spans {
             for span in sequence_spans {
-                let span_text = span.text();
-                // Find the byte offset in the original text
-                if let Some(start) = text.find(span_text) {
-                    entities.push(ExtractedEntity {
-                        text: span_text.to_string(),
-                        entity_type: span.class().to_string(),
-                        span_start: start,
-                        span_end: start + span_text.len(),
-                        confidence: span.probability() as f64,
-                    });
+                // Use character byte offsets from the span directly — avoids the
+                // `text.find()` pitfall that always returns the first occurrence.
+                let (start, end) = span.offsets();
+                let span_text = span.text().to_string();
+                let raw_class = span.class();
+                let entity_type = match label_to_type {
+                    Some(map) => map.get(raw_class).copied().unwrap_or(raw_class),
+                    None => raw_class,
                 }
+                .to_string();
+
+                entities.push(ExtractedEntity {
+                    text: span_text,
+                    entity_type,
+                    span_start: start,
+                    span_end: end,
+                    confidence: span.probability() as f64,
+                });
             }
         }
 

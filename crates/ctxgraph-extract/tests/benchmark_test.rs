@@ -286,7 +286,7 @@ fn test_extraction_f1_against_benchmark() {
     let pipeline = ExtractionPipeline::new(
         ExtractionSchema::default(),
         std::path::Path::new(&models_dir),
-        0.4, // lower threshold for recall
+        0.2, // low threshold maximises recall; filter at evaluation time if needed
     )
     .expect("Failed to create pipeline. Are models downloaded?");
 

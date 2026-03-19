@@ -82,8 +82,45 @@ impl ExtractionSchema {
     }
 
     /// Entity label strings for GLiNER input.
+    ///
+    /// Returns the type key names (e.g. "Person", "Database"). Suitable for
+    /// models trained on those label conventions.
     pub fn entity_labels(&self) -> Vec<&str> {
         self.entity_types.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Entity descriptions for zero-shot GLiNER inference.
+    ///
+    /// Returns `(description, key)` pairs. Passing the description as the label
+    /// to GLiNER improves zero-shot recall because the model uses the label text
+    /// as a natural-language prompt. The key is the canonical type name used in
+    /// `ExtractionSchema` and benchmark fixtures.
+    pub fn entity_label_descriptions(&self) -> Vec<(&str, &str)> {
+        self.entity_types
+            .iter()
+            .map(|(k, v)| (v.as_str(), k.as_str()))
+            .collect()
+    }
+
+    /// Map a GLiNER class string back to the canonical entity type key.
+    ///
+    /// When descriptions are used as labels, GLiNER returns the description as
+    /// the span class. This method reverses that lookup.
+    pub fn entity_type_from_label<'a>(&'a self, label: &str) -> Option<&'a str> {
+        // Check descriptions first (zero-shot mode)
+        if let Some(key) = self
+            .entity_types
+            .iter()
+            .find(|(_, v)| v.as_str() == label)
+            .map(|(k, _)| k.as_str())
+        {
+            return Some(key);
+        }
+        // Fall back to direct key match (standard mode)
+        if self.entity_types.contains_key(label) {
+            return Some(self.entity_types.get_key_value(label).unwrap().0.as_str());
+        }
+        None
     }
 
     /// Relation label strings for GLiREL/relation extraction input.
@@ -95,40 +132,20 @@ impl ExtractionSchema {
 impl Default for ExtractionSchema {
     fn default() -> Self {
         let mut entity_types = BTreeMap::new();
-        entity_types.insert(
-            "Person".into(),
-            "A person who made or was involved in a decision".into(),
-        );
-        entity_types.insert(
-            "Component".into(),
-            "A software component, tool, library, framework, or technology".into(),
-        );
-        entity_types.insert(
-            "Service".into(),
-            "A service, system, or application".into(),
-        );
-        entity_types.insert("Language".into(), "A programming language".into());
-        entity_types.insert("Database".into(), "A database system".into());
-        entity_types.insert(
-            "Infrastructure".into(),
-            "Infrastructure or DevOps tooling".into(),
-        );
-        entity_types.insert(
-            "Decision".into(),
-            "An explicit choice or judgment that was made".into(),
-        );
-        entity_types.insert(
-            "Constraint".into(),
-            "A limitation, requirement, or condition".into(),
-        );
-        entity_types.insert(
-            "Metric".into(),
-            "A quantifiable performance or business metric".into(),
-        );
-        entity_types.insert(
-            "Pattern".into(),
-            "A design pattern or architectural pattern".into(),
-        );
+        // Descriptions are short (2-4 words) so they fit inside GLiNER's token
+        // budget alongside the input text. They are used as the actual label
+        // strings passed to the model for zero-shot extraction, and are more
+        // semantically precise than the bare key names.
+        entity_types.insert("Person".into(), "software engineer".into());
+        entity_types.insert("Component".into(), "software library or framework".into());
+        entity_types.insert("Service".into(), "software service or API".into());
+        entity_types.insert("Language".into(), "programming language".into());
+        entity_types.insert("Database".into(), "database system".into());
+        entity_types.insert("Infrastructure".into(), "infrastructure tool".into());
+        entity_types.insert("Decision".into(), "technology decision".into());
+        entity_types.insert("Constraint".into(), "technical constraint or requirement".into());
+        entity_types.insert("Metric".into(), "performance metric".into());
+        entity_types.insert("Pattern".into(), "design pattern".into());
 
         let mut relation_types = BTreeMap::new();
         relation_types.insert(
