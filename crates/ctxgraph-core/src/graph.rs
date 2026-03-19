@@ -256,6 +256,113 @@ impl Graph {
             .link_episode_entity(episode_id, entity_id, span_start, span_end)
     }
 
+    // ── Embeddings ──
+
+    /// Store an embedding for an episode. The embedding is serialized as
+    /// little-endian f32 bytes.
+    pub fn store_embedding(&self, episode_id: &str, embedding: &[f32]) -> Result<()> {
+        let bytes: Vec<u8> = embedding
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        self.storage.store_episode_embedding(episode_id, &bytes)
+    }
+
+    /// Store an embedding for an entity.
+    pub fn store_entity_embedding(&self, entity_id: &str, embedding: &[f32]) -> Result<()> {
+        let bytes: Vec<u8> = embedding
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        self.storage.store_entity_embedding(entity_id, &bytes)
+    }
+
+    /// Load all episode embeddings as (episode_id, Vec<f32>) pairs.
+    pub fn get_embeddings(&self) -> Result<Vec<(String, Vec<f32>)>> {
+        let raw = self.storage.get_all_episode_embeddings()?;
+        let result = raw
+            .into_iter()
+            .map(|(id, bytes)| {
+                let floats: Vec<f32> = bytes
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                    .collect();
+                (id, floats)
+            })
+            .collect();
+        Ok(result)
+    }
+
+    /// Fused search using Reciprocal Rank Fusion (RRF) over FTS5 + semantic results.
+    ///
+    /// `query_embedding` should be the pre-computed embedding for `query`.
+    /// Returns episodes ranked by combined RRF score.
+    pub fn search_fused(
+        &self,
+        query: &str,
+        query_embedding: &[f32],
+        limit: usize,
+    ) -> Result<Vec<FusedEpisodeResult>> {
+        const K: f64 = 60.0;
+
+        // Accumulate RRF scores per episode id
+        let mut scores: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        let mut episodes_map: std::collections::HashMap<String, Episode> =
+            std::collections::HashMap::new();
+
+        // --- FTS5 ranked list ---
+        // Fetch a generous pool for RRF (up to 10x limit or 200)
+        let fts_pool = (limit * 10).max(200);
+        let fts_results = self.storage.search_episodes(query, fts_pool);
+        if let Ok(fts) = fts_results {
+            for (rank, (episode, _)) in fts.into_iter().enumerate() {
+                let rrf = 1.0 / (K + rank as f64 + 1.0);
+                *scores.entry(episode.id.clone()).or_insert(0.0) += rrf;
+                episodes_map.insert(episode.id.clone(), episode);
+            }
+        }
+
+        // --- Semantic (cosine similarity) ranked list ---
+        let all_embeddings = self.get_embeddings()?;
+        if !all_embeddings.is_empty() && !query_embedding.is_empty() {
+            // Compute cosine similarities
+            let mut semantic: Vec<(String, f32)> = all_embeddings
+                .into_iter()
+                .map(|(id, vec)| {
+                    let sim = cosine_similarity(query_embedding, &vec);
+                    (id, sim)
+                })
+                .collect();
+            // Sort descending by similarity
+            semantic.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            for (rank, (ep_id, _sim)) in semantic.into_iter().enumerate() {
+                let rrf = 1.0 / (K + rank as f64 + 1.0);
+                *scores.entry(ep_id.clone()).or_insert(0.0) += rrf;
+                // Fetch episode if not already cached
+                if !episodes_map.contains_key(&ep_id) {
+                    if let Ok(Some(ep)) = self.storage.get_episode(&ep_id) {
+                        episodes_map.insert(ep_id, ep);
+                    }
+                }
+            }
+        }
+
+        // Sort by total RRF score descending
+        let mut fused: Vec<(String, f64)> = scores.into_iter().collect();
+        fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let results = fused
+            .into_iter()
+            .take(limit)
+            .filter_map(|(id, score)| {
+                episodes_map.remove(&id).map(|episode| FusedEpisodeResult { episode, score })
+            })
+            .collect();
+
+        Ok(results)
+    }
+
     // ── Search ──
 
     /// Search episodes via FTS5 full-text search.
@@ -317,5 +424,21 @@ impl Graph {
     /// Get graph-wide statistics.
     pub fn stats(&self) -> Result<GraphStats> {
         self.storage.stats()
+    }
+}
+
+/// Compute cosine similarity between two f32 vectors.
+/// Returns 0.0 if either vector has zero magnitude.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if mag_a == 0.0 || mag_b == 0.0 {
+        0.0
+    } else {
+        dot / (mag_a * mag_b)
     }
 }

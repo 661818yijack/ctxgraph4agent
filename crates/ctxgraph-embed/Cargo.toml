@@ -1,0 +1,11 @@
+[package]
+name = "ctxgraph-embed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Sentence embedding engine for ctxgraph using all-MiniLM-L6-v2"
+
+[dependencies]
+fastembed = { workspace = true }
+thiserror = { workspace = true }

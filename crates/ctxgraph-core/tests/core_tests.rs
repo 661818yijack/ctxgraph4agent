@@ -355,6 +355,94 @@ fn test_graph_open_nonexistent() {
     assert!(result.is_err());
 }
 
+// ── Embedding Storage ──
+
+#[test]
+fn test_store_and_retrieve_embedding() {
+    let graph = test_graph();
+    let episode = Episode::builder("Embedding test episode").build();
+    let ep_id = episode.id.clone();
+    graph.add_episode(episode).unwrap();
+
+    // Store a fake 384-dim embedding
+    let embedding: Vec<f32> = (0..384).map(|i| i as f32 / 384.0).collect();
+    graph.store_embedding(&ep_id, &embedding).unwrap();
+
+    // Retrieve all embeddings — should include ours
+    let all = graph.get_embeddings().unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].0, ep_id);
+    assert_eq!(all[0].1.len(), 384);
+    // Check round-trip fidelity for a few values
+    for (i, &v) in all[0].1.iter().enumerate() {
+        let expected = i as f32 / 384.0;
+        assert!(
+            (v - expected).abs() < 1e-6,
+            "mismatch at index {i}: {v} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn test_get_embeddings_empty() {
+    let graph = test_graph();
+    let embeddings = graph.get_embeddings().unwrap();
+    assert!(embeddings.is_empty());
+}
+
+#[test]
+fn test_search_fused_no_embeddings() {
+    let graph = test_graph();
+
+    graph
+        .add_episode(Episode::builder("Chose Postgres for billing").build())
+        .unwrap();
+    graph
+        .add_episode(Episode::builder("Switched from REST to gRPC").build())
+        .unwrap();
+
+    // Fused search with a dummy query embedding — FTS5 results only
+    let query_embedding = vec![0.0f32; 384];
+    let results = graph
+        .search_fused("Postgres", &query_embedding, 10)
+        .unwrap();
+
+    // Should still return FTS5 hits even with zero-magnitude query embedding
+    assert!(!results.is_empty());
+    assert!(results[0].episode.content.contains("Postgres"));
+}
+
+#[test]
+fn test_search_fused_with_embeddings() {
+    let graph = test_graph();
+
+    let ep1 = Episode::builder("Chose Postgres for billing").build();
+    let ep2 = Episode::builder("Switched from REST to gRPC").build();
+    let id1 = ep1.id.clone();
+    let id2 = ep2.id.clone();
+    graph.add_episode(ep1).unwrap();
+    graph.add_episode(ep2).unwrap();
+
+    // Synthetic embeddings: ep1 in direction [1, 0, ...], ep2 in direction [0, 1, ...]
+    let mut emb1 = vec![0.0f32; 384];
+    emb1[0] = 1.0;
+    let mut emb2 = vec![0.0f32; 384];
+    emb2[1] = 1.0;
+
+    graph.store_embedding(&id1, &emb1).unwrap();
+    graph.store_embedding(&id2, &emb2).unwrap();
+
+    // Query in direction of ep1
+    let query_embedding = emb1.clone();
+    let results = graph
+        .search_fused("Postgres", &query_embedding, 10)
+        .unwrap();
+
+    // ep1 should rank first (matches both FTS5 and semantic)
+    assert!(!results.is_empty());
+    assert_eq!(results[0].episode.id, id1);
+}
+
 // ── UUID v7 Ordering ──
 
 #[test]

@@ -23,6 +23,9 @@ pub enum CtxGraphError {
     #[error("extraction error: {0}")]
     Extraction(String),
 
+    #[error("embed error: {0}")]
+    Embed(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

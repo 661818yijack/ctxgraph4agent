@@ -159,6 +159,13 @@ pub struct SearchResult {
     pub score: f64,
 }
 
+/// Per-episode result from fused (RRF) search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FusedEpisodeResult {
+    pub episode: Episode,
+    pub score: f64,
+}
+
 /// Graph-wide statistics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphStats {

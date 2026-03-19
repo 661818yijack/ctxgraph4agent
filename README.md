@@ -90,8 +90,6 @@ Output: Entities  → Postgres (Component), SQLite (Component), billing (Service
 
 Entity types and relation labels are fully configurable via `ctxgraph.toml`. Define what matters to your domain — Person, Component, Decision, Policy, whatever fits.
 
-For higher accuracy, optional tiers add coreference resolution, fuzzy dedup, and LLM-powered contradiction detection. Each tier is additive — Tier 1 alone covers 85%+ of structured text.
-
 ### Bi-Temporal History
 
 Every relationship tracks two time dimensions:

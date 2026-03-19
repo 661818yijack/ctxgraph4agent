@@ -365,6 +365,39 @@ impl Storage {
         Ok(results)
     }
 
+    // ── Embeddings ──
+
+    /// Store a raw f32 embedding blob for an episode.
+    pub fn store_episode_embedding(&self, episode_id: &str, data: &[u8]) -> Result<()> {
+        self.conn.execute(
+            "UPDATE episodes SET embedding = ?1 WHERE id = ?2",
+            params![data, episode_id],
+        )?;
+        Ok(())
+    }
+
+    /// Store a raw f32 embedding blob for an entity.
+    pub fn store_entity_embedding(&self, entity_id: &str, data: &[u8]) -> Result<()> {
+        self.conn.execute(
+            "UPDATE entities SET embedding = ?1 WHERE id = ?2",
+            params![data, entity_id],
+        )?;
+        Ok(())
+    }
+
+    /// Load all episode embeddings as (id, raw bytes) pairs.
+    pub fn get_all_episode_embeddings(&self) -> Result<Vec<(String, Vec<u8>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, embedding FROM episodes WHERE embedding IS NOT NULL",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     // ── Stats ──
 
     pub fn stats(&self) -> Result<GraphStats> {

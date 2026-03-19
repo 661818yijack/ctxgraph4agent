@@ -1,0 +1,20 @@
+[package]
+name = "ctxgraph-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MCP server for ctxgraph — exposes graph memory to Claude and other LLMs"
+
+[[bin]]
+name = "ctxgraph-mcp"
+path = "src/main.rs"
+
+[dependencies]
+ctxgraph = { path = "../ctxgraph-core", version = "0.3.0" }
+ctxgraph-embed = { path = "../ctxgraph-embed", version = "0.3.0" }
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
