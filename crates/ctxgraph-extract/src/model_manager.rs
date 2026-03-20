@@ -200,27 +200,33 @@ pub fn gliner_large_v21_tokenizer() -> ModelSpec {
     }
 }
 
-/// GLiNER Multi v2.1 INT8 quantized (multitask NER + relation extraction).
+/// GLiNER Multitask Large v0.5 INT8 quantized (token-level, for relation extraction).
 ///
-/// Community ONNX export of `knowledgator/gliner-multitask` v2.1 by onnx-community.
-/// Supports both NER and relation extraction in a single model.
-/// From: <https://huggingface.co/onnx-community/gliner_multi-v2.1>
+/// Community ONNX export of `knowledgator/gliner-multitask-large-v0.5`.
+/// This model uses `span_mode: "token_level"` (4 inputs: input_ids, attention_mask,
+/// words_mask, text_lengths) — the only format compatible with gline-rs
+/// `RelationPipeline` and `TokenPipeline`.
+///
+/// NOTE: Do NOT confuse with `gliner_multi-v2.1` which is span-level (6 inputs)
+/// and incompatible with gline-rs RelationPipeline.
+///
+/// From: <https://huggingface.co/onnx-community/gliner-multitask-large-v0.5>
 pub fn gliner_multitask_large() -> ModelSpec {
     ModelSpec {
-        name: "gliner_multi-v2.1/onnx/model_int8.onnx".into(),
-        url: "https://huggingface.co/onnx-community/gliner_multi-v2.1/resolve/main/onnx/model_int8.onnx".into(),
+        name: "gliner-multitask-large-v0.5/onnx/model_int8.onnx".into(),
+        url: "https://huggingface.co/onnx-community/gliner-multitask-large-v0.5/resolve/main/onnx/model_int8.onnx".into(),
         sha256: "pending_verification".into(),
-        size_bytes: 349_120_924,
+        size_bytes: 647_920_426, // INT8 quantized
     }
 }
 
-/// GLiNER Multi v2.1 tokenizer.
+/// GLiNER Multitask Large v0.5 tokenizer.
 pub fn gliner_multitask_tokenizer() -> ModelSpec {
     ModelSpec {
-        name: "gliner_multi-v2.1/tokenizer.json".into(),
-        url: "https://huggingface.co/onnx-community/gliner_multi-v2.1/resolve/main/tokenizer.json".into(),
+        name: "gliner-multitask-large-v0.5/tokenizer.json".into(),
+        url: "https://huggingface.co/onnx-community/gliner-multitask-large-v0.5/resolve/main/tokenizer.json".into(),
         sha256: "pending_verification".into(),
-        size_bytes: 16_331_948,
+        size_bytes: 8_657_198,
     }
 }
 

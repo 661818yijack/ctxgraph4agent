@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use crate::coref::CorefResolver;
 use crate::ner::{ExtractedEntity, NerEngine, NerError};
 use crate::rel::{ExtractedRelation, RelEngine, RelError};
+use crate::remap;
 use crate::schema::{ExtractionSchema, SchemaError};
 use crate::temporal::{self, TemporalResult};
 
@@ -99,6 +100,14 @@ impl ExtractionPipeline {
         let coref_entities = CorefResolver::resolve(text, &entities);
         entities.extend(coref_entities);
 
+        // Step 1c: Supplement entities — dictionary-based detection for known names
+        // that GLiNER missed, boosting recall from ~0.59 toward ~0.75+
+        remap::supplement_entities(text, &mut entities);
+
+        // Step 1d: Entity type remapping — fix common GLiNER misclassifications
+        // using domain knowledge lookup tables (Database, Infrastructure, Pattern, etc.)
+        remap::remap_entity_types(&mut entities);
+
         // Step 2: Relation extraction
         let mut relations = self
             .rel
@@ -160,13 +169,15 @@ fn find_ner_model(models_dir: &Path) -> Result<PathBuf, PipelineError> {
 /// input_ids, attention_mask, words_mask, text_lengths). Span-level models like
 /// `gliner_multi-v2.1` are NOT compatible and must not be listed here.
 ///
-/// The only known compatible model is `knowledgator/gliner-multitask-large-v0.5`,
-/// which has no pre-built public ONNX. Convert locally with optimum-cli to enable
-/// model-based relation extraction.
+/// Compatible model: `knowledgator/gliner-multitask-large-v0.5` (token_level mode).
+/// Pre-converted ONNX available from `onnx-community/gliner-multitask-large-v0.5`.
 fn find_rel_model(models_dir: &Path) -> Option<PathBuf> {
     let candidates = [
-        // Token-level multitask model (v0.5) — convert from PyTorch with optimum-cli
+        // INT8 quantized (from onnx-community, downloaded by ModelManager)
+        models_dir.join("gliner-multitask-large-v0.5/onnx/model_int8.onnx"),
+        // Full precision (from manual conversion via scripts/convert_model.py)
         models_dir.join("gliner-multitask-large-v0.5/onnx/model.onnx"),
+        // Legacy flat layout
         models_dir.join("gliner-multitask-large.onnx"),
     ];
 
@@ -180,11 +191,13 @@ fn find_tokenizer(models_dir: &Path, prefix: &str) -> Result<PathBuf, PipelineEr
             models_dir.join("gliner_large-v2.1/tokenizer.json"),
             models_dir.join("tokenizer.json"),
         ]
-    } else {
+    } else if prefix == "multitask" {
         vec![
             models_dir.join("gliner-multitask-large-v0.5/tokenizer.json"),
             models_dir.join("tokenizer.json"),
         ]
+    } else {
+        vec![models_dir.join("tokenizer.json")]
     };
 
     for c in &candidates {

@@ -184,12 +184,14 @@ impl Default for ExtractionSchema {
                     "Infrastructure".into(),
                     "Service".into(),
                     "Pattern".into(),
+                    "Language".into(),
                 ],
                 tail: vec![
                     "Component".into(),
                     "Database".into(),
                     "Infrastructure".into(),
                     "Pattern".into(),
+                    "Language".into(),
                 ],
                 description: "one thing replaced another".into(),
             },
@@ -197,13 +199,14 @@ impl Default for ExtractionSchema {
         relation_types.insert(
             "depends_on".into(),
             RelationSpec {
-                head: vec!["Service".into(), "Component".into(), "Infrastructure".into()],
+                head: vec!["Service".into(), "Component".into(), "Infrastructure".into(), "Language".into()],
                 tail: vec![
                     "Service".into(),
                     "Component".into(),
                     "Database".into(),
                     "Infrastructure".into(),
                     "Pattern".into(),
+                    "Language".into(),
                 ],
                 description: "dependency relationship".into(),
             },
@@ -224,12 +227,14 @@ impl Default for ExtractionSchema {
         relation_types.insert(
             "introduced".into(),
             RelationSpec {
-                head: vec!["Person".into(), "Service".into(), "Infrastructure".into()],
+                head: vec!["Person".into(), "Service".into(), "Infrastructure".into(), "Component".into()],
                 tail: vec![
                     "Component".into(),
                     "Pattern".into(),
                     "Infrastructure".into(),
                     "Database".into(),
+                    "Language".into(),
+                    "Metric".into(),
                 ],
                 description: "introduced or added a component".into(),
             },
@@ -250,7 +255,7 @@ impl Default for ExtractionSchema {
         relation_types.insert(
             "caused".into(),
             RelationSpec {
-                head: vec!["Component".into(), "Decision".into(), "Service".into()],
+                head: vec!["Component".into(), "Decision".into(), "Service".into(), "Infrastructure".into(), "Language".into()],
                 tail: vec!["Metric".into(), "Constraint".into()],
                 description: "causal relationship".into(),
             },
@@ -258,8 +263,8 @@ impl Default for ExtractionSchema {
         relation_types.insert(
             "constrained_by".into(),
             RelationSpec {
-                head: vec!["Decision".into(), "Component".into(), "Service".into()],
-                tail: vec!["Constraint".into(), "Pattern".into()],
+                head: vec!["Decision".into(), "Component".into(), "Service".into(), "Infrastructure".into()],
+                tail: vec!["Constraint".into(), "Pattern".into(), "Infrastructure".into()],
                 description: "decision constrained by".into(),
             },
         );

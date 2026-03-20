@@ -343,6 +343,20 @@ fn test_extraction_f1_against_benchmark() {
             "Episode {i:2}: entities F1={ep_f1:.3} (P={ep_p:.3} R={ep_r:.3}) text-only={text_only_f1:.3} | relations F1={rp_f1:.3} (P={rp_p:.3} R={rp_r:.3})"
         );
 
+        // Show missed and spurious relations for debugging
+        if rp_f1 < 1.0 {
+            let pred_set: std::collections::HashSet<&String> = predicted_relations.iter().collect();
+            let exp_set: std::collections::HashSet<&String> = expected_relations.iter().collect();
+            let missed: Vec<&&String> = exp_set.difference(&pred_set).collect();
+            let spurious: Vec<&&String> = pred_set.difference(&exp_set).collect();
+            if !missed.is_empty() {
+                eprintln!("  MISSED: {:?}", missed);
+            }
+            if !spurious.is_empty() {
+                eprintln!("  SPURIOUS: {:?}", spurious);
+            }
+        }
+
         total_entity_f1 += ep_f1;
         total_text_only_f1 += text_only_f1;
         total_relation_f1 += rp_f1;

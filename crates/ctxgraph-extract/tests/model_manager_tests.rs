@@ -13,7 +13,7 @@ fn test_model_spec_creation() {
     assert!(spec.size_bytes > 0);
 
     let spec2 = gliner_multitask_large();
-    assert_eq!(spec2.name, "gliner-multitask-large-v0.5/onnx/model.onnx");
+    assert_eq!(spec2.name, "gliner-multitask-large-v0.5/onnx/model_int8.onnx");
 
     let spec3 = minilm_l6_v2();
     assert_eq!(spec3.name, "minilm-l6-v2.onnx");
