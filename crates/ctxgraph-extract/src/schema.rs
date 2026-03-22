@@ -199,7 +199,10 @@ impl Default for ExtractionSchema {
         relation_types.insert(
             "depends_on".into(),
             RelationSpec {
-                head: vec!["Service".into(), "Component".into(), "Infrastructure".into(), "Language".into()],
+                head: vec![
+                    "Service".into(), "Component".into(), "Infrastructure".into(),
+                    "Language".into(), "Pattern".into(), "Decision".into(),
+                ],
                 tail: vec![
                     "Service".into(),
                     "Component".into(),
@@ -227,7 +230,7 @@ impl Default for ExtractionSchema {
         relation_types.insert(
             "introduced".into(),
             RelationSpec {
-                head: vec!["Person".into(), "Service".into(), "Infrastructure".into(), "Component".into()],
+                head: vec!["Person".into(), "Service".into(), "Infrastructure".into(), "Component".into(), "Language".into()],
                 tail: vec![
                     "Component".into(),
                     "Pattern".into(),
@@ -242,12 +245,16 @@ impl Default for ExtractionSchema {
         relation_types.insert(
             "deprecated".into(),
             RelationSpec {
-                head: vec!["Person".into(), "Decision".into(), "Service".into()],
+                head: vec![
+                    "Person".into(), "Decision".into(), "Service".into(),
+                    "Component".into(), "Infrastructure".into(), "Pattern".into(),
+                ],
                 tail: vec![
                     "Component".into(),
                     "Pattern".into(),
                     "Infrastructure".into(),
                     "Database".into(),
+                    "Language".into(),
                 ],
                 description: "deprecation action".into(),
             },
@@ -255,16 +262,23 @@ impl Default for ExtractionSchema {
         relation_types.insert(
             "caused".into(),
             RelationSpec {
-                head: vec!["Component".into(), "Decision".into(), "Service".into(), "Infrastructure".into(), "Language".into()],
-                tail: vec!["Metric".into(), "Constraint".into()],
+                head: vec![
+                    "Component".into(), "Decision".into(), "Service".into(),
+                    "Infrastructure".into(), "Language".into(), "Pattern".into(),
+                    "Database".into(),
+                ],
+                tail: vec!["Metric".into(), "Constraint".into(), "Pattern".into()],
                 description: "causal relationship".into(),
             },
         );
         relation_types.insert(
             "constrained_by".into(),
             RelationSpec {
-                head: vec!["Decision".into(), "Component".into(), "Service".into(), "Infrastructure".into()],
-                tail: vec!["Constraint".into(), "Pattern".into(), "Infrastructure".into()],
+                head: vec![
+                    "Decision".into(), "Component".into(), "Service".into(),
+                    "Infrastructure".into(), "Database".into(), "Pattern".into(),
+                ],
+                tail: vec!["Constraint".into(), "Pattern".into(), "Infrastructure".into(), "Metric".into()],
                 description: "decision constrained by".into(),
             },
         );

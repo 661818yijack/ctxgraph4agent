@@ -114,6 +114,7 @@ enum DecisionsAction {
 }
 
 fn main() {
+    dotenvy::dotenv().ok();
     let cli = Cli::parse();
 
     let result = match cli.command {

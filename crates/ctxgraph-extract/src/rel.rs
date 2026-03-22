@@ -15,6 +15,7 @@ use orp::pipeline::Pipeline;
 use crate::api::ApiRelEngine;
 use crate::ner::ExtractedEntity;
 use crate::ollama::OllamaRelEngine;
+use crate::relex::RelexEngine;
 use crate::schema::ExtractionSchema;
 
 /// A relation extracted between two entities.
@@ -28,16 +29,22 @@ pub struct ExtractedRelation {
 
 /// Relation extraction engine.
 ///
-/// Supports three tiers:
-/// - **Tier 1a (Ollama)**: Local LLM (Triplex/Qwen) for high-quality zero-shot RE.
-/// - **Tier 1b (ONNX)**: gline-rs `RelationPipeline` with the multitask ONNX model.
-/// - **Tier 1c (Heuristic)**: Pattern-based extraction (always available, no dependencies).
+/// Supports four tiers (falls through automatically):
+/// - **Tier 2 (API)**: OpenAI/compatible API for highest quality (~0.85-0.90 F1).
+/// - **Tier 1a (NLI)**: DeBERTa cross-encoder via entailment scoring (~87MB ONNX).
+/// - **Tier 1b (Ollama)**: Local LLM for zero-shot RE (~0.70-0.78 F1).
+/// - **Tier 1c (Heuristic)**: Pattern-based extraction (always available, ~0.49 F1).
 ///
-/// Falls through tiers automatically: Ollama → ONNX model → Heuristic.
+/// Experimental (opt-in via `CTXGRAPH_RELEX=1`):
+/// - **Relex**: gliner-relex ONNX model — preprocessing mismatch not yet resolved.
 pub enum RelEngine {
+    /// Has both multitask model and optionally relex model.
     ModelBased(ModelBasedRelEngine),
     Heuristic,
 }
+
+/// Cached relex engine (loaded once per process).
+static RELEX_ENGINE: std::sync::OnceLock<Option<RelexEngine>> = std::sync::OnceLock::new();
 
 /// Cached Ollama availability check (per-engine lifetime).
 static OLLAMA_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -155,37 +162,149 @@ impl RelEngine {
 
     /// Extract relations between entities.
     ///
-    /// Tries tiers in order, falling through on failure:
-    /// 1. **API** (if `CTXGRAPH_API_KEY` is set) — highest quality (~0.85-0.90 F1)
-    /// 2. **Ollama** (if running locally) — good quality (~0.70-0.78 F1)
-    /// 3. **Heuristic** (always available) — baseline (~0.42 F1)
+    /// Hybrid architecture — heuristic baseline + optional LLM augmentation:
+    /// 1. **Heuristic** (always runs) — keyword + proximity baseline (~0.51 F1)
+    /// 2. **API augmentation** (if `CTXGRAPH_API_KEY` set) — fills gaps (~0.75+ F1)
+    /// 3. **Ollama augmentation** (if running locally) — fills gaps (~0.65+ F1)
+    ///
+    /// Each LLM tier adds only relations not already found by the heuristic,
+    /// avoiding duplicate entity pairs.
     ///
     /// Environment variables:
-    /// - `CTXGRAPH_API_KEY`: OpenAI/compatible API key (enables Tier 2)
+    /// - `CTXGRAPH_API_KEY`: API key (OpenAI or Anthropic, enables API tier)
     /// - `CTXGRAPH_API_URL`: Custom API endpoint (default: OpenAI)
-    /// - `CTXGRAPH_API_MODEL`: API model (default: gpt-4.1-mini)
+    /// - `CTXGRAPH_API_MODEL`: API model (default: gpt-4.1-mini; claude-haiku-4-5-20251001 for Anthropic)
     /// - `CTXGRAPH_OLLAMA_URL`: Ollama endpoint (default: localhost:11434)
-    /// - `CTXGRAPH_OLLAMA_MODEL`: Ollama model (default: sciphi/triplex)
+    /// - `CTXGRAPH_OLLAMA_MODEL`: Ollama model (default: qwen2.5:7b)
     /// - `CTXGRAPH_NO_OLLAMA=1`: Skip Ollama tier
     /// - `CTXGRAPH_NO_API=1`: Skip API tier
+    /// - `CTXGRAPH_RELEX=1`: Enable experimental relex ONNX tier
     pub fn extract(
         &self,
         text: &str,
         entities: &[ExtractedEntity],
         schema: &ExtractionSchema,
     ) -> Result<Vec<ExtractedRelation>, RelError> {
-        // Tier 2: API-based extraction (highest quality)
+        // Tier 1: Heuristic (always runs as baseline)
+        let mut relations = heuristic_relations(text, entities, schema);
+
+        // Tier 2: API-based augmentation (adds relations the heuristic missed)
+        // Supports OpenAI-compatible and Anthropic Claude APIs.
+        // Conservative merge: only add API relations where both entities are
+        // known extracted entities AND the entity pair isn't already covered.
+        // Additionally, at least one entity must already participate in a
+        // heuristic relation — this prevents hallucinated entity pairs.
         if std::env::var("CTXGRAPH_NO_API").is_err() {
             if let Some(engine) = ApiRelEngine::from_env() {
                 match engine.extract(text, entities, schema) {
-                    Ok(relations) if !relations.is_empty() => return Ok(relations),
+                    Ok(api_relations) if !api_relations.is_empty() => {
+                        let existing_pairs: std::collections::HashSet<(String, String)> = relations
+                            .iter()
+                            .map(|r| (r.head.clone(), r.tail.clone()))
+                            .collect();
+
+                        // Entities that already participate in heuristic relations
+                        let heuristic_entities: std::collections::HashSet<String> = relations
+                            .iter()
+                            .flat_map(|r| [r.head.clone(), r.tail.clone()])
+                            .collect();
+
+                        // Known entity names from NER
+                        let known_entities: std::collections::HashSet<&str> = entities
+                            .iter()
+                            .map(|e| e.text.as_str())
+                            .collect();
+
+                        for r in api_relations {
+                            // Skip if entity pair already covered (either direction)
+                            if existing_pairs.contains(&(r.head.clone(), r.tail.clone()))
+                                || existing_pairs.contains(&(r.tail.clone(), r.head.clone()))
+                            {
+                                continue;
+                            }
+
+                            // Both entities must be real NER entities
+                            if !known_entities.contains(r.head.as_str())
+                                || !known_entities.contains(r.tail.as_str())
+                            {
+                                continue;
+                            }
+
+                            // At least one entity must already be in a heuristic relation
+                            if !heuristic_entities.contains(&r.head)
+                                && !heuristic_entities.contains(&r.tail)
+                            {
+                                continue;
+                            }
+
+                            // Validate against schema type constraints
+                            if let Some(spec) = schema.relation_types.get(&r.relation) {
+                                let head_type = entities.iter().find(|e| e.text == r.head).map(|e| e.entity_type.as_str());
+                                let tail_type = entities.iter().find(|e| e.text == r.tail).map(|e| e.entity_type.as_str());
+                                if let (Some(ht), Some(tt)) = (head_type, tail_type) {
+                                    if spec.head.iter().any(|h| h == ht) && spec.tail.iter().any(|t| t == tt) {
+                                        relations.push(r);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Ok(_) => {} // Empty result, fall through
                     Err(_) => {} // Error, fall through
                 }
             }
         }
 
-        // Tier 1a: Ollama local LLM (good quality, no API key needed)
+        // Tier 1a: NLI cross-encoder (disabled — produces too many false positives
+        // even at high thresholds; DeBERTa-v3-small gives high entailment scores
+        // for incorrect relations, dropping F1 from 0.490 to 0.395-0.408).
+
+        // Tier 1b: Relex ONNX model (experimental — opt-in via CTXGRAPH_RELEX=1)
+        // Preprocessing mismatch causes Reshape_27 errors; disabled by default.
+        if std::env::var("CTXGRAPH_RELEX").is_ok() {
+            let relex = RELEX_ENGINE.get_or_init(|| {
+                let mgr = crate::model_manager::ModelManager::new().ok()?;
+                let (model_path, tok_path) = mgr.find_relex_model()?;
+                RelexEngine::new(&model_path, &tok_path).ok()
+            });
+
+            if let Some(engine) = relex {
+                let entity_labels: Vec<&str> = schema.entity_labels();
+                let relation_labels: Vec<&str> = schema.relation_labels();
+                if let Ok(result) = engine.extract(text, &entity_labels, &relation_labels, 0.5, 0.5, schema) {
+                    let existing: std::collections::HashSet<(String, String)> = relations
+                        .iter()
+                        .map(|r| (r.head.clone(), r.tail.clone()))
+                        .collect();
+
+                    for rel in &result.relations {
+                        if rel.confidence < 0.7 {
+                            continue;
+                        }
+
+                        let mapped_head = map_span_to_entity(&rel.head, entities);
+                        let mapped_tail = map_span_to_entity(&rel.tail, entities);
+
+                        if let (Some(head), Some(tail)) = (mapped_head, mapped_tail) {
+                            if head != tail
+                                && !existing.contains(&(head.clone(), tail.clone()))
+                                && !existing.contains(&(tail.clone(), head.clone()))
+                            {
+                                relations.push(ExtractedRelation {
+                                    head,
+                                    relation: rel.relation.clone(),
+                                    tail,
+                                    confidence: rel.confidence,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tier 1b: Ollama LLM augmentation (adds relations the heuristic missed)
+        // Only augments — does NOT replace heuristic results.
         if std::env::var("CTXGRAPH_NO_OLLAMA").is_err() {
             let available = *OLLAMA_AVAILABLE.get_or_init(|| {
                 let engine = OllamaRelEngine::new();
@@ -194,16 +313,24 @@ impl RelEngine {
 
             if available {
                 let engine = OllamaRelEngine::new();
-                match engine.extract(text, entities, schema) {
-                    Ok(relations) if !relations.is_empty() => return Ok(relations),
-                    Ok(_) => {} // Empty result, fall through
-                    Err(_) => {} // Error, fall through
+                if let Ok(llm_relations) = engine.extract(text, entities, schema) {
+                    let existing: std::collections::HashSet<(String, String)> = relations
+                        .iter()
+                        .map(|r| (r.head.clone(), r.tail.clone()))
+                        .collect();
+
+                    for r in llm_relations {
+                        if !existing.contains(&(r.head.clone(), r.tail.clone()))
+                            && !existing.contains(&(r.tail.clone(), r.head.clone()))
+                        {
+                            relations.push(r);
+                        }
+                    }
                 }
             }
         }
 
-        // Tier 1c: Heuristic (always available, no dependencies)
-        Ok(heuristic_relations(text, entities, schema))
+        Ok(relations)
     }
 }
 
@@ -230,6 +357,7 @@ fn heuristic_relations(
             "chose", "choose", "select", "picked", "went with", "adopt",
             "decided to use", "decided to add", "opted for", "settled on",
             "standardiz", "switched to",
+            "decided that",
         ]),
         ("rejected", &[
             "reject", "ruled out", "decided against", "dropped",
@@ -238,7 +366,7 @@ fn heuristic_relations(
         ("replaced", &[
             "replac", "migrat", "switched", "switching",
             "moved from", "moved to",
-            "transition", "upgrad", "swapped",
+            "transition", "swapped",
             "in favor of", "instead of", "in place of",
             "over the legacy", "over the old",
             "rewrit", "rewrote", "rewritten", "fallback",
@@ -260,12 +388,21 @@ fn heuristic_relations(
             "flow through", "flows through",
             "target", "written in", "implemented in",
             "-based", "caching layer",
+            "counter in", "stored in", "cache to",
+            "stitched", "backed by",
+            "local cache", "sync when",
+            // Containment / composition patterns
+            "used by", "via ",
+            "package manager",
+            "is down",
         ]),
         ("fixed", &[
             "fixed", "fixing", "resolv", "patched", "repaired",
             "debugged", "addressed", "correct ",
             "eliminat", "mitigat", "diagnos", "root-caus",
             "identified", "found ",
+            "traced", "investigated",
+            "patch ",
         ]),
         ("introduced", &[
             "introduc", " add ", "added", "implement", "created", "built",
@@ -283,7 +420,8 @@ fn heuristic_relations(
             "caused", "causing", "resulted in", "led to", "trigger",
             "contributed to",
             "improv", "reduc", "increas", "decreas",
-            "degrad", "impact", "affect", "dropped",
+            "degrad", "impact", "affect",
+            "spiked", "spike",
         ]),
         ("constrained_by", &[
             "constrain", "blocked by", "due to",
@@ -291,7 +429,16 @@ fn heuristic_relations(
             "cannot exceed", "comply", "enforc",
             "subject to", "bound by", "governed by",
             "mandated", "driven by",
-            "guaranteed", "accepted",
+            "guarantee", "accepted",
+            "rate limit", "forbidden", "must not",
+            "exceed", "scoped", "capped at", "cap at",
+            "broke", "break ", "breaking",
+            "zero-trust", "least privilege",
+            "cannot handle",
+            // Quality / constraint patterns
+            "exactly-once",
+            " sla ",
+            "memory safety",
         ]),
     ];
 
@@ -419,15 +566,69 @@ fn heuristic_relations(
                     }
             }
         }
+
+        // "chose X over Y" → also emit rejected:Y
+        // Detect "over" separating a chosen entity from a rejected one.
+        if let Some(over_pos) = sent_lower.find(" over ") {
+            let rejected_spec = schema.relation_types.get("rejected");
+            // Find the entity appearing right after "over" (the rejected one)
+            // and the Person entity who did the choosing (for head).
+            let over_abs = sent_start + over_pos;
+            let mut rejected_entity: Option<&ExtractedEntity> = None;
+            let mut chooser: Option<&ExtractedEntity> = None;
+
+            for ent in &sent_entities {
+                if is_reference_entity(&ent.text) {
+                    continue;
+                }
+                // Entity after "over " is the rejected one
+                if ent.span_start > over_abs && ent.span_start <= over_abs + 15 {
+                    rejected_entity = Some(ent);
+                }
+                // Person entity is the chooser
+                if ent.entity_type == "Person" {
+                    chooser = Some(ent);
+                }
+            }
+
+            if let (Some(rej), Some(ch)) = (rejected_entity, chooser) {
+                if rej.text != ch.text {
+                    // Check schema validity for rejected relation
+                    let schema_valid = rejected_spec
+                        .map(|spec| {
+                            spec.head.contains(&ch.entity_type)
+                                && spec.tail.contains(&rej.entity_type)
+                        })
+                        .unwrap_or(true);
+
+                    if schema_valid {
+                        let key = (ch.text.clone(), "rejected".to_string(), rej.text.clone());
+                        if seen.insert(key) {
+                            relations.push(ExtractedRelation {
+                                head: ch.text.clone(),
+                                relation: "rejected".to_string(),
+                                tail: rej.text.clone(),
+                                confidence: 0.60,
+                            });
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Post-processing: resolve conflicting relation types for the same entity pair.
     // E.g., if both "chose" and "rejected" match for (X, Y), keep only one based
     // on which is more specific.
     let conflicts: &[(&str, &str)] = &[
-        ("chose", "rejected"),      // Can't both choose and reject the same thing
+        ("chose", "rejected"),        // Can't both choose and reject the same thing
         ("introduced", "deprecated"), // Can't introduce and deprecate same thing
         ("replaced", "depends_on"),   // Replacement is more specific than dependency
+        ("introduced", "depends_on"), // "introduced" is more specific for same pair
+        ("introduced", "replaced"),   // Can't both introduce and replace same pair
+        ("chose", "depends_on"),      // Choice is more specific than dependency
+        ("caused", "fixed"),          // Prefer "fixed" over "caused" for same pair
+        ("introduced", "caused"),     // "introduced" is more specific than "caused"
     ];
 
     let mut to_remove = std::collections::HashSet::new();
@@ -464,6 +665,37 @@ fn heuristic_relations(
     }
 
     relations
+}
+
+/// Map a relex entity span text to the nearest known entity by substring matching.
+///
+/// Returns the entity name if a match is found with sufficient overlap.
+fn map_span_to_entity(span_text: &str, entities: &[ExtractedEntity]) -> Option<String> {
+    let span_lower = span_text.to_lowercase();
+
+    // Exact match first
+    for ent in entities {
+        if ent.text.to_lowercase() == span_lower {
+            return Some(ent.text.clone());
+        }
+    }
+
+    // Substring match (either direction)
+    let mut best: Option<(&ExtractedEntity, f64)> = None;
+    for ent in entities {
+        let ent_lower = ent.text.to_lowercase();
+        if ent_lower.contains(&span_lower) || span_lower.contains(&ent_lower) {
+            let score = span_lower.len().min(ent_lower.len()) as f64
+                / span_lower.len().max(ent_lower.len()) as f64;
+            if score >= 0.3 {
+                if best.as_ref().is_none_or(|(_, s)| score > *s) {
+                    best = Some((ent, score));
+                }
+            }
+        }
+    }
+
+    best.map(|(ent, _)| ent.text.clone())
 }
 
 /// Detect explicit "from X to Y" migration patterns and emit replaced relations.
@@ -601,9 +833,55 @@ fn determine_direction(
             return (first.text.clone(), second.text.clone());
         }
 
-        // "replace X with Y" / "replaced X with Y" → Y:replaced:X
+        // "fallback using Y" / "fallback to Y" → Y is the NEW replacement
+        if sent_lower.contains("fallback") {
+            if let Some(fb_pos) = sent_lower.find("fallback") {
+                let after_fb = &sent_lower[fb_pos..];
+                let first_in_fb = after_fb.find(&first_lower);
+                let second_in_fb = after_fb.find(&second_lower);
+                match (first_in_fb, second_in_fb) {
+                    (Some(_), None) => {
+                        // first entity near "fallback" → first is new replacement
+                        return (first.text.clone(), second.text.clone());
+                    }
+                    (None, Some(_)) => {
+                        // second entity near "fallback" → second is new replacement
+                        return (second.text.clone(), first.text.clone());
+                    }
+                    (Some(fp), Some(sp)) => {
+                        // Entity closer to "fallback using/to" is the new thing
+                        if fp < sp {
+                            return (first.text.clone(), second.text.clone());
+                        } else {
+                            return (second.text.clone(), first.text.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // "replace X with Y" / "replaced X with Y" / "replaced it with Y" → Y:replaced:X
         if let Some(pos) = sent_lower.find("replac") {
             let after_replace = &sent_lower[pos..];
+            // Handle "replaced it with Y" — "it" is a pronoun for the OLD thing;
+            // only one entity will appear after "replac", and it's the NEW thing.
+            if after_replace.contains(" it ") && after_replace.contains(" with ") {
+                let first_in_replace = after_replace.find(&first_lower);
+                let second_in_replace = after_replace.find(&second_lower);
+                match (first_in_replace, second_in_replace) {
+                    (Some(_), None) => {
+                        // first entity appears after "replaced it with" → first is NEW
+                        return (first.text.clone(), second.text.clone());
+                    }
+                    (None, Some(_)) => {
+                        // second entity appears after "replaced it with" → second is NEW
+                        return (second.text.clone(), first.text.clone());
+                    }
+                    _ => {} // Both found, fall through to normal logic
+                }
+            }
+
             let first_in_replace = after_replace.find(&first_lower);
             let second_in_replace = after_replace.find(&second_lower);
             if let (Some(fp), Some(sp)) = (first_in_replace, second_in_replace) {
@@ -644,8 +922,65 @@ fn determine_direction(
         }
     }
 
+    // For "deprecated": detect passive voice "{entity} is/are deprecated" → entity is TAIL
+    if relation == "deprecated" {
+        let first_lower = first.text.to_lowercase();
+        let second_lower = second.text.to_lowercase();
+
+        // "{entity} is deprecated" / "{entity} are deprecated" → entity is the TAIL (old thing)
+        let first_passive = sent_lower.contains(&format!("{} is deprecated", first_lower))
+            || sent_lower.contains(&format!("{} are deprecated", first_lower))
+            || sent_lower.contains(&format!("{}-based", first_lower))
+                && sent_lower.contains("deprecated");
+        let second_passive = sent_lower.contains(&format!("{} is deprecated", second_lower))
+            || sent_lower.contains(&format!("{} are deprecated", second_lower))
+            || sent_lower.contains(&format!("{}-based", second_lower))
+                && sent_lower.contains("deprecated");
+
+        if first_passive && !second_passive {
+            // first entity is the deprecated thing (tail), second is head
+            return (second.text.clone(), first.text.clone());
+        }
+        if second_passive && !first_passive {
+            // second entity is the deprecated thing (tail), first is head
+            return (first.text.clone(), second.text.clone());
+        }
+    }
+
     // For "depends_on": use entity type semantics and text cues.
     if relation == "depends_on" {
+        let first_lower = first.text.to_lowercase();
+        let second_lower = second.text.to_lowercase();
+
+        // "X used by Y" → Y:depends_on:X
+        if let Some(pos) = sent_lower.find("used by") {
+            let first_pos = sent_lower.find(&first_lower);
+            let second_pos = sent_lower.find(&second_lower);
+            if let (Some(fp), Some(sp)) = (first_pos, second_pos) {
+                if fp < pos && sp > pos {
+                    // first is the provider (used by), second is the consumer
+                    return (second.text.clone(), first.text.clone());
+                }
+                if sp < pos && fp > pos {
+                    return (first.text.clone(), second.text.clone());
+                }
+            }
+        }
+
+        // "X via Y" → X:depends_on:Y
+        if let Some(pos) = sent_lower.find(" via ") {
+            let first_pos = sent_lower.find(&first_lower);
+            let second_pos = sent_lower.find(&second_lower);
+            if let (Some(fp), Some(sp)) = (first_pos, second_pos) {
+                if fp < pos && sp > pos {
+                    return (first.text.clone(), second.text.clone());
+                }
+                if sp < pos && fp > pos {
+                    return (second.text.clone(), first.text.clone());
+                }
+            }
+        }
+
         let consumer_types = ["Service", "Component"];
         let provider_types = ["Database", "Infrastructure"];
 

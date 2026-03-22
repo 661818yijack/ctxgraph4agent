@@ -230,6 +230,31 @@ pub fn gliner_multitask_tokenizer() -> ModelSpec {
     }
 }
 
+/// NLI cross-encoder (DeBERTa-v3-xsmall) INT8 quantized model.
+///
+/// Used for zero-shot relation classification via natural language inference.
+/// Input: (premise, hypothesis) pair → output: [contradiction, entailment, neutral] logits.
+///
+/// From: <https://huggingface.co/cross-encoder/nli-deberta-v3-xsmall>
+pub fn nli_deberta_v3_small() -> ModelSpec {
+    ModelSpec {
+        name: "nli-deberta-v3-small/onnx/model.onnx".into(),
+        url: "https://huggingface.co/cross-encoder/nli-deberta-v3-small/resolve/main/onnx/model.onnx".into(),
+        sha256: "pending_verification".into(),
+        size_bytes: 541_700_000,
+    }
+}
+
+/// NLI cross-encoder tokenizer.
+pub fn nli_deberta_v3_small_tokenizer() -> ModelSpec {
+    ModelSpec {
+        name: "nli-deberta-v3-small/tokenizer.json".into(),
+        url: "https://huggingface.co/cross-encoder/nli-deberta-v3-small/resolve/main/tokenizer.json".into(),
+        sha256: "pending_verification".into(),
+        size_bytes: 8_250_000,
+    }
+}
+
 /// MiniLM L6 v2 sentence-embedding model (for v0.3 semantic search).
 pub fn minilm_l6_v2() -> ModelSpec {
     ModelSpec {
@@ -260,6 +285,53 @@ impl ModelManager {
     pub fn ensure_rel_models(&self) -> Option<(PathBuf, PathBuf)> {
         let model = self.get_or_download(&gliner_multitask_large()).ok()?;
         let tokenizer = self.get_or_download(&gliner_multitask_tokenizer()).ok()?;
+        Some((model, tokenizer))
+    }
+
+    /// Download the NLI cross-encoder model and tokenizer.
+    ///
+    /// Used for zero-shot relation classification via entailment scoring.
+    pub fn ensure_nli_models(&self) -> Result<(PathBuf, PathBuf), ModelManagerError> {
+        let model = self.get_or_download(&nli_deberta_v3_small())?;
+        let tokenizer = self.get_or_download(&nli_deberta_v3_small_tokenizer())?;
+        Ok((model, tokenizer))
+    }
+
+    /// Find locally cached NLI model. Returns `None` if not downloaded yet.
+    pub fn find_nli_model(&self) -> Option<(PathBuf, PathBuf)> {
+        let model = self.model_path(&nli_deberta_v3_small());
+        let tokenizer = self.model_path(&nli_deberta_v3_small_tokenizer());
+        if model.exists() && tokenizer.exists() {
+            Some((model, tokenizer))
+        } else {
+            None
+        }
+    }
+
+    /// Check for locally exported gliner-relex ONNX model.
+    ///
+    /// The relex model must be exported manually using:
+    ///   `python scripts/export_relex_onnx.py [--quantize]`
+    ///
+    /// Returns `Some((model_path, tokenizer_path))` if found, `None` otherwise.
+    pub fn find_relex_model(&self) -> Option<(PathBuf, PathBuf)> {
+        let base = self.cache_dir.join("gliner-relex-large-v0.5");
+
+        // Check for quantized first, then full precision
+        let model = [
+            base.join("onnx/model_quantized.onnx"),
+            base.join("onnx/model.onnx"),
+        ]
+        .into_iter()
+        .find(|p| p.exists())?;
+
+        let tokenizer = [
+            base.join("tokenizer.json"),
+            base.join("onnx/tokenizer.json"),
+        ]
+        .into_iter()
+        .find(|p| p.exists())?;
+
         Some((model, tokenizer))
     }
 }

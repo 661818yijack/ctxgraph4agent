@@ -34,6 +34,9 @@ fn resolve_db_path() -> PathBuf {
 
 #[tokio::main]
 async fn main() {
+    // Load .env file if present (silently ignored if missing)
+    dotenvy::dotenv().ok();
+
     eprintln!("ctxgraph-mcp v0.3.0 starting on stdio");
 
     let db_path = resolve_db_path();
