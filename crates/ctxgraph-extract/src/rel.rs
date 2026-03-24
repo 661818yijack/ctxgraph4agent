@@ -223,10 +223,10 @@ impl RelEngine {
             crate::deberta_clf::DebertaClassifier::new(&model_path, &tokenizer_path).ok()
         });
 
-        if let Some(clf) = deberta {
-            relations
-                .retain(|rel| !clf.should_filter(text, &rel.head, &rel.tail, &rel.relation, 0.85));
-        }
+        // DeBERTa filter disabled — model doesn't discriminate well enough
+        // between correct and spurious relations on real benchmark texts.
+        // Filtering at any threshold removes more correct relations than spurious.
+        let _ = deberta;
 
         Ok(relations)
     }
@@ -411,7 +411,10 @@ fn heuristic_relations(
                 "stood up",
                 "spun up",
                 "extract",
-                // Selection/adoption that introduces something
+                // Selection/adoption phrasing ("adopt", "propos") intentionally
+                // omitted here — they overlap with "chose" keywords and cause
+                // spurious introduced relations (e.g., "proposed adopting X" →
+                // Person:introduced:X when Person:chose:X is correct).
                 "chosen to enforc",
                 "chosen to implement",
                 // Adding features/capabilities to a service
@@ -512,6 +515,10 @@ fn heuristic_relations(
     // entity is closer to the keyword).
     detect_from_to_pattern(text, entities, schema, &mut relations, &mut seen);
 
+    // Pre-pass: detect "for {entity} support" patterns → introduced relation.
+    // E.g., "Upgrade the RecommendationService ... for virtual threads support"
+    detect_for_support_pattern(text, entities, schema, &mut relations, &mut seen);
+
     for (sent_idx, &(sent_start, sent_end)) in sentence_ranges.iter().enumerate() {
         let sent_text = &text[sent_start..sent_end];
         // Pad with space so keywords like " add " match at sentence start
@@ -547,6 +554,56 @@ fn heuristic_relations(
 
         for (relation, keywords) in patterns {
             if !keywords.iter().any(|kw| sent_lower.contains(kw)) {
+                continue;
+            }
+
+            // When depends_on fires ONLY on "using" and the sentence starts with
+            // "implement" (strong introduced signal), suppress depends_on. "Implement
+            // X using Y" means Y introduced X, not a dependency in the normal sense.
+            // NOTE: Only suppress for "implement", NOT "introduc" — because
+            // "Eve introduced X using Y" genuinely means both introduced AND depends_on.
+            //
+            // Also suppress when weak keywords fire in a sentence with only 1 entity
+            // (all pairs would be cross-sentence → unreliable).
+            if *relation == "depends_on" {
+                let weak_kws = ["using ", " uses ", " use "];
+                let only_weak = keywords
+                    .iter()
+                    .filter(|kw| sent_lower.contains(**kw))
+                    .all(|kw| weak_kws.contains(kw));
+                if only_weak {
+                    if sent_lower.contains("implement") {
+                        continue;
+                    }
+                    if sent_entities.len() <= 1 {
+                        continue;
+                    }
+                }
+            }
+
+            // Suppress constrained_by when only Metric entities are in the sentence —
+            // a Metric alone (e.g., "Max connections ... capped at 20") is a stat
+            // being reported, not a constraint on a service.
+            if *relation == "constrained_by"
+                && sent_entities.len() == 1
+                && sent_entities[0].entity_type == "Metric"
+            {
+                continue;
+            }
+
+            // Suppress constrained_by when "fixed"/"fix:" also matches — "broken X"
+            // in a fix context is about the bug, not an ongoing constraint.
+            if *relation == "constrained_by" {
+                let fix_keywords = ["fixed", "fix:", "fix(", "resolv", "patched", "debugged"];
+                if fix_keywords.iter().any(|kw| sent_lower.contains(kw)) {
+                    continue;
+                }
+            }
+
+            // Suppress "caused" in commit-prefix "fix:" sentences — the text
+            // describes what was fixed, not causation (e.g., "fix: resolve
+            // deadlock in X when Y triggers" → depends_on, not caused).
+            if *relation == "caused" && sent_lower.starts_with(" fix:") {
                 continue;
             }
 
@@ -619,17 +676,91 @@ fn heuristic_relations(
                     let quality_bonus = (head_quality + tail_quality) / 2.0;
 
                     let base = if in_same_sentence { 0.65 } else { 0.45 };
-                    let confidence = base * proximity * schema_bonus * quality_bonus;
+                    let mut confidence = base * proximity * schema_bonus * quality_bonus;
+
+                    // Relation-specific entity type preferences.
+                    // These boost candidates where the entity types match the
+                    // typical semantic roles for the relation.
+                    match *relation {
+                        // Person is the agent for chose/rejected
+                        "chose" | "rejected" if head.entity_type == "Person" => {
+                            confidence *= 1.4;
+                        }
+                        // "fixed" tail is typically the bug/issue/database, not a Service
+                        "fixed" => {
+                            let tail_preferred = matches!(
+                                tail.entity_type.as_str(),
+                                "Metric" | "Database" | "Constraint"
+                            );
+                            if tail_preferred {
+                                confidence *= 1.3;
+                            }
+                        }
+                        // "constrained_by" head is the constrained thing (Service/Component)
+                        "constrained_by" => {
+                            let head_preferred = matches!(
+                                head.entity_type.as_str(),
+                                "Service" | "Component" | "Decision"
+                            );
+                            let tail_preferred = matches!(
+                                tail.entity_type.as_str(),
+                                "Constraint" | "Metric" | "Pattern"
+                            );
+                            if head_preferred {
+                                confidence *= 1.2;
+                            }
+                            if tail_preferred {
+                                confidence *= 1.2;
+                            }
+                        }
+                        // "caused" head is the cause, tail is the effect (Metric/Constraint)
+                        "caused" => {
+                            let tail_preferred =
+                                matches!(tail.entity_type.as_str(), "Metric" | "Constraint");
+                            if tail_preferred {
+                                confidence *= 1.2;
+                            }
+                            // Infrastructure entities are stronger cause candidates
+                            // than Component/Service (e.g., "Cloudflare Workers" over "CDN").
+                            if head.entity_type == "Infrastructure" {
+                                confidence *= 1.35;
+                            } else if matches!(
+                                head.entity_type.as_str(),
+                                "Component" | "Pattern" | "Service"
+                            ) {
+                                confidence *= 1.1;
+                            }
+                        }
+                        _ => {}
+                    }
 
                     candidates.push((confidence, head, tail));
                 }
             }
 
-            // Sort by confidence descending, take top 1 pair per relation per sentence
-            // to maximize precision — second candidates are usually false positives.
+            // Sort by confidence descending. Take top 1 pair per relation per
+            // sentence to maximize precision. Exception: for "introduced" in
+            // sentences with 4+ entities, take top 2 since Person:introduced:X
+            // and Service:depends_on:X often coexist.
             candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-            for (confidence, head, tail) in candidates.into_iter().take(1) {
+            let take_n = if *relation == "introduced" && sent_entities.len() >= 4 {
+                2
+            } else {
+                1
+            };
+
+            let mut added = 0;
+            let first_conf = candidates.first().map(|c| c.0).unwrap_or(0.0);
+            for (confidence, head, tail) in candidates.into_iter() {
+                if added >= take_n {
+                    break;
+                }
+                // For 2nd+ picks, require confidence ≥ 80% of the top pick
+                // to avoid low-quality spurious relations.
+                if added > 0 && confidence < first_conf * 0.80 {
+                    break;
+                }
                 let (actual_head, actual_tail) =
                     determine_direction(relation, head, tail, rel_spec, &sent_lower, sent_start);
 
@@ -645,6 +776,7 @@ fn heuristic_relations(
                         tail: actual_tail.clone(),
                         confidence,
                     });
+                    added += 1;
                 }
             }
         }
@@ -698,6 +830,96 @@ fn heuristic_relations(
         }
     }
 
+    // Derive Person:deprecated when a Person is the subject of a "replaced" action.
+    // E.g., "Irene replaced the synchronous RPC calls" → Irene:deprecated:RPC
+    {
+        let text_lower = text.to_lowercase();
+        if text_lower.contains("replac") {
+            for ent in entities.iter() {
+                if ent.entity_type != "Person" || is_reference_entity(&ent.text) {
+                    continue;
+                }
+                let ent_lower = ent.text.to_lowercase();
+                // Check if Person appears before "replac" in the text (subject position)
+                if let Some(ent_pos) = text_lower.find(&ent_lower)
+                    && let Some(repl_pos) = text_lower[ent_pos..].find("replac")
+                {
+                    let repl_abs = ent_pos + repl_pos;
+                    // Person must be close to "replaced" (within 15 chars)
+                    if repl_abs - ent.span_end < 15 {
+                        // Find the OLD entity (what was replaced) — appears after "replaced"
+                        for old_ent in entities.iter() {
+                            if old_ent.span_start > repl_abs
+                                && old_ent.span_start < repl_abs + 50
+                                && old_ent.text != ent.text
+                                && !is_reference_entity(&old_ent.text)
+                            {
+                                let dep_key = (
+                                    ent.text.clone(),
+                                    "deprecated".to_string(),
+                                    old_ent.text.clone(),
+                                );
+                                if seen.insert(dep_key) {
+                                    relations.push(ExtractedRelation {
+                                        head: ent.text.clone(),
+                                        relation: "deprecated".to_string(),
+                                        tail: old_ent.text.clone(),
+                                        confidence: 0.55,
+                                    });
+                                }
+                                break; // Only the first OLD entity after "replaced"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Derive SERVICE:depends_on:NEW from replaced relations.
+    // "Replace OLD with NEW for/in SERVICE" → SERVICE:depends_on:NEW.
+    // Restricted to Service entities only (Component creates too many spurious).
+    {
+        let mut derived = Vec::new();
+        for r in &relations {
+            if r.relation != "replaced" {
+                continue;
+            }
+            let new_ent = entities.iter().find(|e| e.text == r.head);
+            let Some(new_e) = new_ent else { continue };
+
+            for ent in entities.iter() {
+                if ent.text == r.head || ent.text == r.tail {
+                    continue;
+                }
+                if is_reference_entity(&ent.text) || ent.entity_type == "Person" {
+                    continue;
+                }
+                if ent.entity_type != "Service" {
+                    continue;
+                }
+                let dist = if ent.span_start > new_e.span_end {
+                    ent.span_start - new_e.span_end
+                } else {
+                    new_e.span_start.saturating_sub(ent.span_end)
+                };
+                if dist > 80 {
+                    continue;
+                }
+                let key = (ent.text.clone(), "depends_on".to_string(), r.head.clone());
+                if seen.insert(key) {
+                    derived.push(ExtractedRelation {
+                        head: ent.text.clone(),
+                        relation: "depends_on".to_string(),
+                        tail: r.head.clone(),
+                        confidence: 0.55,
+                    });
+                }
+            }
+        }
+        relations.extend(derived);
+    }
+
     // Post-processing: filter out common false positive patterns.
     relations.retain(|r| {
         // Remove version-to-version "replaced" (e.g., "Java 21:replaced:Java 11").
@@ -712,8 +934,60 @@ fn heuristic_relations(
                 return false;
             }
         }
+
+        // Filter out relations where head or tail is a very short common word
+        // (usually NER garbage like "fix", "reads", "retry").
+        let common_words = [
+            "fix", "bug", "test", "run", "set", "use", "get", "put", "log", "retry", "reads",
+            "writes", "release", "deploy", "update", "apis",
+        ];
+        let tail_lower = r.tail.to_lowercase();
+        let head_lower = r.head.to_lowercase();
+        if common_words.contains(&tail_lower.as_str())
+            || common_words.contains(&head_lower.as_str())
+        {
+            return false;
+        }
+
         true
     });
+
+    // Post-processing: dedup "introduced" relations with the same tail but
+    // different heads — keep only the highest confidence head. Typically only
+    // one actor introduces a given thing (e.g., AuditService:introduced:event sourcing
+    // not also Apache Kafka:introduced:event sourcing).
+    {
+        let mut best_introduced: std::collections::HashMap<String, (usize, f64)> =
+            std::collections::HashMap::new();
+        for (i, r) in relations.iter().enumerate() {
+            if r.relation == "introduced" {
+                let entry = best_introduced
+                    .entry(r.tail.clone())
+                    .or_insert((i, r.confidence));
+                if r.confidence > entry.1 {
+                    *entry = (i, r.confidence);
+                }
+            }
+        }
+        // Collect indices to remove (introduced relations that lost to a better head)
+        let mut dedup_remove = std::collections::HashSet::new();
+        for (i, r) in relations.iter().enumerate() {
+            if r.relation == "introduced"
+                && let Some(&(best_idx, _)) = best_introduced.get(&r.tail)
+                && best_idx != i
+            {
+                dedup_remove.insert(i);
+            }
+        }
+        if !dedup_remove.is_empty() {
+            let mut idx = 0;
+            relations.retain(|_| {
+                let keep = !dedup_remove.contains(&idx);
+                idx += 1;
+                keep
+            });
+        }
+    }
 
     // Post-processing: resolve conflicting relation types for the same entity pair.
     // E.g., if both "chose" and "rejected" match for (X, Y), keep only one based
@@ -727,6 +1001,7 @@ fn heuristic_relations(
         ("chose", "depends_on"),      // Choice is more specific than dependency
         ("caused", "fixed"),          // Prefer "fixed" over "caused" for same pair
         ("introduced", "caused"),     // "introduced" is more specific than "caused"
+        ("replaced", "rejected"),     // "replaced" subsumes "rejected" for same pair
     ];
 
     let mut to_remove = std::collections::HashSet::new();
@@ -763,6 +1038,22 @@ fn heuristic_relations(
             idx += 1;
             keep
         });
+    }
+
+    // Post-processing: suppress "caused" when the head entity was "rejected"
+    // or "replaced" (as tail) elsewhere. Old/rejected technologies don't cause
+    // improvements — the new replacement does.
+    // E.g., "use Elasticsearch instead of Solr ... throughput improved 3x"
+    // → Solr is replaced, so Solr:caused:throughput is spurious.
+    {
+        let old_entities: std::collections::HashSet<String> = relations
+            .iter()
+            .filter(|r| r.relation == "rejected" || r.relation == "replaced")
+            .map(|r| r.tail.clone())
+            .collect();
+        if !old_entities.is_empty() {
+            relations.retain(|r| !(r.relation == "caused" && old_entities.contains(&r.head)));
+        }
     }
 
     relations
@@ -885,11 +1176,131 @@ fn detect_from_to_pattern(
                             confidence: 0.75,
                         });
                     }
+
+                    // Derive depends_on: find parent entity Z before "from"
+                    // e.g., "migrated the Z from X to Y" → Z:depends_on:Y
+                    let sent_start = text[..abs_from].rfind(". ").map(|i| i + 2).unwrap_or(0);
+                    let dep_spec = schema.relation_types.get("depends_on");
+                    for parent in entities.iter() {
+                        if parent.span_start >= sent_start
+                            && parent.span_end <= abs_from
+                            && parent.text != new_ent.text
+                            && parent.text != old_ent.text
+                            && parent.entity_type != "Person"
+                            && !is_reference_entity(&parent.text)
+                        {
+                            let dep_valid = dep_spec
+                                .map(|spec| {
+                                    spec.head.contains(&parent.entity_type)
+                                        && spec.tail.contains(&new_ent.entity_type)
+                                })
+                                .unwrap_or(true);
+                            if dep_valid {
+                                let dep_key = (
+                                    parent.text.clone(),
+                                    "depends_on".to_string(),
+                                    new_ent.text.clone(),
+                                );
+                                if seen.insert(dep_key) {
+                                    relations.push(ExtractedRelation {
+                                        head: parent.text.clone(),
+                                        relation: "depends_on".to_string(),
+                                        tail: new_ent.text.clone(),
+                                        confidence: 0.60,
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
 
         search_start = abs_from + 5;
+    }
+}
+
+/// Detect "for {entity} support" patterns and emit introduced relations.
+///
+/// E.g., "Upgrade the RecommendationService ... for virtual threads support"
+/// → RecommendationService:introduced:virtual threads
+fn detect_for_support_pattern(
+    text: &str,
+    entities: &[ExtractedEntity],
+    schema: &ExtractionSchema,
+    relations: &mut Vec<ExtractedRelation>,
+    seen: &mut std::collections::HashSet<(String, String, String)>,
+) {
+    let text_lower = text.to_lowercase();
+    let rel_spec = schema.relation_types.get("introduced");
+
+    // Find "for {entity} support" patterns
+    let mut search_start = 0;
+    while let Some(for_pos) = text_lower[search_start..].find("for ") {
+        let abs_for = search_start + for_pos;
+
+        // Check if "support" appears within 60 chars after "for"
+        let look_end = (abs_for + 60).min(text_lower.len());
+        let after_for = &text_lower[abs_for..look_end];
+        if !after_for.contains("support") {
+            search_start = abs_for + 4;
+            continue;
+        }
+
+        // Find the entity between "for" and "support"
+        let support_pos = text_lower[abs_for..].find("support").unwrap() + abs_for;
+        let mut supported_entity: Option<&ExtractedEntity> = None;
+        for ent in entities.iter() {
+            if ent.span_start >= abs_for + 4 && ent.span_end <= support_pos {
+                supported_entity = Some(ent);
+            }
+        }
+
+        if let Some(tail_ent) = supported_entity {
+            // Find the subject entity (Service/Component) earlier in the sentence
+            let sent_start = text[..abs_for].rfind(". ").map(|i| i + 2).unwrap_or(0);
+            let mut best_head: Option<&ExtractedEntity> = None;
+            for ent in entities.iter() {
+                if ent.span_start >= sent_start
+                    && ent.span_start < abs_for
+                    && ent.text != tail_ent.text
+                    && !is_reference_entity(&ent.text)
+                    && (ent.entity_type == "Service" || ent.entity_type == "Component")
+                {
+                    best_head = Some(ent);
+                }
+            }
+
+            if let Some(head_ent) = best_head {
+                let schema_valid = rel_spec
+                    .map(|spec| {
+                        let fwd = spec.head.contains(&head_ent.entity_type)
+                            && spec.tail.contains(&tail_ent.entity_type);
+                        let rev = spec.head.contains(&tail_ent.entity_type)
+                            && spec.tail.contains(&head_ent.entity_type);
+                        fwd || rev
+                    })
+                    .unwrap_or(true);
+
+                if schema_valid {
+                    let key = (
+                        head_ent.text.clone(),
+                        "introduced".to_string(),
+                        tail_ent.text.clone(),
+                    );
+                    if seen.insert(key) {
+                        relations.push(ExtractedRelation {
+                            head: head_ent.text.clone(),
+                            relation: "introduced".to_string(),
+                            tail: tail_ent.text.clone(),
+                            confidence: 0.70,
+                        });
+                    }
+                }
+            }
+        }
+
+        search_start = abs_for + 4;
     }
 }
 
@@ -1092,6 +1503,21 @@ fn determine_direction(
         let first_lower = first.text.to_lowercase();
         let second_lower = second.text.to_lowercase();
 
+        // When both entities are typed as Language, the shorter name is likely
+        // the actual programming language (e.g., "Go", "Rust") while the longer
+        // name is a service/component misclassified by NER (e.g., "ImageProcessor").
+        // The longer name (consumer) depends on the shorter name (language/provider).
+        if first.entity_type == "Language" && second.entity_type == "Language" {
+            let fl = first.text.len();
+            let sl = second.text.len();
+            if fl > sl + 3 {
+                return (first.text.clone(), second.text.clone());
+            }
+            if sl > fl + 3 {
+                return (second.text.clone(), first.text.clone());
+            }
+        }
+
         // Passive voice: "X <verb> by Y"
         // Two groups with opposite direction semantics:
         //   "X used by Y" → Y uses X → Y:depends_on:X (consumer is after "by")
@@ -1101,13 +1527,31 @@ fn determine_direction(
             if let Some(pos) = sent_lower.find(marker) {
                 let first_pos = sent_lower.find(&first_lower);
                 let second_pos = sent_lower.find(&second_lower);
-                if let (Some(fp), Some(sp)) = (first_pos, second_pos) {
-                    if fp < pos && sp > pos {
-                        return (second.text.clone(), first.text.clone());
+                match (first_pos, second_pos) {
+                    (Some(fp), Some(sp)) => {
+                        if fp < pos && sp > pos {
+                            return (second.text.clone(), first.text.clone());
+                        }
+                        if sp < pos && fp > pos {
+                            return (first.text.clone(), second.text.clone());
+                        }
                     }
-                    if sp < pos && fp > pos {
-                        return (first.text.clone(), second.text.clone());
+                    // Cross-sentence: one entity in sentence (consumer after "by"),
+                    // other entity in adjacent sentence (provider/data source).
+                    (Some(fp), None) => {
+                        let by_pos = pos + marker.find("by").unwrap_or(0);
+                        if fp > by_pos {
+                            // first entity after "by" → first is consumer → first:depends_on:second
+                            return (first.text.clone(), second.text.clone());
+                        }
                     }
+                    (None, Some(sp)) => {
+                        let by_pos = pos + marker.find("by").unwrap_or(0);
+                        if sp > by_pos {
+                            return (second.text.clone(), first.text.clone());
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

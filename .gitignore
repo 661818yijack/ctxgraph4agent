@@ -6,3 +6,7 @@
 *.db-wal
 *.db-shm
 .env
+checkpoints/
+models/
+__pycache__/
+.fastembed_cache/
