@@ -57,37 +57,90 @@ ctxgraph uses domain-specific heuristics for software engineering patterns — k
 
 See [docs/benchmark.md](docs/benchmark.md) for the full comparison methodology and per-episode results.
 
-## Quick Start
+## Installation
+
+### Prerequisites
+
+- **OS**: macOS (Intel/Apple Silicon) or Linux (x86_64/arm64)
+- **RAM**: ~150 MB during inference
+- **Disk**: ~750 MB for models (one-time download)
+- **No API keys, no Docker, no Python, no database server needed**
+
+### Option 1: Homebrew (recommended)
 
 ```bash
-# Install
-# Via cargo (requires Rust toolchain)
-cargo install ctxgraph
-
-# Via Homebrew (macOS / Linux)
 brew install rohansx/tap/ctxgraph
+```
 
-# Or download a prebuilt binary from GitHub Releases
-# https://github.com/rohansx/ctxgraph/releases
+### Option 2: Prebuilt binary
 
-# Download ONNX models (~600 MB, one-time)
+Download from [GitHub Releases](https://github.com/rohansx/ctxgraph/releases) and add to your PATH:
+
+```bash
+# Example for Linux x86_64
+curl -L https://github.com/rohansx/ctxgraph/releases/latest/download/ctxgraph-v0.6.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv ctxgraph /usr/local/bin/
+```
+
+### Option 3: Build from source
+
+```bash
+# Requires Rust 1.85+ (edition 2024)
+cargo install ctxgraph-cli
+```
+
+## Getting Started
+
+### Step 1: Download models (one-time, ~700 MB)
+
+```bash
 ctxgraph models download
+```
 
-# Initialize in your project
+This downloads to `~/.cache/ctxgraph/models/`:
+
+| Model | Size | Purpose |
+|-------|------|---------|
+| GLiNER v2.1 (INT8 ONNX) | ~653 MB | Named entity recognition |
+| GLiNER v2.1 tokenizer | ~17 MB | Tokenizer for NER model |
+| all-MiniLM-L6-v2 | ~80 MB | Semantic search embeddings (auto-downloaded on first use) |
+
+After this initial download, **no internet connection is ever needed again**.
+
+### Step 2: Initialize in your project
+
+```bash
+cd your-project
 ctxgraph init
+```
 
-# Log decisions
+Creates `.ctxgraph/graph.db` (a single SQLite file — your entire knowledge graph).
+
+### Step 3: Start logging decisions
+
+```bash
 ctxgraph log "Chose Postgres over SQLite for billing. Reason: concurrent writes."
 ctxgraph log --source slack "Priya approved the discount for Reliance"
 ctxgraph log --tags "architecture,database" "Switched from REST to gRPC"
+```
 
-# Search
+Each `log` command automatically:
+1. Extracts entities (people, services, databases, etc.) using GLiNER
+2. Extracts relations (chose, rejected, depends_on, etc.) using heuristics
+3. Embeds the text for semantic search
+4. Stores everything in the local SQLite graph
+
+### Step 4: Query your knowledge graph
+
+```bash
 ctxgraph query "why Postgres?"
 ctxgraph query "discount precedents" --limit 5
-
-# Stats
+ctxgraph entities list
+ctxgraph entities show Postgres
 ctxgraph stats
 ```
+
+**No API key needed for any of this.** Queries use SQLite FTS5 for keyword search and local MiniLM embeddings for semantic search.
 
 ## What It Looks Like
 
@@ -223,10 +276,26 @@ Three search modes fused via Reciprocal Rank Fusion:
 
 A result appearing in multiple modes is ranked highest.
 
-## MCP Server
+## MCP Server (for AI Agents)
 
-ctxgraph runs as an MCP server for AI agents (Claude Desktop, Cursor, Claude Code):
+Connect ctxgraph to Claude Desktop, Cursor, or Claude Code as an MCP server so AI agents can read and write your knowledge graph.
 
+### Setup
+
+```bash
+# Install the MCP server binary
+cargo install ctxgraph-mcp
+
+# Make sure models are downloaded
+ctxgraph models download
+
+# Initialize a project (if not done already)
+cd your-project && ctxgraph init
+```
+
+Then add to your AI tool's config:
+
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
@@ -237,15 +306,39 @@ ctxgraph runs as an MCP server for AI agents (Claude Desktop, Cursor, Claude Cod
 }
 ```
 
-Install the MCP server separately: `cargo install ctxgraph-mcp`
+**Cursor** (Settings > MCP Servers):
+```json
+{
+  "mcpServers": {
+    "ctxgraph": {
+      "command": "ctxgraph-mcp"
+    }
+  }
+}
+```
+
+**Claude Code** (`~/.claude.json`):
+```json
+{
+  "mcpServers": {
+    "ctxgraph": {
+      "command": "ctxgraph-mcp"
+    }
+  }
+}
+```
+
+### Available Tools
 
 | Tool | Description |
 |---|---|
 | `ctxgraph_add_episode` | Record a decision or event |
-| `ctxgraph_search` | Search for relevant decisions and precedents |
+| `ctxgraph_search` | Search with fused FTS5 + semantic ranking |
 | `ctxgraph_get_decision` | Get full decision trace by ID |
 | `ctxgraph_traverse` | Walk the graph from an entity |
-| `ctxgraph_find_precedents` | Find similar past decisions |
+| `ctxgraph_find_precedents` | Find similar past decisions via embeddings |
+
+All tools run **100% locally** — no API calls, no data leaves your machine.
 
 ## Rust SDK
 
@@ -345,6 +438,26 @@ Both systems were tested on the same 50 episodes with identical ground truth.
 | Privacy | 100% local | Data sent to OpenAI |
 
 \*With generous semantic mapping of Graphiti's free-form relations to ctxgraph's taxonomy.
+
+## Environment Variables
+
+All optional — ctxgraph works out of the box with zero configuration.
+
+| Variable | Default | Description |
+|---|---|---|
+| `CTXGRAPH_MODELS_DIR` | `~/.cache/ctxgraph/models` | Override ONNX model directory |
+| `CTXGRAPH_DB` | `.ctxgraph/graph.db` | Override database path |
+| `CTXGRAPH_NO_EMBED` | unset | Set to `1` to disable embedding (FTS5-only search) |
+
+## Troubleshooting
+
+**"no .ctxgraph/ found"** — Run `ctxgraph init` in your project directory first.
+
+**"extraction pipeline not loaded"** — Run `ctxgraph models download` to download ONNX models (~700 MB).
+
+**Slow first query** — The embedding model (~80 MB) is auto-downloaded by fastembed on first use. Subsequent queries are instant.
+
+**High memory usage** — Set `CTXGRAPH_NO_EMBED=1` to disable semantic search and reduce RAM to ~50 MB (FTS5 keyword search still works).
 
 ## Project Structure
 

@@ -22,5 +22,5 @@ toml = "0.8"
 gline-rs = "1.0"
 ort = "=2.0.0-rc.9"
 ndarray = "0.16"
-fastembed = "4"
+fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub-rustls-tls"] }
 strsim = "0.11"
