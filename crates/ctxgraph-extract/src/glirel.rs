@@ -310,7 +310,11 @@ impl GlirelEngine {
             let projected = self.project(&hidden, seq_len);
 
             // Mean pool (skip CLS/SEP by using tokens 1..seq_len-1, or all if short)
-            let (start, end) = if seq_len > 2 { (1, seq_len - 1) } else { (0, seq_len) };
+            let (start, end) = if seq_len > 2 {
+                (1, seq_len - 1)
+            } else {
+                (0, seq_len)
+            };
             let count = (end - start) as f32;
 
             for d in 0..PROJ_DIM {
