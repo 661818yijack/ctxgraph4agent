@@ -2,60 +2,34 @@
 
 **Local-first context graph engine for AI agents and human teams.**
 
-Zero infrastructure. Zero API cost. Single Rust binary.
+---
+
+Three commands. Zero API keys. Your team's decisions become searchable.
+
+```bash
+brew install rohansx/tap/ctxgraph
+ctxgraph init && ctxgraph models download
+ctxgraph log "Migrated auth from Redis sessions to JWT. Chose JWT for stateless scaling."
+ctxgraph query "Why did we move away from Redis?"
+```
 
 ---
 
-### What is a context graph?
+## What is ctxgraph?
 
-A **context graph** is a knowledge graph of decisions. Every time your team (or an AI agent) makes a choice — picking a database, approving a discount, switching architectures — ctxgraph records it along with the who, why, when, and what alternatives were considered. Over time, you build a searchable, traversable history of institutional knowledge that answers "why did we do X?" in seconds.
+ctxgraph is a local knowledge graph that extracts entities and relations from plain-text decision logs using on-device ONNX models (GLiNER NER + heuristic relation extraction). Everything is stored in a single SQLite file and searchable via FTS5 keyword matching, semantic embeddings, and graph traversal — fused through Reciprocal Rank Fusion. Zero infrastructure: one Rust binary, no API keys, no Docker, no database server.
 
-ctxgraph stores decision traces — the full story behind every choice — and makes them searchable. It runs entirely on your machine. No Neo4j. No OpenAI API key. No Docker. No Python. One binary, one SQLite file, instant startup.
+## Key Features
 
-When someone (or an AI agent) asks *"why did we do X?"*, ctxgraph traverses the graph of past decisions, finds relevant precedents, and returns the full context — who decided, when, what alternatives were considered, and what the outcome was.
-
-## Why ctxgraph
-
-Every context graph tool today requires heavy infrastructure and sends your data to OpenAI. ctxgraph doesn't.
-
-We benchmarked ctxgraph against [Graphiti](https://github.com/getzep/graphiti) (by Zep) on the same 50 software-engineering episodes. ctxgraph extracts higher-quality entities and relations using only local ONNX models — no API calls at all.
-
-### Extraction Quality (50-episode benchmark)
-
-| System | Entity F1 | Relation F1 | Combined F1 | API Calls | Cost | Latency |
-|---|---|---|---|---|---|---|
-| **ctxgraph** (local-only) | **0.837** | **0.763** | **0.800** | 0 | $0.00 | ~40ms/ep |
-| Graphiti (gpt-4o) | 0.570 | 0.104\* | 0.337 | ~200+ | ~$2-5 | ~10s/ep |
-
-\*Graphiti's free-form relations mapped to ctxgraph's taxonomy using generous keyword heuristics.
-
-ctxgraph achieves **2.4x higher combined F1** than Graphiti while being **250x faster** and **100% free**.
-
-### Infrastructure
-
-| | Graphiti (Zep) | ctxgraph |
-|---|---|---|
-| Graph database | Neo4j / FalkorDB (Docker) | SQLite (embedded) |
-| LLM API key | Required (OpenAI) | Not required |
-| Runtime | Python 3.10+ | Single Rust binary |
-| Models | Cloud API (gpt-4o) | Local ONNX (~623 MB) |
-| RAM usage | Neo4j: 512MB+ | ~150 MB (inference) |
-| Cost per episode | ~$0.01-0.05 | $0.00 |
-| Setup time | 15-30 min (Neo4j + pip) | `cargo install` |
-| Internet required | Always (LLM calls) | Only for initial model download |
-| Privacy | Data sent to OpenAI | Nothing leaves your machine |
-
-### Why Graphiti Scores Lower
-
-Graphiti makes 6+ GPT-4o calls per episode (entity extraction, deduplication, relation extraction, contradiction detection, summarization, community detection). Despite this:
-
-- **Entity names are verbose**: Graphiti extracts `"primary Postgres cluster"` instead of `"Postgres"`, `"legacy SOAP endpoint in UserService"` instead of `"SOAP endpoint"`. Semantically correct, but doesn't match canonical names.
-- **Relations are free-form**: Produces verbs like `COMMUNICATES_ENCRYPTED_WITH` and `PREVENTS_CASCADING_FAILURES_WHEN_DOWN` that don't map to a typed taxonomy. Even with generous keyword mapping, only 10/50 episodes produce any matching relations.
-- **Different decomposition**: "Migrate from Redis to Postgres" becomes `(AuthService, CONNECTS_TO, primary Postgres cluster)` instead of `(Postgres, replaced, Redis)` + `(AuthService, depends_on, Postgres)`.
-
-ctxgraph uses domain-specific heuristics for software engineering patterns — keyword matching, proximity scoring, coreference resolution, and schema-aware type validation — that produce structured, queryable knowledge without any API calls.
-
-See [docs/benchmark.md](docs/benchmark.md) for the full comparison methodology and per-episode results.
+- **Fully local** — No API calls, no cloud, no internet after initial model download
+- **Single binary** — One Rust executable, one SQLite file
+- **Fast** — ~40ms per episode extraction
+- **Schema-driven** — Entity types and relation labels are user-defined via `ctxgraph.toml`
+- **Bi-temporal history** — Facts are invalidated, never deleted; query the graph at any point in time
+- **Three search modes** — FTS5 + semantic embeddings + graph walk, fused via Reciprocal Rank Fusion
+- **MCP server** — Connect to Claude Desktop, Cursor, or Claude Code so AI agents read/write your graph
+- **Embeddable** — Rust SDK for embedding directly in your application
+- **Privacy by default** — Nothing leaves your machine
 
 ## Installation
 
@@ -200,6 +174,70 @@ $ ctxgraph query "why Postgres for billing?"
 
 ctxgraph returns the original decision episode, the benchmark data that supported it, and the Slack discussion where the team evaluated MongoDB and rejected it for lack of ACID transactions. The new engineer gets the full context in seconds instead of asking three people and reading old Slack threads.
 
+## MCP Server (for AI Agents)
+
+Connect ctxgraph to Claude Desktop, Cursor, or Claude Code as an MCP server so AI agents can read and write your knowledge graph.
+
+### Setup
+
+```bash
+# Install the MCP server binary
+cargo install ctxgraph-mcp
+
+# Make sure models are downloaded
+ctxgraph models download
+
+# Initialize a project (if not done already)
+cd your-project && ctxgraph init
+```
+
+Then add to your AI tool's config:
+
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "ctxgraph": {
+      "command": "ctxgraph-mcp"
+    }
+  }
+}
+```
+
+**Cursor** (Settings > MCP Servers):
+```json
+{
+  "mcpServers": {
+    "ctxgraph": {
+      "command": "ctxgraph-mcp"
+    }
+  }
+}
+```
+
+**Claude Code** (`~/.claude.json`):
+```json
+{
+  "mcpServers": {
+    "ctxgraph": {
+      "command": "ctxgraph-mcp"
+    }
+  }
+}
+```
+
+### Available Tools
+
+| Tool | Description |
+|---|---|
+| `ctxgraph_add_episode` | Record a decision or event |
+| `ctxgraph_search` | Search with fused FTS5 + semantic ranking |
+| `ctxgraph_get_decision` | Get full decision trace by ID |
+| `ctxgraph_traverse` | Walk the graph from an entity |
+| `ctxgraph_find_precedents` | Find similar past decisions via embeddings |
+
+All tools run **100% locally** — no API calls, no data leaves your machine.
+
 ## How It Works
 
 ```
@@ -276,69 +314,73 @@ Three search modes fused via Reciprocal Rank Fusion:
 
 A result appearing in multiple modes is ranked highest.
 
-## MCP Server (for AI Agents)
+## Benchmark
 
-Connect ctxgraph to Claude Desktop, Cursor, or Claude Code as an MCP server so AI agents can read and write your knowledge graph.
+The extraction pipeline is evaluated against 50 software-engineering episodes covering all 10 entity types and 9 relation types. Scores are macro-averaged F1.
 
-### Setup
+The full benchmark corpus of 50 episodes and ground-truth annotations is [available in the repository](crates/ctxgraph-extract/tests/fixtures/benchmark_episodes.json) for inspection and reproduction.
+
+**Note on methodology:** The benchmark corpus was authored by us. It is not cherry-picked to favor our heuristics, but it has not been independently validated yet. We invite community submissions of new episodes and ground-truth annotations to make the benchmark more robust — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
-# Install the MCP server binary
-cargo install ctxgraph-mcp
-
-# Make sure models are downloaded
-ctxgraph models download
-
-# Initialize a project (if not done already)
-cd your-project && ctxgraph init
+cargo test --test benchmark_test -- --ignored --nocapture
 ```
 
-Then add to your AI tool's config:
+Requires ONNX models (`ctxgraph models download`).
 
-**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-```json
-{
-  "mcpServers": {
-    "ctxgraph": {
-      "command": "ctxgraph-mcp"
-    }
-  }
-}
-```
+### Results (v0.6.0 — GLiNER v2.1 INT8, fully local)
 
-**Cursor** (Settings > MCP Servers):
-```json
-{
-  "mcpServers": {
-    "ctxgraph": {
-      "command": "ctxgraph-mcp"
-    }
-  }
-}
-```
-
-**Claude Code** (`~/.claude.json`):
-```json
-{
-  "mcpServers": {
-    "ctxgraph": {
-      "command": "ctxgraph-mcp"
-    }
-  }
-}
-```
-
-### Available Tools
-
-| Tool | Description |
+| Metric | Score |
 |---|---|
-| `ctxgraph_add_episode` | Record a decision or event |
-| `ctxgraph_search` | Search with fused FTS5 + semantic ranking |
-| `ctxgraph_get_decision` | Get full decision trace by ID |
-| `ctxgraph_traverse` | Walk the graph from an entity |
-| `ctxgraph_find_precedents` | Find similar past decisions via embeddings |
+| Entity F1 | 0.837 |
+| Relation F1 | 0.763 |
+| **Combined F1** | **0.800** |
+| Latency | ~40ms/episode |
 
-All tools run **100% locally** — no API calls, no data leaves your machine.
+### Comparison with Graphiti
+
+Both systems were tested on the same 50 episodes with identical ground truth.
+
+| | ctxgraph | Graphiti (gpt-4o) |
+|---|---|---|
+| Entity F1 | **0.837** | 0.570 |
+| Relation F1 | **0.763** | 0.104\* |
+| Combined F1 | **0.800** | 0.337 |
+| API calls | 0 | ~200+ |
+| Cost | $0 | ~$2-5 |
+| Per episode | ~40ms | ~10s |
+| Infrastructure | SQLite | Neo4j (Docker) |
+| Privacy | 100% local | Data sent to OpenAI |
+
+\*With generous semantic mapping of Graphiti's free-form relations to ctxgraph's taxonomy.
+
+ctxgraph achieves **2.4x higher combined F1** than Graphiti while being **250x faster** and **100% free**.
+
+### Why Graphiti Scores Lower
+
+Graphiti makes 6+ GPT-4o calls per episode (entity extraction, deduplication, relation extraction, contradiction detection, summarization, community detection). Despite this:
+
+- **Entity names are verbose**: Graphiti extracts `"primary Postgres cluster"` instead of `"Postgres"`, `"legacy SOAP endpoint in UserService"` instead of `"SOAP endpoint"`. Semantically correct, but doesn't match canonical names.
+- **Relations are free-form**: Produces verbs like `COMMUNICATES_ENCRYPTED_WITH` and `PREVENTS_CASCADING_FAILURES_WHEN_DOWN` that don't map to a typed taxonomy. Even with generous keyword mapping, only 10/50 episodes produce any matching relations.
+- **Different decomposition**: "Migrate from Redis to Postgres" becomes `(AuthService, CONNECTS_TO, primary Postgres cluster)` instead of `(Postgres, replaced, Redis)` + `(AuthService, depends_on, Postgres)`.
+
+ctxgraph uses domain-specific heuristics for software engineering patterns — keyword matching, proximity scoring, coreference resolution, and schema-aware type validation — that produce structured, queryable knowledge without any API calls.
+
+### Infrastructure Comparison
+
+| | Graphiti (Zep) | ctxgraph |
+|---|---|---|
+| Graph database | Neo4j / FalkorDB (Docker) | SQLite (embedded) |
+| LLM API key | Required (OpenAI) | Not required |
+| Runtime | Python 3.10+ | Single Rust binary |
+| Models | Cloud API (gpt-4o) | Local ONNX (~623 MB) |
+| RAM usage | Neo4j: 512MB+ | ~150 MB (inference) |
+| Cost per episode | ~$0.01-0.05 | $0.00 |
+| Setup time | 15-30 min (Neo4j + pip) | `cargo install` |
+| Internet required | Always (LLM calls) | Only for initial model download |
+| Privacy | Data sent to OpenAI | Nothing leaves your machine |
+
+See [docs/benchmark.md](docs/benchmark.md) for the full comparison methodology and per-episode results.
 
 ## Rust SDK
 
@@ -401,44 +443,6 @@ rejected = { head = ["Person"], tail = ["Component"], description = "person reje
 depends_on = { head = ["Component"], tail = ["Component"], description = "dependency" }
 ```
 
-## Benchmark
-
-The extraction pipeline is evaluated against 50 software-engineering episodes covering all 10 entity types and 9 relation types. Scores are macro-averaged F1.
-
-The full benchmark corpus of 50 episodes and ground-truth annotations is [available in the repository](crates/ctxgraph-extract/tests/fixtures/benchmark_episodes.json) for inspection and reproduction. The corpus was authored by us — not cherry-picked to favor our heuristics, but we're transparent about this. If you find cases where ctxgraph gets it wrong, [open an issue](https://github.com/rohansx/ctxgraph/issues) or submit new episodes to make the benchmark more robust.
-
-```bash
-cargo test --test benchmark_test -- --ignored --nocapture
-```
-
-Requires ONNX models (`ctxgraph models download`).
-
-### Results (v0.6.0 — GLiNER v2.1 INT8, fully local)
-
-| Metric | Score |
-|---|---|
-| Entity F1 | 0.837 |
-| Relation F1 | 0.763 |
-| **Combined F1** | **0.800** |
-| Latency | ~40ms/episode |
-
-### Comparison with Graphiti
-
-Both systems were tested on the same 50 episodes with identical ground truth.
-
-| | ctxgraph | Graphiti (gpt-4o) |
-|---|---|---|
-| Entity F1 | **0.837** | 0.570 |
-| Relation F1 | **0.763** | 0.104\* |
-| Combined F1 | **0.800** | 0.337 |
-| API calls | 0 | ~200+ |
-| Cost | $0 | ~$2-5 |
-| Per episode | ~40ms | ~10s |
-| Infrastructure | SQLite | Neo4j (Docker) |
-| Privacy | 100% local | Data sent to OpenAI |
-
-\*With generous semantic mapping of Graphiti's free-form relations to ctxgraph's taxonomy.
-
 ## Environment Variables
 
 All optional — ctxgraph works out of the box with zero configuration.
@@ -479,6 +483,10 @@ crates/
 4. **Schema-driven** — Extraction labels are user-defined, not hardcoded
 5. **Embeddable** — Rust library first, CLI second
 6. **Append-only history** — Facts invalidated, never deleted
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on submitting code, benchmark episodes, and bug reports.
 
 ## License
 
