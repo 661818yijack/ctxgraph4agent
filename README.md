@@ -240,6 +240,24 @@ All tools run **100% locally** — no API calls, no data leaves your machine.
 
 ## How It Works
 
+For a full walkthrough in simpler language, see [`docs/EXPLAINED.md`](docs/EXPLAINED.md).
+
+### In plain English
+
+Think of ctxgraph like a **team memory engine**:
+
+1. You write normal notes like _"We chose Postgres for billing because of concurrent writes."_  
+2. ctxgraph reads that note locally and pulls out:
+   - **things** (entities) like `Postgres`, `billing`
+   - **connections** (relations) like `chose(billing, Postgres)`
+   - **time context** (when it became true, and when it was recorded)
+3. It stores everything in a local SQLite graph so you can ask:
+   - "Why did we choose this?"
+   - "What did we believe last month?"
+   - "Show related decisions around billing and databases."
+
+You can treat it as "searchable memory + decision timeline + relationship map" in one local file.
+
 ```
 Your App / CLI / AI Agent
          |
@@ -313,6 +331,16 @@ Three search modes fused via Reciprocal Rank Fusion:
 - **Graph traversal** — multi-hop walk via recursive CTEs
 
 A result appearing in multiple modes is ranked highest.
+
+### Quick glossary
+
+- **Episode**: one note/event/decision you log.
+- **Entity**: an important noun in that episode (person, service, database, decision, etc.).
+- **Edge / Relation**: how two entities are connected (for example, `chose`, `blocked_by`).
+- **Bi-temporal**: tracks both "when this was true" and "when we recorded it".
+- **FTS5**: fast keyword search in SQLite.
+- **Semantic search**: meaning-based search using local embeddings.
+- **Graph traversal**: walking connected entities across multiple hops.
 
 ## Benchmark
 

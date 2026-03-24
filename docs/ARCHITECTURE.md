@@ -427,3 +427,20 @@ model = "llama3.2:8b"
 6. **Embeddable** — ctxgraph is a Rust library first, a CLI second. Other tools can embed it directly.
 7. **Append-only history** — Facts are never deleted, only invalidated. The full temporal history is preserved.
 8. **Ship fast, iterate with users** — Get to a demoable product (MCP server) in 5-6 weeks. Let real usage guide the rest of the roadmap instead of building in a vacuum.
+
+---
+
+## Plain-Language Glossary
+
+| Technical term | Simple meaning |
+|---|---|
+| Episode | One note/event/decision that you store. |
+| Entity | A key thing in the note (person, tool, database, service, etc.). |
+| Edge / Relation | A connection between two entities (for example: chose, rejected, blocked_by). |
+| Bi-temporal | Tracks both when a fact was true and when it was recorded. |
+| FTS5 | Fast built-in SQLite keyword search. |
+| Semantic search | "Meaning match" search using vector embeddings. |
+| Graph traversal | Multi-hop walk through connected entities to find related context. |
+| RRF (Reciprocal Rank Fusion) | A ranking method that combines multiple search lists into one better list. |
+| ONNX Runtime | Local model runtime used to run extraction/embedding models on-device. |
+| Tier 1 / 2 / 3 extraction | Progressive pipeline: always-on local extraction → local quality boosts → optional LLM enhancement. |
