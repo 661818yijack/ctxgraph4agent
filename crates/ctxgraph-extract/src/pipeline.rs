@@ -63,7 +63,7 @@ impl ExtractionPipeline {
         let rel = RelEngine::new(rel_model.as_deref(), rel_tokenizer.as_deref())
             .map_err(PipelineError::Rel)?;
 
-        // LLM fallback — auto-enabled when OPENROUTER_API_KEY is set.
+        // LLM fallback — auto-enabled when env vars or config are set.
         let llm = crate::llm_extract::LlmExtractor::from_env();
 
         Ok(Self {
@@ -74,6 +74,23 @@ impl ExtractionPipeline {
             ner_needs_lowercase,
             llm,
         })
+    }
+
+    /// Create a pipeline with explicit LLM config (from ctxgraph.toml).
+    pub fn with_llm_config(
+        schema: ExtractionSchema,
+        models_dir: &Path,
+        confidence_threshold: f64,
+        llm_config: &crate::llm_extract::LlmConfig,
+    ) -> Result<Self, PipelineError> {
+        let mut pipeline = Self::new(schema, models_dir, confidence_threshold)?;
+
+        // Override LLM from config (takes precedence over env vars)
+        if !llm_config.provider.is_empty() || !llm_config.api_key.is_empty() {
+            pipeline.llm = crate::llm_extract::LlmExtractor::from_config(llm_config);
+        }
+
+        Ok(pipeline)
     }
 
     /// Create a pipeline with default settings.
@@ -230,13 +247,38 @@ impl ExtractionPipeline {
 
             if should_escalate {
                 // LLM extracts BOTH entities and relations in one call.
-                // This is cheaper than separate calls and gives better relations
-                // because the LLM understands language (unlike GLiREL's zero-shot scoring).
-                let llm_result_try = llm.extract(text, &self.schema);
+                //
+                // When the `cloakpipe` feature is enabled, PII is stripped before
+                // sending text to the LLM, then entity names are mapped back.
+                #[cfg(feature = "cloakpipe")]
+                let (llm_text, pii_mappings) =
+                    crate::llm_extract::pseudonymize_for_llm(text);
+                #[cfg(not(feature = "cloakpipe"))]
+                let llm_text = text;
+
+                let llm_result_try = llm.extract(&llm_text, &self.schema);
                 if let Err(ref e) = llm_result_try {
                     eprintln!("[ctxgraph] LLM escalation failed: {e}");
                 }
-                if let Ok(llm_result) = llm_result_try {
+                if let Ok(mut llm_result) = llm_result_try {
+                    // Rehydrate PII in entity names when CloakPipe is active
+                    #[cfg(feature = "cloakpipe")]
+                    {
+                        llm_result.entities =
+                            crate::llm_extract::rehydrate_entities(
+                                llm_result.entities,
+                                &pii_mappings,
+                            );
+                        // Also rehydrate relation head/tail names
+                        for rel in &mut llm_result.relations {
+                            if let Some(orig) = pii_mappings.get(&rel.head) {
+                                rel.head = orig.clone();
+                            }
+                            if let Some(orig) = pii_mappings.get(&rel.tail) {
+                                rel.tail = orig.clone();
+                            }
+                        }
+                    }
                     // Merge LLM entities not already found locally
                     let existing_names: std::collections::HashSet<String> =
                         entities.iter().map(|e| e.text.to_lowercase()).collect();

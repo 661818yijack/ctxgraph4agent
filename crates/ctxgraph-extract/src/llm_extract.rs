@@ -12,13 +12,16 @@ use crate::ner::ExtractedEntity;
 use crate::rel::ExtractedRelation;
 use crate::schema::ExtractionSchema;
 
-const DEFAULT_MODEL: &str = "nvidia-auto";
-const DEFAULT_URL: &str = "http://localhost:4000/v1/chat/completions";
+const DEFAULT_MODEL: &str = "gpt-4o-mini";
+const DEFAULT_URL: &str = "https://api.openai.com/v1/chat/completions";
 
 /// LLM extraction engine — works with any OpenAI-compatible endpoint.
 ///
 /// Supports: nvidia-litellm-router (free), OpenRouter, Ollama, OpenAI, Anthropic.
-/// Configured via environment variables:
+/// When the `cloakpipe` feature is enabled, PII is detected and stripped before
+/// any text is sent to the LLM, then entity names are mapped back after extraction.
+///
+/// Configured via environment variables or ctxgraph.toml:
 /// - `CTXGRAPH_LLM_URL`: API base URL (default: localhost:4000 for nvidia-litellm-router)
 /// - `CTXGRAPH_LLM_KEY`: API key (or `OPENROUTER_API_KEY` for backward compat)
 /// - `CTXGRAPH_LLM_MODEL`: Model name (default: nvidia-auto)
@@ -114,13 +117,107 @@ pub enum LlmError {
     Parse(String),
 }
 
+/// LLM configuration — can be loaded from TOML or environment variables.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LlmConfig {
+    /// Provider name: "openrouter", "ollama", "openai", "anthropic", "nvidia", or "custom"
+    #[serde(default)]
+    pub provider: String,
+    /// API key (or env var name to read from, if prefixed with "env:")
+    #[serde(default)]
+    pub api_key: String,
+    /// API key environment variable name (alternative to api_key)
+    #[serde(default)]
+    pub api_key_env: String,
+    /// Model name
+    #[serde(default)]
+    pub model: String,
+    /// Base URL for the API (without /chat/completions)
+    #[serde(default)]
+    pub base_url: String,
+    /// Whether to auto-escalate to LLM when local confidence is low
+    #[serde(default = "default_true")]
+    pub auto_escalate: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 impl LlmExtractor {
+    /// Create from explicit config (loaded from ctxgraph.toml).
+    pub fn from_config(config: &LlmConfig) -> Option<Self> {
+        if config.provider.is_empty() && config.api_key.is_empty() && config.api_key_env.is_empty()
+        {
+            return None;
+        }
+
+        let api_key = if !config.api_key.is_empty() {
+            config.api_key.clone()
+        } else if !config.api_key_env.is_empty() {
+            std::env::var(&config.api_key_env).ok()?
+        } else {
+            // Infer from provider
+            match config.provider.as_str() {
+                "nvidia" => "sk-litellm-master".to_string(),
+                "ollama" => "ollama".to_string(),
+                "openrouter" => std::env::var("OPENROUTER_API_KEY").ok()?,
+                "openai" => std::env::var("OPENAI_API_KEY").ok()?,
+                "anthropic" => std::env::var("ANTHROPIC_API_KEY").ok()?,
+                _ => return None,
+            }
+        };
+
+        if api_key.is_empty() {
+            return None;
+        }
+
+        let url = if !config.base_url.is_empty() {
+            format!("{}/chat/completions", config.base_url.trim_end_matches('/'))
+        } else {
+            match config.provider.as_str() {
+                "nvidia" => "http://localhost:4000/v1/chat/completions".to_string(),
+                "ollama" => "http://localhost:11434/v1/chat/completions".to_string(),
+                "openrouter" => "https://openrouter.ai/api/v1/chat/completions".to_string(),
+                "openai" => "https://api.openai.com/v1/chat/completions".to_string(),
+                "anthropic" => "https://api.anthropic.com/v1/chat/completions".to_string(),
+                _ => DEFAULT_URL.to_string(),
+            }
+        };
+
+        let model = if !config.model.is_empty() {
+            config.model.clone()
+        } else {
+            match config.provider.as_str() {
+                "nvidia" => "nvidia-auto".to_string(),
+                "ollama" => "qwen2.5:7b".to_string(),
+                "openrouter" => "openai/gpt-4o-mini".to_string(),
+                "openai" => "gpt-4o-mini".to_string(),
+                "anthropic" => "claude-3-5-haiku-20241022".to_string(),
+                _ => DEFAULT_MODEL.to_string(),
+            }
+        };
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .ok()?;
+
+        Some(Self {
+            client,
+            api_key,
+            model,
+            url,
+        })
+    }
+
     /// Create a new LLM extractor from environment variables.
     ///
     /// Tries in order:
     /// 1. `CTXGRAPH_LLM_KEY` + `CTXGRAPH_LLM_URL` (explicit config)
-    /// 2. `NVIDIA_API_KEY` (nvidia-litellm-router on localhost:4000)
-    /// 3. `OPENROUTER_API_KEY` (OpenRouter cloud)
+    /// 2. `OPENAI_API_KEY` (OpenAI direct — default, best quality)
+    /// 3. `ANTHROPIC_API_KEY` (Anthropic direct)
+    /// 4. `OPENROUTER_API_KEY` (OpenRouter — multi-provider)
     ///
     /// Returns `None` if no API key is found.
     pub fn from_env() -> Option<Self> {
@@ -129,14 +226,21 @@ impl LlmExtractor {
                 return None;
             }
             (key, DEFAULT_URL.to_string())
-        } else if let Ok(key) = std::env::var("NVIDIA_API_KEY") {
+        } else if let Ok(key) = std::env::var("OPENAI_API_KEY") {
             if key.is_empty() {
                 return None;
             }
-            // NVIDIA key present → assume nvidia-litellm-router on localhost:4000
             (
-                "sk-litellm-master".to_string(),
-                "http://localhost:4000/v1/chat/completions".to_string(),
+                key,
+                "https://api.openai.com/v1/chat/completions".to_string(),
+            )
+        } else if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+            if key.is_empty() {
+                return None;
+            }
+            (
+                key,
+                "https://api.anthropic.com/v1/chat/completions".to_string(),
             )
         } else if let Ok(key) = std::env::var("OPENROUTER_API_KEY") {
             if key.is_empty() {
@@ -638,6 +742,88 @@ fn extraction_json_schema(schema: &ExtractionSchema) -> serde_json::Value {
 /// LLMs tend to return verbose names ("Cerner EHR", "Blackboard LMS",
 /// "FHIR R4 APIs"). This strips common suffixes, articles, and possessives
 /// to produce shorter canonical names that match text substrings.
+/// Strip PII from text before sending to LLM, then map entity names back.
+///
+/// Only active when the `cloakpipe` feature is enabled.
+/// Returns (pseudonymized_text, token→original mappings).
+#[cfg(feature = "cloakpipe")]
+pub fn pseudonymize_for_llm(text: &str) -> (String, std::collections::HashMap<String, String>) {
+    use cloakpipe_core::config::DetectionConfig;
+    use cloakpipe_core::detector::Detector;
+    use cloakpipe_core::replacer::Replacer;
+    use cloakpipe_core::vault::Vault;
+
+    // Use detection config with patterns + financial only (no NER to avoid GLiNER conflict)
+    let config_toml = r#"
+secrets = true
+financial = true
+dates = false
+emails = true
+phone_numbers = false
+ip_addresses = false
+urls_internal = false
+
+[ner]
+enabled = false
+
+[custom]
+[overrides]
+[resolver]
+"#;
+    let config: DetectionConfig = toml::from_str(config_toml).unwrap_or_else(|_| {
+        return DetectionConfig {
+            secrets: true,
+            financial: true,
+            dates: false,
+            emails: true,
+            phone_numbers: false,
+            ip_addresses: false,
+            urls_internal: false,
+            ner: Default::default(),
+            custom: Default::default(),
+            overrides: Default::default(),
+            resolver: Default::default(),
+        };
+    });
+    let detector = match Detector::from_config(&config) {
+        Ok(d) => d,
+        Err(_) => return (text.to_string(), std::collections::HashMap::new()),
+    };
+
+    let entities = match detector.detect(text) {
+        Ok(e) => e,
+        Err(_) => return (text.to_string(), std::collections::HashMap::new()),
+    };
+
+    if entities.is_empty() {
+        return (text.to_string(), std::collections::HashMap::new());
+    }
+
+    let mut vault = Vault::ephemeral();
+    match Replacer::pseudonymize(text, &entities, &mut vault) {
+        Ok(result) => (result.text, result.mappings), // mappings: token → original
+        Err(_) => (text.to_string(), std::collections::HashMap::new()),
+    }
+}
+
+/// Map entity names back from pseudonymized text to originals.
+#[cfg(feature = "cloakpipe")]
+pub fn rehydrate_entities(
+    entities: Vec<crate::ner::ExtractedEntity>,
+    mappings: &std::collections::HashMap<String, String>,
+) -> Vec<crate::ner::ExtractedEntity> {
+    entities
+        .into_iter()
+        .map(|mut e| {
+            // Check if entity text matches any pseudo-token (token → original)
+            if let Some(original) = mappings.get(&e.text) {
+                e.text = original.clone();
+            }
+            e
+        })
+        .collect()
+}
+
 fn canonicalize_llm_entity(name: &str, text: &str) -> String {
     let mut result = name.to_string();
 

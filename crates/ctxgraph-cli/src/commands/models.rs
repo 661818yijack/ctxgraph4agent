@@ -40,6 +40,22 @@ pub fn download() -> ctxgraph::Result<()> {
         }
     }
 
+    // Check for optional GLiREL model
+    let glirel_dir = manager
+        .model_path(&gliner_large_v21_int8())
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("glirel-large-v0"));
+    if let Some(ref dir) = glirel_dir {
+        if dir.join("encoder.onnx").exists() && dir.join("scoring_head.onnx").exists() {
+            println!("  GLiREL relation model: cached");
+        } else {
+            println!("  GLiREL relation model: not found (optional)");
+            println!("    To enable zero-shot relation extraction, run:");
+            println!("    python scripts/export_glirel_onnx.py");
+        }
+    }
+
     println!("\nAll models ready. Run `ctxgraph init` to get started.");
     Ok(())
 }

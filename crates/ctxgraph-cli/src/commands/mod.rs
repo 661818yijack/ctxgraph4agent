@@ -19,7 +19,23 @@ pub fn open_graph() -> ctxgraph::Result<Graph> {
     let mut graph = Graph::open(&db_path)?;
 
     if let Some(models_dir) = find_models_dir(&db_path) {
-        match graph.load_extraction_pipeline(&models_dir) {
+        // Look for ctxgraph.toml next to .ctxgraph/ directory
+        let config_path = db_path
+            .parent()                    // .ctxgraph/
+            .and_then(|p| p.parent())    // project root
+            .map(|p| p.join("ctxgraph.toml"));
+
+        let result = if let Some(ref cfg) = config_path {
+            if cfg.exists() {
+                graph.load_extraction_pipeline_from_config(&models_dir, cfg)
+            } else {
+                graph.load_extraction_pipeline(&models_dir)
+            }
+        } else {
+            graph.load_extraction_pipeline(&models_dir)
+        };
+
+        match result {
             Ok(()) => {}
             Err(e) => {
                 eprintln!(

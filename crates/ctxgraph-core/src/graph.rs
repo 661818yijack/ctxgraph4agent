@@ -117,6 +117,63 @@ impl Graph {
         Ok(())
     }
 
+    /// Load the extraction pipeline from a ctxgraph.toml config file.
+    ///
+    /// Reads `[schema]` for entity/relation types and `[llm]` for LLM fallback config.
+    #[cfg(feature = "extract")]
+    pub fn load_extraction_pipeline_from_config(
+        &mut self,
+        models_dir: &Path,
+        config_path: &Path,
+    ) -> Result<()> {
+        let config_content = std::fs::read_to_string(config_path).map_err(|e| {
+            CtxGraphError::Extraction(format!(
+                "failed to read {}: {e}",
+                config_path.display()
+            ))
+        })?;
+
+        // Parse the full TOML
+        let toml_value: toml::Value = toml::from_str(&config_content)
+            .map_err(|e| CtxGraphError::Extraction(format!("TOML parse error: {e}")))?;
+
+        // Load schema section (or use defaults)
+        let schema = if toml_value.get("schema").is_some() {
+            ExtractionSchema::from_toml(&config_content)
+                .map_err(|e| CtxGraphError::Extraction(e.to_string()))?
+        } else {
+            ExtractionSchema::default()
+        };
+
+        // Load LLM config section
+        let llm_config: ctxgraph_extract::llm_extract::LlmConfig =
+            if let Some(llm_table) = toml_value.get("llm") {
+                llm_table
+                    .clone()
+                    .try_into()
+                    .unwrap_or_default()
+            } else {
+                Default::default()
+            };
+
+        let confidence = toml_value
+            .get("extraction")
+            .and_then(|e| e.get("confidence_threshold"))
+            .and_then(|v| v.as_float())
+            .unwrap_or(0.5);
+
+        let pipeline = ExtractionPipeline::with_llm_config(
+            schema,
+            models_dir,
+            confidence,
+            &llm_config,
+        )
+        .map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
+
+        self.pipeline = Some(pipeline);
+        Ok(())
+    }
+
     /// Check if the extraction pipeline is loaded.
     #[cfg(feature = "extract")]
     pub fn has_extraction_pipeline(&self) -> bool {

@@ -32,7 +32,7 @@ ctxgraph runs a tiered extraction pipeline: local ONNX models handle most episod
 | Query latency | **<15ms** | ~300ms | ~100ms | ~200ms |
 | Infrastructure | **SQLite** | Neo4j+Docker | Vector DB | Varies |
 | Language | **Rust** | Python | Python | Python |
-| Privacy (PII protection) | **CloakPipe (v0.8)** | None | None | None |
+| Privacy (PII protection) | **CloakPipe** (feature flag) | None | None | None |
 
 ---
 
@@ -49,7 +49,7 @@ Confidence gate: good enough?
     |
     +-- YES (tech text, ~70%) --> Graph. Done. $0.
     |
-    +-- NO (cross-domain)    --> LLM (1 call) --> Graph.  [CloakPipe PII stripping in v0.8]
+    +-- NO (cross-domain)    --> [CloakPipe strips PII] --> LLM (1 call) --> Graph.
 ```
 
 | Tier | What | Cost | Latency |
@@ -110,7 +110,7 @@ Graphiti does ALL of these via LLM: entity extraction, deduplication, relation e
 1. **Automated extraction that works offline** — GLiNER + GLiREL via ONNX. Mem0 and Basic Memory have no extraction. Graphiti/Cognee/LightRAG always need an LLM.
 2. **Typed relations, not free-form** — Graphiti produces `SWITCHED_TO`, `CAUSED_OOM_KILLS`. ctxgraph produces `replaced`, `caused` — queryable by type.
 3. **Bi-temporal history** — Only ctxgraph and Graphiti have this. Every other tool is current-state only.
-4. **PII protection (v0.8)** — CloakPipe will strip PII before LLM calls. No competitor has this planned.
+4. **PII protection** — CloakPipe strips PII before LLM calls (`--features cloakpipe`). No competitor offers this.
 5. **Single Rust binary** — Every competitor is Python with pip/Docker/Neo4j. ctxgraph is `cargo install`.
 6. **6x fewer LLM calls** — 1 call vs Graphiti's 6. Same model, better results.
 
@@ -171,7 +171,7 @@ Tested on 20 completely new episodes across 12 domains. Both systems use GPT-4o-
 ## Key Features
 
 - **Tiered extraction** — Local ONNX first, LLM only when needed
-- **Privacy (v0.8)** — CloakPipe PII stripping before cloud calls coming soon
+- **Privacy** — CloakPipe strips PII before cloud LLM calls (enable with `--features cloakpipe`)
 - **Zero infrastructure** — One binary, one SQLite file
 - **Any LLM** — Ollama, NVIDIA NIM (free), OpenRouter, OpenAI, Anthropic
 - **Bi-temporal** — Time-travel queries, fact invalidation
@@ -212,7 +212,7 @@ model = "openai/gpt-4o-mini"
 api_key_env = "OPENROUTER_API_KEY"
 
 [privacy]
-# cloakpipe = true                    # coming in v0.8
+# Enable PII stripping: cargo install ctxgraph-cli --features cloakpipe
 ```
 
 Without this, everything runs locally at 0.846 F1 on tech text.
