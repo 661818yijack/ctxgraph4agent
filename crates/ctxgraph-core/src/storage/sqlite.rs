@@ -61,7 +61,7 @@ impl Storage {
                     recorded_at: parse_datetime(&row.get::<_, String>(3)?),
                     metadata: row
                         .get::<_, Option<String>>(4)?
-                        .and_then(|s| serde_json::from_str(&s).ok()),
+                        .and_then(|s| parse_metadata(&s)),
                 })
             })
             .optional()?;
@@ -84,7 +84,7 @@ impl Storage {
                     recorded_at: parse_datetime(&row.get::<_, String>(3)?),
                     metadata: row
                         .get::<_, Option<String>>(4)?
-                        .and_then(|s| serde_json::from_str(&s).ok()),
+                        .and_then(|s| parse_metadata(&s)),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -126,7 +126,7 @@ impl Storage {
                     created_at: parse_datetime(&row.get::<_, String>(4)?),
                     metadata: row
                         .get::<_, Option<String>>(5)?
-                        .and_then(|s| serde_json::from_str(&s).ok()),
+                        .and_then(|s| parse_metadata(&s)),
                 })
             })
             .optional()?;
@@ -150,7 +150,7 @@ impl Storage {
                     created_at: parse_datetime(&row.get::<_, String>(4)?),
                     metadata: row
                         .get::<_, Option<String>>(5)?
-                        .and_then(|s| serde_json::from_str(&s).ok()),
+                        .and_then(|s| parse_metadata(&s)),
                 })
             })
             .optional()?;
@@ -376,7 +376,7 @@ impl Storage {
                     recorded_at: parse_datetime(&row.get::<_, String>(3)?),
                     metadata: row
                         .get::<_, Option<String>>(4)?
-                        .and_then(|s| serde_json::from_str(&s).ok()),
+                        .and_then(|s| parse_metadata(&s)),
                 };
                 let rank: f64 = row.get(5)?;
                 Ok((episode, -rank)) // FTS5 rank is negative (lower = better)
@@ -407,7 +407,7 @@ impl Storage {
                     created_at: parse_datetime(&row.get::<_, String>(4)?),
                     metadata: row
                         .get::<_, Option<String>>(5)?
-                        .and_then(|s| serde_json::from_str(&s).ok()),
+                        .and_then(|s| parse_metadata(&s)),
                 };
                 let rank: f64 = row.get(6)?;
                 Ok((entity, -rank))
@@ -537,7 +537,7 @@ impl Storage {
                     created_at: parse_datetime(&row.get::<_, String>(4)?),
                     metadata: row
                         .get::<_, Option<String>>(5)?
-                        .and_then(|s| serde_json::from_str(&s).ok()),
+                        .and_then(|s| parse_metadata(&s)),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -598,7 +598,23 @@ impl Storage {
 fn parse_datetime(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s)
         .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now())
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "ctxgraph: warning: failed to parse datetime '{s}': {e}, using now as fallback"
+            );
+            Utc::now()
+        })
+}
+
+/// Parse a JSON metadata string, logging a warning on failure instead of silently dropping data.
+fn parse_metadata(s: &str) -> Option<serde_json::Value> {
+    match serde_json::from_str(s) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("ctxgraph: warning: failed to parse metadata JSON: {e}");
+            None
+        }
+    }
 }
 
 fn map_entity_row(row: &rusqlite::Row) -> rusqlite::Result<Entity> {
@@ -610,7 +626,7 @@ fn map_entity_row(row: &rusqlite::Row) -> rusqlite::Result<Entity> {
         created_at: parse_datetime(&row.get::<_, String>(4)?),
         metadata: row
             .get::<_, Option<String>>(5)?
-            .and_then(|s| serde_json::from_str(&s).ok()),
+            .and_then(|s| parse_metadata(&s)),
     })
 }
 
@@ -628,7 +644,7 @@ fn map_edge_row(row: &rusqlite::Row) -> rusqlite::Result<Edge> {
         episode_id: row.get(9)?,
         metadata: row
             .get::<_, Option<String>>(10)?
-            .and_then(|s| serde_json::from_str(&s).ok()),
+            .and_then(|s| parse_metadata(&s)),
     })
 }
 

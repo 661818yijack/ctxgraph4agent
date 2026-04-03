@@ -76,7 +76,7 @@ impl McpServer {
                 let result = json!({
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "ctxgraph", "version": "0.3.0"}
+                    "serverInfo": {"name": "ctxgraph", "version": env!("CARGO_PKG_VERSION")}
                 });
                 Response::ok(id, result)
             }

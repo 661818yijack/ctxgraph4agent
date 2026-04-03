@@ -63,7 +63,7 @@ async fn main() {
     // Load .env file if present (silently ignored if missing)
     dotenvy::dotenv().ok();
 
-    eprintln!("ctxgraph-mcp v0.5.1 starting on stdio");
+    eprintln!("ctxgraph-mcp v{} starting on stdio", env!("CARGO_PKG_VERSION"));
 
     let db_path = resolve_db_path();
     eprintln!("ctxgraph-mcp: using database at {}", db_path.display());

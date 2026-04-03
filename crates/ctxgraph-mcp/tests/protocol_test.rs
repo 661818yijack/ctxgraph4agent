@@ -51,12 +51,14 @@ fn test_initialize_result_shape() {
     let result = json!({
         "protocolVersion": "2024-11-05",
         "capabilities": {"tools": {}},
-        "serverInfo": {"name": "ctxgraph", "version": "0.3.0"}
+        "serverInfo": {"name": "ctxgraph", "version": env!("CARGO_PKG_VERSION")}
     });
 
     assert_eq!(result["protocolVersion"].as_str().unwrap(), "2024-11-05");
     assert!(result["capabilities"]["tools"].is_object());
     assert_eq!(result["serverInfo"]["name"].as_str().unwrap(), "ctxgraph");
+    // Version should match the crate version (no longer hardcoded)
+    assert_eq!(result["serverInfo"]["version"].as_str().unwrap(), env!("CARGO_PKG_VERSION"));
 }
 
 #[test]
