@@ -294,13 +294,32 @@ impl ExtractionPipeline {
         }
 
         // Step 2: Relation extraction (GLiREL — always local, domain-agnostic)
-        let mut relations = self
+        let all_relations = self
             .rel
             .extract(text, &entities, &self.schema)
             .map_err(PipelineError::Rel)?;
 
         // Filter by confidence
-        relations.retain(|r| r.confidence >= self.confidence_threshold);
+        let mut relations: Vec<_> = all_relations
+            .iter()
+            .filter(|r| r.confidence >= self.confidence_threshold)
+            .cloned()
+            .collect();
+
+        // Adaptive relaxation for short text: if the normal threshold dropped ALL
+        // relations but there are enough entities to form one, admit relations
+        // above a low floor (0.15).  This prevents zero-edge episodes on clear
+        // relation-bearing text (e.g. "Alice migrated the database from Redis
+        // to PostgreSQL") without lowering quality for longer paragraphs where
+        // the threshold filters noise.
+        if relations.is_empty() && entities.len() >= 2 {
+            let floor = 0.15;
+            relations = all_relations
+                .iter()
+                .filter(|r| r.confidence >= floor)
+                .cloned()
+                .collect();
+        }
 
         // Step 2b: Merge LLM relations (if gate fired) — LLM relations supplement
         // GLiREL, adding relations that zero-shot scoring missed.
