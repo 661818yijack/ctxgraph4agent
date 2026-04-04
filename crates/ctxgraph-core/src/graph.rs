@@ -341,6 +341,19 @@ impl Graph {
         self.storage.invalidate_edge(edge_id, chrono::Utc::now())
     }
 
+    /// Increment usage_count and set last_recalled_at for an entity.
+    ///
+    /// Called automatically when an entity is consumed in retrieval results.
+    /// Used by A4b (scoring bonus) and A6 (cleanup "keep" signal).
+    pub fn touch_entity(&self, id: &str) -> Result<()> {
+        self.storage.touch_entity(id)
+    }
+
+    /// Increment usage_count and set last_recalled_at for an edge.
+    pub fn touch_edge(&self, id: &str) -> Result<()> {
+        self.storage.touch_edge(id)
+    }
+
     /// Link an episode to an entity.
     pub fn link_episode_entity(
         &self,
@@ -517,6 +530,25 @@ impl Graph {
     /// Get graph-wide statistics.
     pub fn stats(&self) -> Result<GraphStats> {
         self.storage.stats()
+    }
+
+    // ── Episode Compression ──
+
+    /// Compress a set of episodes into a single summary episode with Pattern memory_type.
+    ///
+    /// Source episodes get their compression_id set to the new summary episode's ID.
+    /// Entity links from all source episodes are merged into the compressed episode.
+    /// Returns the ID of the new compressed summary episode.
+    pub fn compress_episodes(&self, episode_ids: &[String]) -> Result<String> {
+        self.storage.compress_episodes(episode_ids)
+    }
+
+    /// List episodes that have not been compressed, recorded before the given date.
+    pub fn list_uncompressed_episodes(
+        &self,
+        before: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<Episode>> {
+        self.storage.list_uncompressed_episodes(before)
     }
 }
 

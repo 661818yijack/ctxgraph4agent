@@ -176,6 +176,28 @@ const MIGRATIONS: &[(&str, &str)] = &[
     CREATE INDEX IF NOT EXISTS idx_entities_created_at ON entities(created_at);
     "#,
     ),
+    (
+        "004_usage_count_and_last_recalled_at",
+        r#"
+    -- NOTE: This SQL is not executed for version 004; the Rust-side idempotent path
+    -- (below) handles it instead. Keep this in sync or remove in a future cleanup.
+    ALTER TABLE entities ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE entities ADD COLUMN last_recalled_at TEXT;
+    ALTER TABLE edges ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE edges ADD COLUMN last_recalled_at TEXT;
+    "#,
+    ),
+    (
+        "006_episode_compression",
+        r#"
+    -- NOTE: This SQL is not executed for version 006; the Rust-side idempotent path
+    -- (below) handles it instead. Keep this in sync or remove in a future cleanup.
+    ALTER TABLE episodes ADD COLUMN compression_id TEXT;
+    ALTER TABLE episodes ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'experience';
+    CREATE INDEX IF NOT EXISTS idx_episodes_compression_id ON episodes(compression_id);
+    CREATE INDEX IF NOT EXISTS idx_episodes_memory_type ON episodes(memory_type);
+    "#,
+    ),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
@@ -268,6 +290,55 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
                      CREATE INDEX IF NOT EXISTS idx_entities_created_at ON entities(created_at);
                      CREATE INDEX IF NOT EXISTS idx_edges_memory_type ON edges(memory_type);
                      CREATE INDEX IF NOT EXISTS idx_edges_recorded_at ON edges(recorded_at);",
+                )?;
+            } else if *version == "004_usage_count_and_last_recalled_at" {
+                // Check each column independently on BOTH tables for safe partial-migration recovery.
+                fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool> {
+                    let mut stmt =
+                        conn.prepare("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2")?;
+                    stmt.query_row(params![table, col], |row| row.get::<_, i64>(0))
+                        .map(|n| n > 0)
+                        .map_err(Into::into)
+                }
+
+                if !column_exists(conn, "entities", "usage_count")? {
+                    conn.execute_batch(
+                        "ALTER TABLE entities ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0;",
+                    )?;
+                }
+                if !column_exists(conn, "entities", "last_recalled_at")? {
+                    conn.execute_batch("ALTER TABLE entities ADD COLUMN last_recalled_at TEXT;")?;
+                }
+                if !column_exists(conn, "edges", "usage_count")? {
+                    conn.execute_batch(
+                        "ALTER TABLE edges ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0;",
+                    )?;
+                }
+                if !column_exists(conn, "edges", "last_recalled_at")? {
+                    conn.execute_batch("ALTER TABLE edges ADD COLUMN last_recalled_at TEXT;")?;
+                }
+            } else if *version == "006_episode_compression" {
+                fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool> {
+                    let mut stmt =
+                        conn.prepare("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2")?;
+                    stmt.query_row(params![table, col], |row| row.get::<_, i64>(0))
+                        .map(|n| n > 0)
+                        .map_err(Into::into)
+                }
+
+                if !column_exists(conn, "episodes", "compression_id")? {
+                    conn.execute_batch("ALTER TABLE episodes ADD COLUMN compression_id TEXT;")?;
+                }
+                if !column_exists(conn, "episodes", "memory_type")? {
+                    conn.execute_batch(
+                        "ALTER TABLE episodes ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'experience';",
+                    )?;
+                }
+
+                // Indexes for compression queries
+                conn.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_episodes_compression_id ON episodes(compression_id);
+                     CREATE INDEX IF NOT EXISTS idx_episodes_memory_type ON episodes(memory_type);",
                 )?;
             } else {
                 conn.execute_batch(sql)?;

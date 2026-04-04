@@ -154,6 +154,11 @@ pub struct Episode {
     pub source: Option<String>,
     pub recorded_at: DateTime<Utc>,
     pub metadata: Option<serde_json::Value>,
+    /// Links this episode to a compressed summary episode (set when this episode is compressed).
+    pub compression_id: Option<String>,
+    /// Memory type for this episode, driving TTL and decay behavior.
+    /// Defaults to Experience for regular episodes, Pattern for compressed summaries.
+    pub memory_type: MemoryType,
 }
 
 /// Builder for constructing episodes with a fluent API.
@@ -162,6 +167,7 @@ pub struct EpisodeBuilder {
     source: Option<String>,
     metadata: serde_json::Map<String, serde_json::Value>,
     tags: Vec<String>,
+    memory_type: MemoryType,
 }
 
 impl EpisodeBuilder {
@@ -177,6 +183,11 @@ impl EpisodeBuilder {
 
     pub fn meta(mut self, key: &str, val: impl Into<serde_json::Value>) -> Self {
         self.metadata.insert(key.to_string(), val.into());
+        self
+    }
+
+    pub fn memory_type(mut self, mt: MemoryType) -> Self {
+        self.memory_type = mt;
         self
     }
 
@@ -203,6 +214,8 @@ impl EpisodeBuilder {
             source: self.source,
             recorded_at: Utc::now(),
             metadata,
+            compression_id: None,
+            memory_type: self.memory_type,
         }
     }
 }
@@ -214,6 +227,7 @@ impl Episode {
             source: None,
             metadata: serde_json::Map::new(),
             tags: Vec::new(),
+            memory_type: MemoryType::Experience,
         }
     }
 }
@@ -229,6 +243,8 @@ pub struct Entity {
     pub summary: Option<String>,
     pub created_at: DateTime<Utc>,
     pub metadata: Option<serde_json::Value>,
+    pub usage_count: u32,
+    pub last_recalled_at: Option<DateTime<Utc>>,
 }
 
 impl Entity {
@@ -243,6 +259,8 @@ impl Entity {
             summary: None,
             created_at: Utc::now(),
             metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
         }
     }
 
@@ -262,6 +280,8 @@ impl Entity {
             summary: None,
             created_at: Utc::now(),
             metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
         }
     }
 }
@@ -283,6 +303,8 @@ pub struct Edge {
     pub confidence: f64,
     pub episode_id: Option<String>,
     pub metadata: Option<serde_json::Value>,
+    pub usage_count: u32,
+    pub last_recalled_at: Option<DateTime<Utc>>,
 }
 
 impl Edge {
@@ -301,6 +323,8 @@ impl Edge {
             confidence: 1.0,
             episode_id: None,
             metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
         }
     }
 
@@ -326,6 +350,8 @@ impl Edge {
             confidence: 1.0,
             episode_id: None,
             metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
         }
     }
 

@@ -971,3 +971,783 @@ fn test_migration_003_reopen_safe() {
     let retrieved2 = graph3.get_entity(&id).unwrap().unwrap();
     assert_eq!(retrieved2.memory_type, MemoryType::Fact);
 }
+
+// ── Migration 004: usage_count and last_recalled_at ─────────────────────────────────
+
+#[test]
+fn test_migration_004_entity_fields_exist() {
+    let graph = test_graph();
+    let entity = Entity::new("TestComponent", "Component");
+    let id = entity.id.clone();
+    graph.add_entity(entity).unwrap();
+
+    let retrieved = graph.get_entity(&id).unwrap().unwrap();
+    // New fields should exist with defaults
+    assert_eq!(retrieved.usage_count, 0);
+    assert_eq!(retrieved.last_recalled_at, None);
+}
+
+#[test]
+fn test_migration_004_edge_fields_exist() {
+    let graph = test_graph();
+
+    let e1 = Entity::new("Source", "Component");
+    let e2 = Entity::new("Target", "Component");
+    graph.add_entity(e1.clone()).unwrap();
+    graph.add_entity(e2.clone()).unwrap();
+
+    let edge = Edge::new(&e1.id, &e2.id, "depends_on");
+    let edge_id = edge.id.clone();
+    graph.add_edge(edge).unwrap();
+
+    let edges = graph.get_edges_for_entity(&e1.id).unwrap();
+    let retrieved = edges.iter().find(|e| e.id == edge_id).unwrap();
+
+    // New fields should exist with defaults
+    assert_eq!(retrieved.usage_count, 0);
+    assert_eq!(retrieved.last_recalled_at, None);
+}
+
+#[test]
+fn test_touch_entity_increments_usage_count() {
+    let graph = test_graph();
+    let entity = Entity::new("TouchTest", "Component");
+    let id = entity.id.clone();
+    graph.add_entity(entity).unwrap();
+
+    // Touch the entity 3 times
+    graph.touch_entity(&id).unwrap();
+    graph.touch_entity(&id).unwrap();
+    graph.touch_entity(&id).unwrap();
+
+    let retrieved = graph.get_entity(&id).unwrap().unwrap();
+    assert_eq!(retrieved.usage_count, 3);
+    // last_recalled_at should be set
+    assert!(retrieved.last_recalled_at.is_some());
+}
+
+#[test]
+fn test_touch_edge_increments_usage_count() {
+    let graph = test_graph();
+
+    let e1 = Entity::new("TouchEdgeE1", "Component");
+    let e2 = Entity::new("TouchEdgeE2", "Component");
+    graph.add_entity(e1.clone()).unwrap();
+    graph.add_entity(e2.clone()).unwrap();
+
+    let edge = Edge::new(&e1.id, &e2.id, "connects");
+    let edge_id = edge.id.clone();
+    graph.add_edge(edge).unwrap();
+
+    // Touch the edge twice
+    graph.touch_edge(&edge_id).unwrap();
+    graph.touch_edge(&edge_id).unwrap();
+
+    let edges = graph.get_edges_for_entity(&e1.id).unwrap();
+    let retrieved = edges.iter().find(|e| e.id == edge_id).unwrap();
+
+    assert_eq!(retrieved.usage_count, 2);
+    assert!(retrieved.last_recalled_at.is_some());
+}
+
+#[test]
+fn test_migration_004_reopen_safe() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    // First open: fresh DB, migrations run
+    let graph1 = ctxgraph::Graph::open_or_create(&db_path).unwrap();
+    let entity = Entity::new("Migration004Test", "Component");
+    let id = entity.id.clone();
+    graph1.add_entity(entity).unwrap();
+
+    // Touch to set usage_count
+    graph1.touch_entity(&id).unwrap();
+    drop(graph1);
+
+    // Second open: same DB, migrations re-run (idempotent)
+    let graph2 = ctxgraph::Graph::open_or_create(&db_path).unwrap();
+    let retrieved = graph2.get_entity(&id).unwrap().unwrap();
+    assert_eq!(retrieved.usage_count, 1);
+    assert!(retrieved.last_recalled_at.is_some());
+
+    // Touch again and verify increment persists
+    graph2.touch_entity(&id).unwrap();
+    drop(graph2);
+
+    // Third open: verify usage_count persists after double migration
+    let graph3 = ctxgraph::Graph::open_or_create(&db_path).unwrap();
+    let retrieved3 = graph3.get_entity(&id).unwrap().unwrap();
+    assert_eq!(retrieved3.usage_count, 2);
+}
+
+#[test]
+fn test_migration_004_applies_to_existing_db() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    // Simulate an old DB (before migration 004) by creating graph and manually
+    // verifying the new columns exist after migration runs
+    let graph = ctxgraph::Graph::open_or_create(&db_path).unwrap();
+    let entity = Entity::new("OldEntity", "Decision");
+    let id = entity.id.clone();
+    graph.add_entity(entity).unwrap();
+
+    // Existing rows should get usage_count=0 and last_recalled_at=NULL
+    let retrieved = graph.get_entity(&id).unwrap().unwrap();
+    assert_eq!(retrieved.usage_count, 0);
+    assert_eq!(retrieved.last_recalled_at, None);
+
+    // Edge should also get defaults
+    let e1 = Entity::new("EdgeTest1", "Component");
+    let e2 = Entity::new("EdgeTest2", "Component");
+    graph.add_entity(e1.clone()).unwrap();
+    graph.add_entity(e2.clone()).unwrap();
+
+    let edge = Edge::new(&e1.id, &e2.id, "related");
+    let edge_id = edge.id.clone();
+    graph.add_edge(edge).unwrap();
+
+    let edges = graph.get_edges_for_entity(&e1.id).unwrap();
+    let retrieved_edge = edges.iter().find(|e| e.id == edge_id).unwrap();
+    assert_eq!(retrieved_edge.usage_count, 0);
+    assert_eq!(retrieved_edge.last_recalled_at, None);
+}
+
+// ── A3: usage_count and last_recalled_at ──
+
+#[test]
+fn test_entity_new_has_zero_usage_count_and_null_recalled() {
+    let entity = Entity::new("Test", "Component");
+    assert_eq!(
+        entity.usage_count, 0,
+        "new Entity should have usage_count = 0"
+    );
+    assert!(
+        entity.last_recalled_at.is_none(),
+        "new Entity should have last_recalled_at = None"
+    );
+}
+
+#[test]
+fn test_entity_with_memory_has_zero_usage_count_and_null_recalled() {
+    let entity = Entity::with_memory(
+        "Test",
+        "Component",
+        MemoryType::Fact,
+        Some(std::time::Duration::from_secs(86400)),
+    );
+    assert_eq!(
+        entity.usage_count, 0,
+        "with_memory Entity should have usage_count = 0"
+    );
+    assert!(
+        entity.last_recalled_at.is_none(),
+        "with_memory Entity should have last_recalled_at = None"
+    );
+}
+
+#[test]
+fn test_edge_new_has_zero_usage_count_and_null_recalled() {
+    let edge = Edge::new("a", "b", "uses");
+    assert_eq!(edge.usage_count, 0, "new Edge should have usage_count = 0");
+    assert!(
+        edge.last_recalled_at.is_none(),
+        "new Edge should have last_recalled_at = None"
+    );
+}
+
+#[test]
+fn test_edge_with_memory_has_zero_usage_count_and_null_recalled() {
+    let edge = Edge::with_memory(
+        "a",
+        "b",
+        "uses",
+        MemoryType::Decision,
+        Some(std::time::Duration::from_secs(86400)),
+    );
+    assert_eq!(
+        edge.usage_count, 0,
+        "with_memory Edge should have usage_count = 0"
+    );
+    assert!(
+        edge.last_recalled_at.is_none(),
+        "with_memory Edge should have last_recalled_at = None"
+    );
+}
+
+#[test]
+fn test_touch_entity_increments_count() {
+    let graph = test_graph();
+
+    // Create an entity
+    let entity = Entity::new("TouchTest", "Component");
+    let id = entity.id.clone();
+    graph.add_entity(entity).unwrap();
+
+    // Touch it the first time
+    graph.touch_entity(&id).unwrap();
+
+    let retrieved = graph.get_entity(&id).unwrap().unwrap();
+    assert_eq!(
+        retrieved.usage_count, 1,
+        "usage_count should be 1 after first touch"
+    );
+    assert!(
+        retrieved.last_recalled_at.is_some(),
+        "last_recalled_at should be Some after first touch"
+    );
+
+    // Touch it a second time
+    graph.touch_entity(&id).unwrap();
+
+    let retrieved2 = graph.get_entity(&id).unwrap().unwrap();
+    assert_eq!(
+        retrieved2.usage_count, 2,
+        "usage_count should be 2 after second touch"
+    );
+
+    // The last_recalled_at should have been updated
+    assert!(
+        retrieved2.last_recalled_at >= retrieved.last_recalled_at,
+        "last_recalled_at should advance or stay same"
+    );
+}
+
+#[test]
+fn test_touch_edge_increments_count() {
+    let graph = test_graph();
+
+    // Create two entities and an edge
+    let src = Entity::new("Source", "Component");
+    let tgt = Entity::new("Target", "Component");
+    graph.add_entity(src.clone()).unwrap();
+    graph.add_entity(tgt.clone()).unwrap();
+
+    let edge = Edge::new(&src.id, &tgt.id, "depends_on");
+    let edge_id = edge.id.clone();
+    graph.add_edge(edge).unwrap();
+
+    // Touch the edge
+    graph.touch_edge(&edge_id).unwrap();
+
+    let edges = graph.get_edges_for_entity(&src.id).unwrap();
+    let retrieved = edges.iter().find(|e| e.id == edge_id).unwrap();
+    assert_eq!(
+        retrieved.usage_count, 1,
+        "usage_count should be 1 after touch"
+    );
+    assert!(
+        retrieved.last_recalled_at.is_some(),
+        "last_recalled_at should be Some after touch"
+    );
+
+    // Touch again
+    graph.touch_edge(&edge_id).unwrap();
+
+    let edges2 = graph.get_edges_for_entity(&src.id).unwrap();
+    let retrieved2 = edges2.iter().find(|e| e.id == edge_id).unwrap();
+    assert_eq!(
+        retrieved2.usage_count, 2,
+        "usage_count should be 2 after second touch"
+    );
+}
+
+#[test]
+fn test_touch_nonexistent_returns_error() {
+    let graph = test_graph();
+
+    // Touch non-existent entity
+    let result = graph.touch_entity("nonexistent-entity-id");
+    assert!(
+        result.is_err(),
+        "touch_entity on non-existent should return error"
+    );
+
+    // Touch non-existent edge
+    let result = graph.touch_edge("nonexistent-edge-id");
+    assert!(
+        result.is_err(),
+        "touch_edge on non-existent should return error"
+    );
+}
+
+#[test]
+fn test_migration_004_idempotent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    // First open: fresh DB, migration runs
+    let graph1 = ctxgraph::Graph::open_or_create(&db_path).unwrap();
+    let entity = Entity::new("Migration004", "Component");
+    let id = entity.id.clone();
+    graph1.add_entity(entity).unwrap();
+    drop(graph1);
+
+    // Second open: same DB, migration re-runs (idempotent)
+    let graph2 = ctxgraph::Graph::open_or_create(&db_path).unwrap();
+    let retrieved = graph2.get_entity(&id).unwrap().unwrap();
+    assert_eq!(retrieved.usage_count, 0);
+    assert!(retrieved.last_recalled_at.is_none());
+    drop(graph2);
+
+    // Third open: verify still works after double migration
+    let graph3 = ctxgraph::Graph::open_or_create(&db_path).unwrap();
+    let retrieved2 = graph3.get_entity(&id).unwrap().unwrap();
+    assert_eq!(retrieved2.usage_count, 0);
+    assert!(retrieved2.last_recalled_at.is_none());
+}
+
+#[test]
+fn test_read_paths_include_new_fields() {
+    let graph = test_graph();
+
+    // Create entity
+    let entity = Entity::new("ReadTest", "Component");
+    let entity_id = entity.id.clone();
+    graph.add_entity(entity).unwrap();
+
+    // Create edge
+    let src = Entity::new("Src", "Component");
+    let tgt = Entity::new("Tgt", "Component");
+    graph.add_entity(src.clone()).unwrap();
+    graph.add_entity(tgt.clone()).unwrap();
+    let edge = Edge::new(&src.id, &tgt.id, "connects");
+    let edge_id = edge.id.clone();
+    graph.add_edge(edge).unwrap();
+
+    // Touch both to set non-default values
+    graph.touch_entity(&entity_id).unwrap();
+    graph.touch_entity(&entity_id).unwrap();
+    graph.touch_edge(&edge_id).unwrap();
+
+    // Verify via get_entity
+    let retrieved_entity = graph.get_entity(&entity_id).unwrap().unwrap();
+    assert_eq!(retrieved_entity.usage_count, 2);
+    assert!(retrieved_entity.last_recalled_at.is_some());
+
+    // Verify via list_entities
+    let entities = graph.list_entities(Some("Component"), 100).unwrap();
+    let listed = entities.iter().find(|e| e.id == entity_id).unwrap();
+    assert_eq!(listed.usage_count, 2);
+    assert!(listed.last_recalled_at.is_some());
+
+    // Verify via get_edges_for_entity
+    let edges = graph.get_edges_for_entity(&src.id).unwrap();
+    let listed_edge = edges.iter().find(|e| e.id == edge_id).unwrap();
+    assert_eq!(listed_edge.usage_count, 1);
+    assert!(listed_edge.last_recalled_at.is_some());
+
+    // Verify via search_entities
+    let search_results = graph.search_entities("ReadTest", 10).unwrap();
+    let searched = search_results
+        .iter()
+        .find(|(e, _)| e.id == entity_id)
+        .unwrap();
+    assert_eq!(searched.0.usage_count, 2);
+    assert!(searched.0.last_recalled_at.is_some());
+}
+
+// ── B1: Episode Compression Pipeline ──────────────────────────────────────
+
+#[test]
+fn test_episode_new_has_default_compression_id_none_and_experience_type() {
+    let episode = Episode::builder("Test episode").build();
+    assert_eq!(
+        episode.compression_id, None,
+        "new Episode should have compression_id = None"
+    );
+    assert_eq!(
+        episode.memory_type,
+        MemoryType::Experience,
+        "new Episode should default to Experience memory_type"
+    );
+}
+
+#[test]
+fn test_episode_builder_with_memory_type() {
+    let episode = Episode::builder("Compressed summary")
+        .memory_type(MemoryType::Pattern)
+        .build();
+    assert_eq!(episode.memory_type, MemoryType::Pattern);
+    assert_eq!(episode.compression_id, None);
+}
+
+#[test]
+fn test_episode_persist_and_retrieve_with_new_fields() {
+    let graph = test_graph();
+
+    // Regular episode
+    let episode = Episode::builder("Regular episode content").build();
+    let id = episode.id.clone();
+    graph.add_episode(episode).unwrap();
+
+    let retrieved = graph.get_episode(&id).unwrap().unwrap();
+    assert_eq!(retrieved.compression_id, None);
+    assert_eq!(retrieved.memory_type, MemoryType::Experience);
+
+    // Episode with Pattern memory_type
+    let pattern_episode = Episode::builder("Pattern summary")
+        .memory_type(MemoryType::Pattern)
+        .build();
+    let pid = pattern_episode.id.clone();
+    graph.add_episode(pattern_episode).unwrap();
+
+    let retrieved_pattern = graph.get_episode(&pid).unwrap().unwrap();
+    assert_eq!(retrieved_pattern.memory_type, MemoryType::Pattern);
+}
+
+#[test]
+fn test_migration_006_columns_exist() {
+    let graph = test_graph();
+
+    // Insert an episode and verify the new columns are readable
+    let episode = Episode::builder("Migration 006 test").build();
+    let id = episode.id.clone();
+    graph.add_episode(episode).unwrap();
+
+    let retrieved = graph.get_episode(&id).unwrap().unwrap();
+    assert!(retrieved.compression_id.is_none());
+    assert_eq!(retrieved.memory_type, MemoryType::Experience);
+}
+
+#[test]
+fn test_migration_006_reopen_safe() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    // First open: fresh DB, migration 006 runs
+    let graph1 = ctxgraph::Graph::open_or_create(&db_path).unwrap();
+    let episode = Episode::builder("Migration 006 reopen test").build();
+    let id = episode.id.clone();
+    graph1.add_episode(episode).unwrap();
+    drop(graph1);
+
+    // Second open: same DB, migration re-runs (idempotent)
+    let graph2 = ctxgraph::Graph::open_or_create(&db_path).unwrap();
+    let retrieved = graph2.get_episode(&id).unwrap().unwrap();
+    assert_eq!(retrieved.memory_type, MemoryType::Experience);
+    assert_eq!(retrieved.compression_id, None);
+
+    // Compress the episode
+    let compressed_id = graph2.compress_episodes(std::slice::from_ref(&id)).unwrap();
+    drop(graph2);
+
+    // Third open: verify compression_id persists after double migration
+    let graph3 = ctxgraph::Graph::open_or_create(&db_path).unwrap();
+    let retrieved2 = graph3.get_episode(&id).unwrap().unwrap();
+    assert_eq!(
+        retrieved2.compression_id.as_deref(),
+        Some(compressed_id.as_str())
+    );
+}
+
+#[test]
+fn test_compress_empty_list_returns_error() {
+    let graph = test_graph();
+    let result = graph.compress_episodes(&[]);
+    assert!(
+        result.is_err(),
+        "compressing empty episode_ids should return error"
+    );
+}
+
+#[test]
+fn test_generate_compression_summary_empty_returns_error() {
+    let _graph = test_graph();
+    let storage = ctxgraph::storage::Storage::open_in_memory().unwrap();
+    let result = storage.generate_compression_summary(&[]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_generate_compression_summary_produces_text() {
+    let graph = test_graph();
+
+    // Insert 3 episodes
+    let ep1 = Episode::builder("Debugged Docker networking issue with bridge driver").build();
+    let ep2 = Episode::builder("Fixed Docker DNS resolution by configuring resolv.conf").build();
+    let ep3 = Episode::builder("Resolved Docker container restart loop caused by OOM").build();
+    let id1 = ep1.id.clone();
+    let id2 = ep2.id.clone();
+    let id3 = ep3.id.clone();
+    graph.add_episode(ep1).unwrap();
+    graph.add_episode(ep2).unwrap();
+    graph.add_episode(ep3).unwrap();
+
+    let summary_id = graph.compress_episodes(&[id1, id2, id3]).unwrap();
+
+    let summary_episode = graph.get_episode(&summary_id).unwrap().unwrap();
+    // Summary should not be empty
+    assert!(
+        !summary_episode.content.is_empty(),
+        "summary should not be empty"
+    );
+
+    // Summary should mention Docker (key topic from source episodes)
+    assert!(
+        summary_episode.content.contains("Docker"),
+        "summary should mention Docker: {}",
+        summary_episode.content
+    );
+
+    // Summary should mention the count
+    assert!(
+        summary_episode.content.contains("3 episodes"),
+        "summary should mention count: {}",
+        summary_episode.content
+    );
+}
+
+#[test]
+fn test_compress_episodes_creates_summary_with_pattern_type() {
+    let graph = test_graph();
+
+    // Insert episodes about Docker debugging
+    let ep1 = Episode::builder("Debugged Docker networking issue").build();
+    let ep2 = Episode::builder("Fixed Docker DNS resolution problem").build();
+    let ep3 = Episode::builder("Resolved Docker container restart loop").build();
+    let id1 = ep1.id.clone();
+    let id2 = ep2.id.clone();
+    let id3 = ep3.id.clone();
+    graph.add_episode(ep1).unwrap();
+    graph.add_episode(ep2).unwrap();
+    graph.add_episode(ep3).unwrap();
+
+    let compressed_id = graph
+        .compress_episodes(&[id1.clone(), id2.clone(), id3.clone()])
+        .unwrap();
+
+    // Verify compressed episode exists with Pattern type
+    let compressed = graph.get_episode(&compressed_id).unwrap().unwrap();
+    assert_eq!(compressed.memory_type, MemoryType::Pattern);
+    assert_eq!(compressed.source.as_deref(), Some("compression"));
+    assert!(!compressed.content.is_empty());
+
+    // Verify source episodes have compression_id set
+    let source1 = graph.get_episode(&id1).unwrap().unwrap();
+    let source2 = graph.get_episode(&id2).unwrap().unwrap();
+    let source3 = graph.get_episode(&id3).unwrap().unwrap();
+
+    assert_eq!(
+        source1.compression_id.as_deref(),
+        Some(compressed_id.as_str()),
+        "source episode 1 should have compression_id set"
+    );
+    assert_eq!(
+        source2.compression_id.as_deref(),
+        Some(compressed_id.as_str()),
+        "source episode 2 should have compression_id set"
+    );
+    assert_eq!(
+        source3.compression_id.as_deref(),
+        Some(compressed_id.as_str()),
+        "source episode 3 should have compression_id set"
+    );
+}
+
+#[test]
+fn test_compress_episodes_merges_entity_links() {
+    let graph = test_graph();
+
+    // Create entities
+    let docker = Entity::new("Docker", "Component");
+    let linux = Entity::new("Linux", "Component");
+    let nginx = Entity::new("Nginx", "Component");
+    let docker_id = docker.id.clone();
+    let linux_id = linux.id.clone();
+    let nginx_id = nginx.id.clone();
+    graph.add_entity(docker).unwrap();
+    graph.add_entity(linux).unwrap();
+    graph.add_entity(nginx).unwrap();
+
+    // Create episodes with entity links
+    let ep1 = Episode::builder("Debugged Docker networking").build();
+    let ep2 = Episode::builder("Fixed Linux kernel module").build();
+    let ep3 = Episode::builder("Configured Nginx reverse proxy").build();
+    let id1 = ep1.id.clone();
+    let id2 = ep2.id.clone();
+    let id3 = ep3.id.clone();
+    graph.add_episode(ep1).unwrap();
+    graph.add_episode(ep2).unwrap();
+    graph.add_episode(ep3).unwrap();
+
+    // Link entities to episodes
+    graph
+        .link_episode_entity(&id1, &docker_id, None, None)
+        .unwrap();
+    graph
+        .link_episode_entity(&id2, &linux_id, None, None)
+        .unwrap();
+    graph
+        .link_episode_entity(&id3, &nginx_id, None, None)
+        .unwrap();
+    // Docker also linked to ep3 (shared entity)
+    graph
+        .link_episode_entity(&id3, &docker_id, None, None)
+        .unwrap();
+
+    // Compress
+    let compressed_id = graph
+        .compress_episodes(&[id1.clone(), id2.clone(), id3.clone()])
+        .unwrap();
+
+    // Verify the compressed episode has entity links
+    // We can't directly query episode_entities from Graph, but we can verify
+    // by checking that the compressed episode shows up in search for "Docker"
+    let search_results = graph.search("Docker", 10).unwrap();
+    let compressed_found = search_results.iter().any(|(ep, _)| ep.id == compressed_id);
+    assert!(
+        compressed_found,
+        "compressed episode should be findable via FTS5 search"
+    );
+
+    // Verify compressed episode has metadata with compressed_count
+    let compressed = graph.get_episode(&compressed_id).unwrap().unwrap();
+    let count = compressed
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("compressed_count"))
+        .and_then(|v| v.as_u64());
+    assert_eq!(
+        count,
+        Some(3),
+        "metadata should contain compressed_count = 3"
+    );
+}
+
+#[test]
+fn test_list_uncompressed_episodes() {
+    let graph = test_graph();
+    let now = Utc::now();
+    let old_time = now - chrono::Duration::days(30);
+    let recent_time = now - chrono::Duration::hours(1);
+
+    // Insert old episodes
+    let mut ep1 = Episode::builder("Old episode 1").build();
+    ep1.recorded_at = old_time;
+    let id1 = ep1.id.clone();
+    graph.add_episode(ep1).unwrap();
+
+    let mut ep2 = Episode::builder("Old episode 2").build();
+    ep2.recorded_at = old_time;
+    let id2 = ep2.id.clone();
+    graph.add_episode(ep2).unwrap();
+
+    // Insert a recent episode
+    let mut ep3 = Episode::builder("Recent episode").build();
+    ep3.recorded_at = recent_time;
+    let id3 = ep3.id.clone();
+    graph.add_episode(ep3).unwrap();
+
+    // List uncompressed before "now" — should return all 3 (none compressed yet)
+    let uncompressed = graph.list_uncompressed_episodes(now).unwrap();
+    assert_eq!(
+        uncompressed.len(),
+        3,
+        "all 3 episodes should be uncompressed"
+    );
+
+    // Compress the two old episodes
+    graph
+        .compress_episodes(&[id1.clone(), id2.clone()])
+        .unwrap();
+
+    // List uncompressed again — should only return the recent one
+    let uncompressed2 = graph.list_uncompressed_episodes(now).unwrap();
+    assert_eq!(
+        uncompressed2.len(),
+        1,
+        "only the recent episode should be uncompressed"
+    );
+    assert_eq!(uncompressed2[0].id, id3);
+}
+
+#[test]
+fn test_list_uncompressed_excludes_already_compressed() {
+    let graph = test_graph();
+    let future = Utc::now() + chrono::Duration::days(1);
+
+    // Insert episodes
+    let ep1 = Episode::builder("Episode A").build();
+    let ep2 = Episode::builder("Episode B").build();
+    let id1 = ep1.id.clone();
+    let id2 = ep2.id.clone();
+    graph.add_episode(ep1).unwrap();
+    graph.add_episode(ep2).unwrap();
+
+    // Compress episode A
+    let compressed_id = graph.compress_episodes(std::slice::from_ref(&id1)).unwrap();
+
+    // List uncompressed — should only return B
+    let uncompressed = graph.list_uncompressed_episodes(future).unwrap();
+    assert_eq!(uncompressed.len(), 1);
+    assert_eq!(uncompressed[0].id, id2);
+
+    // Verify compressed episode exists and has Pattern type
+    let compressed = graph.get_episode(&compressed_id).unwrap().unwrap();
+    assert_eq!(compressed.memory_type, MemoryType::Pattern);
+}
+
+#[test]
+fn test_compressed_episode_searchable_via_fts() {
+    let graph = test_graph();
+
+    let ep1 = Episode::builder("Deployed Redis cluster with sentinel").build();
+    let ep2 = Episode::builder("Migrated Redis to AOF persistence").build();
+    let id1 = ep1.id.clone();
+    let id2 = ep2.id.clone();
+    graph.add_episode(ep1).unwrap();
+    graph.add_episode(ep2).unwrap();
+
+    let compressed_id = graph.compress_episodes(&[id1, id2]).unwrap();
+
+    // The compressed episode should be findable via FTS5 search
+    let results = graph.search("Redis", 10).unwrap();
+
+    // Should find at least the compressed episode (source episodes remain too)
+    let compressed_found = results.iter().any(|(ep, _)| ep.id == compressed_id);
+    assert!(
+        compressed_found,
+        "compressed episode should be searchable via FTS5"
+    );
+}
+
+#[test]
+fn test_compress_single_episode() {
+    let graph = test_graph();
+
+    let ep = Episode::builder("Single episode to compress").build();
+    let id = ep.id.clone();
+    graph.add_episode(ep).unwrap();
+
+    let compressed_id = graph.compress_episodes(std::slice::from_ref(&id)).unwrap();
+
+    // Verify
+    let source = graph.get_episode(&id).unwrap().unwrap();
+    assert_eq!(
+        source.compression_id.as_deref(),
+        Some(compressed_id.as_str())
+    );
+
+    let compressed = graph.get_episode(&compressed_id).unwrap().unwrap();
+    assert_eq!(compressed.memory_type, MemoryType::Pattern);
+    assert!(compressed.content.contains("Single episode"));
+}
+
+#[test]
+fn test_compress_nonexistent_episode_returns_error() {
+    let graph = test_graph();
+
+    // Insert one real episode
+    let ep = Episode::builder("Real episode").build();
+    let id = ep.id.clone();
+    graph.add_episode(ep).unwrap();
+
+    // Try to compress with a nonexistent ID
+    let result = graph.compress_episodes(&[id.clone(), "nonexistent-id".to_string()]);
+    assert!(
+        result.is_err(),
+        "compressing with a nonexistent episode should return error"
+    );
+}

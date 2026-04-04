@@ -4,7 +4,7 @@
 > Memory lifecycle: Store → TTL → Forget → Decay → Re-verify → Compress → Budget → Learn
 >
 > Changes from Round 1: A4 split into A4a/A4b/A4c, D1 split into D1a/D1b, A6 (TTL cleanup) added,
-> A3 trimmed: renewal_count deferred to C2, touch_many/get_usage_stats/MemoryTable/indexes removed, effort M→S, B3 compression no longer runs every query, C2 uses renewal_count
+> A3 trimmed: renewal_count deferred to C2, touch_many/get_usage_stats/MemoryTable/indexes removed, effort M→S, B1 summary template→LLM + memory_type Pattern→Fact + LLM moved to Graph layer + fallback added, B3 compression no longer runs every query, C2 uses renewal_count
 > not usage_count, C1 uses entity_id matching with confidence threshold, C3 stale_threshold
 > configurable, C4 update format defined, D2 success/failure relations configurable.
 
@@ -366,39 +366,53 @@ Stories B1-B4 implement the compression pipeline that keeps the graph small whil
 **Depends on:** A1, A3
 
 ### Description
-Implement a compression pipeline that batches old episodes into a single summary node. Given a set of episode IDs and an optional time range, the pipeline creates a new "compressed episode" entity with a generated summary, marks the source episodes with `compression_id` linking them to the summary, and sets their decay to accelerated. The summary is generated via template-based extraction (not LLM): extract all unique entity names from source episodes, list the most common relation types (top 3), determine the time range, and format as: "In [timeframe], [entities] were involved in [top relations]. [N] episodes compressed." The compressed episode has `memory_type: Pattern` (since it's a learned summary, not a raw fact).
+Implement a compression pipeline that batches old episodes into a single summary node. Given a set of episode IDs, the pipeline creates a new "compressed episode" with a **content-quality summary**, marks the source episodes with `compression_id` linking them to the summary, and sets their decay to accelerated.
+
+The summary is generated via LLM (not template). Template-based summaries produce metadata, not meaning — *"In March, Docker, auth, and PostgreSQL were involved in 14 episodes"* is useless for retrieval. The compressed node must preserve the **value** of the source episodes: what happened, what was decided, what was learned. CLAUDE.md sets the bar: *"Week of March 24: focused on auth migration, resolved 3 bugs"* — a concise, actionable summary an agent can actually use.
+
+LLM call frequency is low (batch compression runs per trigger interval, not per query), so the cost is negligible compared to the retrieval value of a good summary.
+
+**Architecture:** The LLM call lives in the `Graph` layer (orchestration), not in `Storage` (persistence). Storage only handles insert/update operations. This keeps Storage testable without mocking LLM clients and aligns with "SQLite first, zero deps" — Storage stays a pure SQLite wrapper.
+
+**Memory type:** Compressed summaries use `memory_type: Fact` (not Pattern). A compressed summary is a factual record of what happened during a period — it should decay and be re-verified like any other fact. Using Pattern would make summaries never expire (Pattern = learned behaviors, keep forever), which breaks the TTL/Decay lifecycle after 6 months of use. Facts have 90d TTL by default, configurable via per-agent policy (A5).
+
+**Fallback:** If the LLM call fails (timeout, unavailable, bad response), compression is skipped for this batch. Source episodes remain uncompressed and will be retried on the next trigger cycle. No silent degradation to template — either we get a quality summary or we wait.
 
 ### Acceptance Criteria
-1. `Storage::compress_episodes(episode_ids: &[String], summary: String) -> Result<String>` creates a new episode with the summary content, `memory_type: Pattern`, and returns its ID
-2. Summary generation algorithm: extract unique entities, list top-3 relation types by frequency, determine date range, format as template string
-3. Each source episode gets `compression_id` set to the new summary episode's ID via an UPDATE
-4. A new `compression_groups` table tracks `(compression_id, source_episode_id)` for audit
-5. The compressed summary episode has all entities from source episodes merged as `episode_entities` links
-6. `compression_id: Option<String>` field added to `Episode` struct
-7. Compressed summary episode has `compressed_at: DateTime<Utc>` field set to creation time
-8. Compressed episodes are queryable via normal search; source episodes remain until decayed
+1. `Graph::compress_episodes(episode_ids: &[String]) -> Result<String>` orchestrates: load episodes → generate LLM summary → store compressed episode → link source episodes → returns compressed episode ID
+2. `Storage::compress_episodes(&self, episode_ids: &[String], summary: &str) -> Result<String>` creates a new episode with `memory_type: Fact`, the LLM-generated summary as content, and returns its ID
+3. Summary generation prompt (defined in `Graph` layer): "Summarize these episodes into a concise 2-3 sentence summary preserving key decisions, outcomes, and patterns. Focus on what happened, not who was involved." — source episode contents concatenated and truncated to token budget before sending
+4. Each source episode gets `compression_id` set to the new summary episode's ID via UPDATE
+5. `compression_id: Option<String>` field added to `Episode` struct (persisted in migration 006)
+6. The compressed summary episode has all entities from source episodes merged as `episode_entities` links
+7. Compressed episodes are queryable via normal search; source episodes remain until decayed
+8. Compressing empty episode_ids returns error
+9. Summary is stored as the episode `content` field — no separate `compressed_at` field (use `recorded_at`)
+10. LLM call failure returns error but does not modify source episodes; next trigger cycle retries
 
 ### Technical Requirements
 - **Files to create/modify:**
   - `crates/ctxgraph-core/src/types.rs` — add `compression_id: Option<String>` to `Episode`
-  - `crates/ctxgraph-core/src/storage/migrations.rs` — add migration 006 (compression_groups table, compression_id on episodes)
-  - `crates/ctxgraph-core/src/storage/sqlite.rs` — add `compress_episodes`, `generate_compression_summary`, update episode read/write paths
-  - `crates/ctxgraph-core/src/graph.rs` — add `Graph::compress_episodes` passthrough
+  - `crates/ctxgraph-core/src/storage/migrations.rs` — add migration 006 (`compression_id TEXT` on episodes)
+  - `crates/ctxgraph-core/src/storage/sqlite.rs` — add `compress_episodes`, update episode read/write paths
+  - `crates/ctxgraph-core/src/graph.rs` — add `Graph::compress_episodes` (orchestration + LLM call), `Graph::generate_compression_summary`
 - **New types/functions:**
-  - `Storage::compress_episodes(&self, episode_ids: &[String], summary: &str) -> Result<String>`
-  - `Storage::generate_compression_summary(&self, episode_ids: &[String]) -> Result<String>` (template-based, no LLM)
-  - `Storage::get_compression_group(&self, compression_id: &str) -> Result<Vec<String>>`
-  - `Storage::list_uncompressed_episodes(&self, before: DateTime<Utc>, memory_type: MemoryType) -> Result<Vec<Episode>>`
-- **Config changes:** none
+  - `Graph::compress_episodes(&self, episode_ids: &[String]) -> Result<String>` — full pipeline
+  - `Graph::generate_compression_summary(&self, episodes: &[Episode]) -> Result<String>` — LLM call with prompt
+  - `Storage::compress_episodes(&self, episode_ids: &[String], summary: &str) -> Result<String>` — persistence only
+  - `Storage::list_uncompressed_episodes(&self, before: DateTime<Utc>) -> Result<Vec<Episode>>`
+- **Config changes:** LLM model for compression uses the Graph's default model. Per-agent compression model override can be added in A5 if needed.
 
 ### Test Plan
-- Integration: insert 5 episodes about Docker debugging, compress them, verify summary contains "Docker" and relation types
+- Integration: insert 5 episodes about Docker debugging, compress them, verify summary is a human-readable 2-3 sentence summary mentioning Docker and key outcomes (not just entity names)
 - Integration: source episodes have `compression_id` set to new summary ID
-- Integration: `list_uncompressed_episodes` returns only ungrouped episodes
+- Integration: `list_uncompressed_episodes` returns only ungrouped episodes before the given date
 - Integration: compressed episode has merged entity links from all source episodes
-- Integration: compressed episode has `compressed_at` timestamp
+- Integration: compressed episode has `memory_type: Fact` (not Pattern)
+- Integration: compressed episode is queryable via normal search and subject to normal decay
 - Unit: compressing empty episode_ids returns error
-- Unit: summary generation template produces valid human-readable text
+- Unit: LLM call failure (mocked) returns error, source episodes untouched
+- Unit: summary generation produces text (not empty, not just entity names)
 
 ---
 
@@ -970,9 +984,9 @@ D1a (co-occurrence counting) ── depends on B1, B2, A1
 | Migration | Story | Changes |
 |-----------|-------|---------|
 | 003 | A1 | Add `memory_type`, `ttl_seconds` to entities + edges + episodes (idempotent: UPDATE WHERE ttl_seconds IS NULL) |
-| 004 | A3 | Add `usage_count`, `renewal_count`, `last_recalled_at` to entities + edges; add index on `(memory_type, usage_count)` and `renewal_count` |
+| 004 | A3 | Add `usage_count`, `last_recalled_at` to entities + edges |
 | 005 | A6 | Add `archived_entities`, `archived_edges`, `system_metadata` tables (for TTL cleanup); add index on `(memory_type, created_at)` |
-| 006 | B1 | Add `compression_groups` table, `compression_id` to episodes, `compressed_at` field |
+| 006 | B1 | Add `compression_id` to episodes |
 | 007 | D2 | Add `skills` table + FTS5 index on description |
 | 008 | D3 | Add `skill_sources` table, `scope` and `created_by_agent` columns to skills |
 

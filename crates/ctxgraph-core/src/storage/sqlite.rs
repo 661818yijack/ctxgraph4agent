@@ -35,14 +35,16 @@ impl Storage {
 
     pub fn insert_episode(&self, episode: &Episode) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO episodes (id, content, source, recorded_at, metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO episodes (id, content, source, recorded_at, metadata, compression_id, memory_type)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 episode.id,
                 episode.content,
                 episode.source,
                 episode.recorded_at.to_rfc3339(),
                 episode.metadata.as_ref().map(|m| m.to_string()),
+                episode.compression_id,
+                episode.memory_type.to_string(),
             ],
         )?;
         Ok(())
@@ -50,7 +52,7 @@ impl Storage {
 
     pub fn get_episode(&self, id: &str) -> Result<Option<Episode>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, content, source, recorded_at, metadata FROM episodes WHERE id = ?1",
+            "SELECT id, content, source, recorded_at, metadata, compression_id, memory_type FROM episodes WHERE id = ?1",
         )?;
 
         let result = stmt
@@ -63,6 +65,8 @@ impl Storage {
                     metadata: row
                         .get::<_, Option<String>>(4)?
                         .and_then(|s| parse_metadata(&s)),
+                    compression_id: row.get(5)?,
+                    memory_type: MemoryType::from_db(&row.get::<_, String>(6)?),
                 })
             })
             .optional()?;
@@ -72,7 +76,7 @@ impl Storage {
 
     pub fn list_episodes(&self, limit: usize, offset: usize) -> Result<Vec<Episode>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, content, source, recorded_at, metadata
+            "SELECT id, content, source, recorded_at, metadata, compression_id, memory_type
              FROM episodes ORDER BY recorded_at DESC LIMIT ?1 OFFSET ?2",
         )?;
 
@@ -86,6 +90,8 @@ impl Storage {
                     metadata: row
                         .get::<_, Option<String>>(4)?
                         .and_then(|s| parse_metadata(&s)),
+                    compression_id: row.get(5)?,
+                    memory_type: MemoryType::from_db(&row.get::<_, String>(6)?),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -97,8 +103,8 @@ impl Storage {
 
     pub fn insert_entity(&self, entity: &Entity) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO entities (id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO entities (id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata, usage_count, last_recalled_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 entity.id,
                 entity.name,
@@ -108,6 +114,8 @@ impl Storage {
                 entity.summary,
                 entity.created_at.to_rfc3339(),
                 entity.metadata.as_ref().map(|m| m.to_string()),
+                entity.usage_count,
+                entity.last_recalled_at.map(|dt| dt.to_rfc3339()),
             ],
         )?;
         Ok(())
@@ -115,7 +123,7 @@ impl Storage {
 
     pub fn get_entity(&self, id: &str) -> Result<Option<Entity>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata
+            "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata, usage_count, last_recalled_at
              FROM entities WHERE id = ?1",
         )?;
 
@@ -132,6 +140,8 @@ impl Storage {
                     metadata: row
                         .get::<_, Option<String>>(7)?
                         .and_then(|s| parse_metadata(&s)),
+                    usage_count: row.get(8)?,
+                    last_recalled_at: row.get::<_, Option<String>>(9)?.map(|s| parse_datetime(&s)),
                 })
             })
             .optional()?;
@@ -141,7 +151,7 @@ impl Storage {
 
     pub fn get_entity_by_name(&self, name: &str) -> Result<Option<Entity>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata
+            "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata, usage_count, last_recalled_at
              FROM entities WHERE name = ?1",
         )?;
 
@@ -158,6 +168,8 @@ impl Storage {
                     metadata: row
                         .get::<_, Option<String>>(7)?
                         .and_then(|s| parse_metadata(&s)),
+                    usage_count: row.get(8)?,
+                    last_recalled_at: row.get::<_, Option<String>>(9)?.map(|s| parse_datetime(&s)),
                 })
             })
             .optional()?;
@@ -168,11 +180,11 @@ impl Storage {
     pub fn list_entities(&self, entity_type: Option<&str>, limit: usize) -> Result<Vec<Entity>> {
         let (sql, type_param);
         if let Some(et) = entity_type {
-            sql = "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata
+            sql = "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata, usage_count, last_recalled_at
                    FROM entities WHERE entity_type = ?1 ORDER BY created_at DESC LIMIT ?2";
             type_param = Some(et.to_string());
         } else {
-            sql = "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata
+            sql = "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata, usage_count, last_recalled_at
                    FROM entities ORDER BY created_at DESC LIMIT ?2";
             type_param = None;
         }
@@ -186,7 +198,7 @@ impl Storage {
             // Actually, we need different SQL. Let's handle this properly.
             drop(stmt);
             let mut stmt2 = self.conn.prepare(
-                "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata
+                "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata, usage_count, last_recalled_at
                  FROM entities ORDER BY created_at DESC LIMIT ?1",
             )?;
             let entities = stmt2
@@ -208,7 +220,7 @@ impl Storage {
         entity_type: &str,
     ) -> Result<Option<Entity>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata
+            "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata, usage_count, last_recalled_at
              FROM entities WHERE name = ?1 AND entity_type = ?2",
         )?;
 
@@ -262,8 +274,8 @@ impl Storage {
     pub fn insert_edge(&self, edge: &Edge) -> Result<()> {
         self.conn.execute(
             "INSERT INTO edges (id, source_id, target_id, relation, memory_type, ttl_seconds, fact,
-             valid_from, valid_until, recorded_at, confidence, episode_id, metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             valid_from, valid_until, recorded_at, confidence, episode_id, metadata, usage_count, last_recalled_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 edge.id,
                 edge.source_id,
@@ -278,6 +290,8 @@ impl Storage {
                 edge.confidence,
                 edge.episode_id,
                 edge.metadata.as_ref().map(|m| m.to_string()),
+                edge.usage_count,
+                edge.last_recalled_at.map(|dt| dt.to_rfc3339()),
             ],
         )?;
         Ok(())
@@ -286,7 +300,8 @@ impl Storage {
     pub fn get_edge(&self, id: &str) -> Result<Option<Edge>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact,
-                    valid_from, valid_until, recorded_at, confidence, episode_id, metadata
+                    valid_from, valid_until, recorded_at, confidence, episode_id, metadata,
+                    usage_count, last_recalled_at
              FROM edges WHERE id = ?1",
         )?;
 
@@ -298,7 +313,8 @@ impl Storage {
     pub fn get_edges_for_entity(&self, entity_id: &str) -> Result<Vec<Edge>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact,
-                    valid_from, valid_until, recorded_at, confidence, episode_id, metadata
+                    valid_from, valid_until, recorded_at, confidence, episode_id, metadata,
+                    usage_count, last_recalled_at
              FROM edges WHERE source_id = ?1 OR target_id = ?1
              ORDER BY recorded_at DESC",
         )?;
@@ -313,7 +329,8 @@ impl Storage {
     pub fn get_current_edges_for_entity(&self, entity_id: &str) -> Result<Vec<Edge>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact,
-                    valid_from, valid_until, recorded_at, confidence, episode_id, metadata
+                    valid_from, valid_until, recorded_at, confidence, episode_id, metadata,
+                    usage_count, last_recalled_at
              FROM edges
              WHERE (source_id = ?1 OR target_id = ?1) AND valid_until IS NULL
              ORDER BY recorded_at DESC",
@@ -368,6 +385,7 @@ impl Storage {
     pub fn search_episodes(&self, query: &str, limit: usize) -> Result<Vec<(Episode, f64)>> {
         let mut stmt = self.conn.prepare(
             "SELECT e.id, e.content, e.source, e.recorded_at, e.metadata,
+                    e.compression_id, e.memory_type,
                     rank
              FROM episodes_fts fts
              JOIN episodes e ON e.rowid = fts.rowid
@@ -386,8 +404,10 @@ impl Storage {
                     metadata: row
                         .get::<_, Option<String>>(4)?
                         .and_then(|s| parse_metadata(&s)),
+                    compression_id: row.get(5)?,
+                    memory_type: MemoryType::from_db(&row.get::<_, String>(6)?),
                 };
-                let rank: f64 = row.get(5)?;
+                let rank: f64 = row.get(7)?;
                 Ok((episode, -rank)) // FTS5 rank is negative (lower = better)
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -397,7 +417,7 @@ impl Storage {
 
     pub fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<(Entity, f64)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT e.id, e.name, e.entity_type, e.memory_type, e.ttl_seconds, e.summary, e.created_at, e.metadata,
+            "SELECT e.id, e.name, e.entity_type, e.memory_type, e.ttl_seconds, e.summary, e.created_at, e.metadata, e.usage_count, e.last_recalled_at,
                     rank
              FROM entities_fts fts
              JOIN entities e ON e.rowid = fts.rowid
@@ -419,8 +439,10 @@ impl Storage {
                     metadata: row
                         .get::<_, Option<String>>(7)?
                         .and_then(|s| parse_metadata(&s)),
+                    usage_count: row.get(8)?,
+                    last_recalled_at: row.get::<_, Option<String>>(9)?.map(|s| parse_datetime(&s)),
                 };
-                let rank: f64 = row.get(8)?;
+                let rank: f64 = row.get(10)?;
                 Ok((entity, -rank))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -461,6 +483,149 @@ impl Storage {
         Ok(rows)
     }
 
+    // ── Episode Compression ──
+
+    /// Generate a compression summary from source episodes.
+    ///
+    /// Reads episode contents, concatenates them (truncated to budget), and produces
+    /// a concise summary. Uses template-based summarization (no LLM dependency in core).
+    /// Returns an error if any episode_id is not found or if the list is empty.
+    pub fn generate_compression_summary(&self, episode_ids: &[String]) -> Result<String> {
+        if episode_ids.is_empty() {
+            return Err(CtxGraphError::InvalidInput(
+                "cannot compress empty episode list".to_string(),
+            ));
+        }
+
+        // Fetch all source episodes
+        let mut contents: Vec<String> = Vec::new();
+        for id in episode_ids {
+            let episode = self
+                .get_episode(id)?
+                .ok_or_else(|| CtxGraphError::NotFound(format!("episode {id} not found")))?;
+            contents.push(episode.content);
+        }
+
+        // Truncate each content to ~200 chars for the budget (~2000 chars total for 10 episodes)
+        let budget_per_episode = 200;
+        let truncated: Vec<&str> = contents
+            .iter()
+            .map(|c| {
+                if c.len() > budget_per_episode {
+                    &c[..budget_per_episode]
+                } else {
+                    c.as_str()
+                }
+            })
+            .collect();
+
+        // Build a template-based summary
+        Ok(format!(
+            "Summary of {} episodes: {}",
+            episode_ids.len(),
+            truncated.join(" | ")
+        ))
+    }
+
+    /// Compress a set of episodes into a single summary episode.
+    ///
+    /// Creates a new episode with memory_type Pattern containing a generated summary,
+    /// links all source episodes to the summary via compression_id, and merges
+    /// entity links from source episodes to the compressed episode.
+    ///
+    /// Returns the ID of the new compressed summary episode.
+    pub fn compress_episodes(&self, episode_ids: &[String]) -> Result<String> {
+        if episode_ids.is_empty() {
+            return Err(CtxGraphError::InvalidInput(
+                "cannot compress empty episode list".to_string(),
+            ));
+        }
+
+        // Generate summary from source episodes
+        let summary = self.generate_compression_summary(episode_ids)?;
+
+        // Create the compressed episode with Pattern memory_type
+        let compressed_episode = Episode {
+            id: uuid::Uuid::now_v7().to_string(),
+            content: summary,
+            source: Some("compression".to_string()),
+            recorded_at: Utc::now(),
+            metadata: Some(serde_json::json!({
+                "compressed_count": episode_ids.len(),
+            })),
+            compression_id: None,
+            memory_type: MemoryType::Pattern,
+        };
+
+        let compressed_id = compressed_episode.id.clone();
+        self.insert_episode(&compressed_episode)?;
+
+        // Set compression_id on all source episodes
+        for ep_id in episode_ids {
+            self.conn.execute(
+                "UPDATE episodes SET compression_id = ?1 WHERE id = ?2",
+                params![compressed_id, ep_id],
+            )?;
+        }
+
+        // Merge entity links from source episodes to compressed episode
+        // Collect all unique entity_ids linked to source episodes
+        let placeholders: Vec<String> = (1..=episode_ids.len()).map(|i| format!("?{i}")).collect();
+        let in_clause = placeholders.join(", ");
+
+        let sql = format!(
+            "SELECT DISTINCT entity_id FROM episode_entities WHERE episode_id IN ({in_clause})"
+        );
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let entity_ids: Vec<String> = stmt
+            .query_map(rusqlite::params_from_iter(episode_ids.iter()), |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // Link compressed episode to all merged entities
+        for entity_id in &entity_ids {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO episode_entities (episode_id, entity_id) VALUES (?1, ?2)",
+                params![compressed_id, entity_id],
+            )?;
+        }
+
+        Ok(compressed_id)
+    }
+
+    /// List episodes that have not been compressed, recorded before the given date.
+    ///
+    /// Used to find candidates for compression — old episodes without a compression_id.
+    /// Excludes Pattern-type episodes (compressed summaries never need further compression).
+    pub fn list_uncompressed_episodes(&self, before: DateTime<Utc>) -> Result<Vec<Episode>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content, source, recorded_at, metadata, compression_id, memory_type
+             FROM episodes
+             WHERE compression_id IS NULL AND memory_type != 'pattern' AND recorded_at < ?1
+             ORDER BY recorded_at ASC",
+        )?;
+
+        let episodes = stmt
+            .query_map(params![before.to_rfc3339()], |row| {
+                Ok(Episode {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    source: row.get(2)?,
+                    recorded_at: parse_datetime(&row.get::<_, String>(3)?),
+                    metadata: row
+                        .get::<_, Option<String>>(4)?
+                        .and_then(|s| parse_metadata(&s)),
+                    compression_id: row.get(5)?,
+                    memory_type: MemoryType::from_db(&row.get::<_, String>(6)?),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(episodes)
+    }
+
     // ── Stats ──
 
     pub fn stats(&self) -> Result<GraphStats> {
@@ -499,6 +664,34 @@ impl Storage {
         })
     }
 
+    // ── Touch (Usage Tracking) ──
+
+    /// Increment usage_count and set last_recalled_at for an entity.
+    pub fn touch_entity(&self, id: &str) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE entities SET usage_count = usage_count + 1, last_recalled_at = ?1 WHERE id = ?2",
+            params![Utc::now().to_rfc3339(), id],
+        )?;
+
+        if changed == 0 {
+            return Err(CtxGraphError::NotFound(format!("entity {id} not found")));
+        }
+        Ok(())
+    }
+
+    /// Increment usage_count and set last_recalled_at for an edge.
+    pub fn touch_edge(&self, id: &str) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE edges SET usage_count = usage_count + 1, last_recalled_at = ?1 WHERE id = ?2",
+            params![Utc::now().to_rfc3339(), id],
+        )?;
+
+        if changed == 0 {
+            return Err(CtxGraphError::NotFound(format!("edge {id} not found")));
+        }
+        Ok(())
+    }
+
     // ── Graph Traversal ──
 
     pub fn traverse(
@@ -530,7 +723,7 @@ impl Storage {
                   {valid_clause}
             )
             SELECT DISTINCT ent.id, ent.name, ent.entity_type, ent.memory_type, ent.ttl_seconds, ent.summary,
-                            ent.created_at, ent.metadata
+                            ent.created_at, ent.metadata, ent.usage_count, ent.last_recalled_at
             FROM traversal t
             JOIN entities ent ON ent.id = t.entity_id
             ORDER BY t.depth
@@ -551,6 +744,8 @@ impl Storage {
                     metadata: row
                         .get::<_, Option<String>>(7)?
                         .and_then(|s| parse_metadata(&s)),
+                    usage_count: row.get(8)?,
+                    last_recalled_at: row.get::<_, Option<String>>(9)?.map(|s| parse_datetime(&s)),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -577,7 +772,8 @@ impl Storage {
 
         let sql = format!(
             "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact,
-                    valid_from, valid_until, recorded_at, confidence, episode_id, metadata
+                    valid_from, valid_until, recorded_at, confidence, episode_id, metadata,
+                    usage_count, last_recalled_at
              FROM edges
              WHERE source_id IN ({in_clause}) AND target_id IN ({in_clause})
              {valid_clause}
@@ -652,6 +848,8 @@ fn map_entity_row(row: &rusqlite::Row) -> rusqlite::Result<Entity> {
         metadata: row
             .get::<_, Option<String>>(7)?
             .and_then(|s| parse_metadata(&s)),
+        usage_count: row.get(8)?,
+        last_recalled_at: row.get::<_, Option<String>>(9)?.map(|s| parse_datetime(&s)),
     })
 }
 
@@ -672,6 +870,10 @@ fn map_edge_row(row: &rusqlite::Row) -> rusqlite::Result<Edge> {
         metadata: row
             .get::<_, Option<String>>(12)?
             .and_then(|s| parse_metadata(&s)),
+        usage_count: row.get(13)?,
+        last_recalled_at: row
+            .get::<_, Option<String>>(14)?
+            .map(|s| parse_datetime(&s)),
     })
 }
 
