@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
@@ -96,12 +97,14 @@ impl Storage {
 
     pub fn insert_entity(&self, entity: &Entity) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO entities (id, name, entity_type, summary, created_at, metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO entities (id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 entity.id,
                 entity.name,
                 entity.entity_type,
+                entity.memory_type.to_string(),
+                entity.ttl.map(|d| d.as_secs() as i64),
                 entity.summary,
                 entity.created_at.to_rfc3339(),
                 entity.metadata.as_ref().map(|m| m.to_string()),
@@ -112,7 +115,7 @@ impl Storage {
 
     pub fn get_entity(&self, id: &str) -> Result<Option<Entity>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, entity_type, summary, created_at, metadata
+            "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata
              FROM entities WHERE id = ?1",
         )?;
 
@@ -122,10 +125,12 @@ impl Storage {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     entity_type: row.get(2)?,
-                    summary: row.get(3)?,
-                    created_at: parse_datetime(&row.get::<_, String>(4)?),
+                    memory_type: MemoryType::from_db(&row.get::<_, String>(3)?),
+                    ttl: row.get::<_, Option<i64>>(4)?.map(|s| Duration::from_secs(s as u64)),
+                    summary: row.get(5)?,
+                    created_at: parse_datetime(&row.get::<_, String>(6)?),
                     metadata: row
-                        .get::<_, Option<String>>(5)?
+                        .get::<_, Option<String>>(7)?
                         .and_then(|s| parse_metadata(&s)),
                 })
             })
@@ -136,7 +141,7 @@ impl Storage {
 
     pub fn get_entity_by_name(&self, name: &str) -> Result<Option<Entity>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, entity_type, summary, created_at, metadata
+            "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata
              FROM entities WHERE name = ?1",
         )?;
 
@@ -146,10 +151,12 @@ impl Storage {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     entity_type: row.get(2)?,
-                    summary: row.get(3)?,
-                    created_at: parse_datetime(&row.get::<_, String>(4)?),
+                    memory_type: MemoryType::from_db(&row.get::<_, String>(3)?),
+                    ttl: row.get::<_, Option<i64>>(4)?.map(|s| Duration::from_secs(s as u64)),
+                    summary: row.get(5)?,
+                    created_at: parse_datetime(&row.get::<_, String>(6)?),
                     metadata: row
-                        .get::<_, Option<String>>(5)?
+                        .get::<_, Option<String>>(7)?
                         .and_then(|s| parse_metadata(&s)),
                 })
             })
@@ -161,11 +168,11 @@ impl Storage {
     pub fn list_entities(&self, entity_type: Option<&str>, limit: usize) -> Result<Vec<Entity>> {
         let (sql, type_param);
         if let Some(et) = entity_type {
-            sql = "SELECT id, name, entity_type, summary, created_at, metadata
+            sql = "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata
                    FROM entities WHERE entity_type = ?1 ORDER BY created_at DESC LIMIT ?2";
             type_param = Some(et.to_string());
         } else {
-            sql = "SELECT id, name, entity_type, summary, created_at, metadata
+            sql = "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata
                    FROM entities ORDER BY created_at DESC LIMIT ?2";
             type_param = None;
         }
@@ -179,7 +186,7 @@ impl Storage {
             // Actually, we need different SQL. Let's handle this properly.
             drop(stmt);
             let mut stmt2 = self.conn.prepare(
-                "SELECT id, name, entity_type, summary, created_at, metadata
+                "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata
                  FROM entities ORDER BY created_at DESC LIMIT ?1",
             )?;
             let entities = stmt2
@@ -201,7 +208,7 @@ impl Storage {
         entity_type: &str,
     ) -> Result<Option<Entity>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, entity_type, summary, created_at, metadata
+            "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata
              FROM entities WHERE name = ?1 AND entity_type = ?2",
         )?;
 
@@ -254,14 +261,16 @@ impl Storage {
 
     pub fn insert_edge(&self, edge: &Edge) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO edges (id, source_id, target_id, relation, fact,
+            "INSERT INTO edges (id, source_id, target_id, relation, memory_type, ttl_seconds, fact,
              valid_from, valid_until, recorded_at, confidence, episode_id, metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 edge.id,
                 edge.source_id,
                 edge.target_id,
                 edge.relation,
+                edge.memory_type.to_string(),
+                edge.ttl.map(|d| d.as_secs() as i64),
                 edge.fact,
                 edge.valid_from.map(|d| d.to_rfc3339()),
                 edge.valid_until.map(|d| d.to_rfc3339()),
@@ -276,7 +285,7 @@ impl Storage {
 
     pub fn get_edge(&self, id: &str) -> Result<Option<Edge>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, source_id, target_id, relation, fact,
+            "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact,
                     valid_from, valid_until, recorded_at, confidence, episode_id, metadata
              FROM edges WHERE id = ?1",
         )?;
@@ -288,7 +297,7 @@ impl Storage {
 
     pub fn get_edges_for_entity(&self, entity_id: &str) -> Result<Vec<Edge>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, source_id, target_id, relation, fact,
+            "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact,
                     valid_from, valid_until, recorded_at, confidence, episode_id, metadata
              FROM edges WHERE source_id = ?1 OR target_id = ?1
              ORDER BY recorded_at DESC",
@@ -303,7 +312,7 @@ impl Storage {
 
     pub fn get_current_edges_for_entity(&self, entity_id: &str) -> Result<Vec<Edge>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, source_id, target_id, relation, fact,
+            "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact,
                     valid_from, valid_until, recorded_at, confidence, episode_id, metadata
              FROM edges
              WHERE (source_id = ?1 OR target_id = ?1) AND valid_until IS NULL
@@ -388,7 +397,7 @@ impl Storage {
 
     pub fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<(Entity, f64)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT e.id, e.name, e.entity_type, e.summary, e.created_at, e.metadata,
+            "SELECT e.id, e.name, e.entity_type, e.memory_type, e.ttl_seconds, e.summary, e.created_at, e.metadata,
                     rank
              FROM entities_fts fts
              JOIN entities e ON e.rowid = fts.rowid
@@ -403,13 +412,15 @@ impl Storage {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     entity_type: row.get(2)?,
-                    summary: row.get(3)?,
-                    created_at: parse_datetime(&row.get::<_, String>(4)?),
+                    memory_type: MemoryType::from_db(&row.get::<_, String>(3)?),
+                    ttl: row.get::<_, Option<i64>>(4)?.map(|s| Duration::from_secs(s as u64)),
+                    summary: row.get(5)?,
+                    created_at: parse_datetime(&row.get::<_, String>(6)?),
                     metadata: row
-                        .get::<_, Option<String>>(5)?
+                        .get::<_, Option<String>>(7)?
                         .and_then(|s| parse_metadata(&s)),
                 };
-                let rank: f64 = row.get(6)?;
+                let rank: f64 = row.get(8)?;
                 Ok((entity, -rank))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -518,8 +529,8 @@ impl Storage {
                 WHERE t.depth < ?2
                   {valid_clause}
             )
-            SELECT DISTINCT ent.id, ent.name, ent.entity_type, ent.summary,
-                            ent.created_at, ent.metadata, t.depth
+            SELECT DISTINCT ent.id, ent.name, ent.entity_type, ent.memory_type, ent.ttl_seconds, ent.summary,
+                            ent.created_at, ent.metadata
             FROM traversal t
             JOIN entities ent ON ent.id = t.entity_id
             ORDER BY t.depth
@@ -533,10 +544,12 @@ impl Storage {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     entity_type: row.get(2)?,
-                    summary: row.get(3)?,
-                    created_at: parse_datetime(&row.get::<_, String>(4)?),
+                    memory_type: MemoryType::from_db(&row.get::<_, String>(3)?),
+                    ttl: row.get::<_, Option<i64>>(4)?.map(|s| Duration::from_secs(s as u64)),
+                    summary: row.get(5)?,
+                    created_at: parse_datetime(&row.get::<_, String>(6)?),
                     metadata: row
-                        .get::<_, Option<String>>(5)?
+                        .get::<_, Option<String>>(7)?
                         .and_then(|s| parse_metadata(&s)),
                 })
             })?
@@ -563,7 +576,7 @@ impl Storage {
         };
 
         let sql = format!(
-            "SELECT id, source_id, target_id, relation, fact,
+            "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact,
                     valid_from, valid_until, recorded_at, confidence, episode_id, metadata
              FROM edges
              WHERE source_id IN ({in_clause}) AND target_id IN ({in_clause})
@@ -622,10 +635,12 @@ fn map_entity_row(row: &rusqlite::Row) -> rusqlite::Result<Entity> {
         id: row.get(0)?,
         name: row.get(1)?,
         entity_type: row.get(2)?,
-        summary: row.get(3)?,
-        created_at: parse_datetime(&row.get::<_, String>(4)?),
+        memory_type: MemoryType::from_db(&row.get::<_, String>(3)?),
+        ttl: row.get::<_, Option<i64>>(4)?.map(|s| Duration::from_secs(s as u64)),
+        summary: row.get(5)?,
+        created_at: parse_datetime(&row.get::<_, String>(6)?),
         metadata: row
-            .get::<_, Option<String>>(5)?
+            .get::<_, Option<String>>(7)?
             .and_then(|s| parse_metadata(&s)),
     })
 }
@@ -636,14 +651,16 @@ fn map_edge_row(row: &rusqlite::Row) -> rusqlite::Result<Edge> {
         source_id: row.get(1)?,
         target_id: row.get(2)?,
         relation: row.get(3)?,
-        fact: row.get(4)?,
-        valid_from: row.get::<_, Option<String>>(5)?.map(|s| parse_datetime(&s)),
-        valid_until: row.get::<_, Option<String>>(6)?.map(|s| parse_datetime(&s)),
-        recorded_at: parse_datetime(&row.get::<_, String>(7)?),
-        confidence: row.get(8)?,
-        episode_id: row.get(9)?,
+        memory_type: MemoryType::from_db(&row.get::<_, String>(4)?),
+        ttl: row.get::<_, Option<i64>>(5)?.map(|s| Duration::from_secs(s as u64)),
+        fact: row.get(6)?,
+        valid_from: row.get::<_, Option<String>>(7)?.map(|s| parse_datetime(&s)),
+        valid_until: row.get::<_, Option<String>>(8)?.map(|s| parse_datetime(&s)),
+        recorded_at: parse_datetime(&row.get::<_, String>(9)?),
+        confidence: row.get(10)?,
+        episode_id: row.get(11)?,
         metadata: row
-            .get::<_, Option<String>>(10)?
+            .get::<_, Option<String>>(12)?
             .and_then(|s| parse_metadata(&s)),
     })
 }

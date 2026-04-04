@@ -153,6 +153,27 @@ const MIGRATIONS: &[(&str, &str)] = &[
     -- We use a Rust-side check since SQLite ALTER TABLE ADD COLUMN is not idempotent
     "#,
     ),
+    (
+        "003_memory_type_and_ttl",
+        r#"
+    -- Add memory_type and ttl_seconds to entities
+    ALTER TABLE entities ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'Fact';
+    ALTER TABLE entities ADD COLUMN ttl_seconds INTEGER;
+
+    -- Add memory_type and ttl_seconds to edges
+    ALTER TABLE edges ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'Fact';
+    ALTER TABLE edges ADD COLUMN ttl_seconds INTEGER;
+
+    -- Set default TTLs for existing rows (only where ttl_seconds IS NULL for idempotency)
+    UPDATE entities SET ttl_seconds = 7776000 WHERE ttl_seconds IS NULL;
+        -- 7776000 = 90 days in seconds (Fact default)
+    UPDATE edges SET ttl_seconds = 7776000 WHERE ttl_seconds IS NULL;
+
+    -- Index for TTL cleanup queries (used by A6)
+    CREATE INDEX IF NOT EXISTS idx_entities_memory_type ON entities(memory_type);
+    CREATE INDEX IF NOT EXISTS idx_entities_created_at ON entities(created_at);
+    "#,
+    ),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
@@ -183,6 +204,32 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
                 };
                 if !has_col {
                     conn.execute_batch("ALTER TABLE entities ADD COLUMN embedding BLOB;")?;
+                }
+            } else if *version == "003_memory_type_and_ttl" {
+                // Check each column individually for idempotency
+                let has_entity_memory_type: bool = {
+                    let mut stmt = conn.prepare(
+                        "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name = 'memory_type'"
+                    )?;
+                    stmt.query_row([], |row| row.get::<_, i64>(0)).map(|n| n > 0)?
+                };
+                if !has_entity_memory_type {
+                    conn.execute_batch(
+                        "ALTER TABLE entities ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'Fact';
+                         ALTER TABLE entities ADD COLUMN ttl_seconds INTEGER;
+                         ALTER TABLE edges ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'Fact';
+                         ALTER TABLE edges ADD COLUMN ttl_seconds INTEGER;
+                         UPDATE entities SET ttl_seconds = 7776000 WHERE ttl_seconds IS NULL;
+                         UPDATE edges SET ttl_seconds = 7776000 WHERE ttl_seconds IS NULL;
+                         CREATE INDEX IF NOT EXISTS idx_entities_memory_type ON entities(memory_type);
+                         CREATE INDEX IF NOT EXISTS idx_entities_created_at ON entities(created_at);"
+                    )?;
+                } else {
+                    // Columns exist but UPDATE is safe (WHERE IS NULL is idempotent)
+                    conn.execute_batch(
+                        "UPDATE entities SET ttl_seconds = 7776000 WHERE ttl_seconds IS NULL;
+                         UPDATE edges SET ttl_seconds = 7776000 WHERE ttl_seconds IS NULL;"
+                    )?;
                 }
             } else {
                 conn.execute_batch(sql)?;

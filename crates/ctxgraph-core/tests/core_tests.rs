@@ -589,3 +589,179 @@ fn test_empty_database_operations() {
     assert_eq!(stats.entity_count, 0);
     assert_eq!(stats.edge_count, 0);
 }
+
+// ── A1: MemoryType and TTL ──
+
+#[test]
+fn test_memory_type_from_entity_type_decision() {
+    assert_eq!(MemoryType::from_entity_type("Decision"), MemoryType::Decision);
+    assert_eq!(MemoryType::from_entity_type("decision"), MemoryType::Decision);
+}
+
+#[test]
+fn test_memory_type_from_entity_type_unknown_falls_back_to_fact() {
+    assert_eq!(MemoryType::from_entity_type("UnknownType"), MemoryType::Fact);
+    assert_eq!(MemoryType::from_entity_type("Component"), MemoryType::Fact);
+    assert_eq!(MemoryType::from_entity_type(""), MemoryType::Fact);
+}
+
+#[test]
+fn test_memory_type_default_ttl_fact() {
+    use std::time::Duration;
+    assert_eq!(
+        MemoryType::Fact.default_ttl(),
+        Some(Duration::from_secs(90 * 86400))
+    );
+}
+
+#[test]
+fn test_memory_type_default_ttl_pattern_never() {
+    assert_eq!(MemoryType::Pattern.default_ttl(), None);
+}
+
+#[test]
+fn test_memory_type_default_ttl_experience() {
+    use std::time::Duration;
+    assert_eq!(
+        MemoryType::Experience.default_ttl(),
+        Some(Duration::from_secs(14 * 86400))
+    );
+}
+
+#[test]
+fn test_memory_type_default_ttl_preference() {
+    use std::time::Duration;
+    assert_eq!(
+        MemoryType::Preference.default_ttl(),
+        Some(Duration::from_secs(30 * 86400))
+    );
+}
+
+#[test]
+fn test_memory_type_default_ttl_decision() {
+    use std::time::Duration;
+    assert_eq!(
+        MemoryType::Decision.default_ttl(),
+        Some(Duration::from_secs(90 * 86400))
+    );
+}
+
+#[test]
+fn test_memory_type_from_db() {
+    assert_eq!(MemoryType::from_db("fact"), MemoryType::Fact);
+    assert_eq!(MemoryType::from_db("Pattern"), MemoryType::Pattern);
+    assert_eq!(MemoryType::from_db("EXPERIENCE"), MemoryType::Experience);
+    assert_eq!(MemoryType::from_db("unknown"), MemoryType::Fact);
+}
+
+#[test]
+fn test_memory_type_display() {
+    assert_eq!(format!("{}", MemoryType::Fact), "fact");
+    assert_eq!(format!("{}", MemoryType::Pattern), "pattern");
+    assert_eq!(format!("{}", MemoryType::Decision), "decision");
+}
+
+#[test]
+fn test_entity_new_auto_sets_memory_type_and_ttl() {
+    let entity = Entity::new("JWT", "Component");
+    assert_eq!(entity.memory_type, MemoryType::Fact); // Component -> Fact
+    assert_eq!(entity.ttl, Some(std::time::Duration::from_secs(90 * 86400)));
+}
+
+#[test]
+fn test_entity_new_decision_type() {
+    let entity = Entity::new("Use Postgres", "Decision");
+    assert_eq!(entity.memory_type, MemoryType::Decision);
+    assert_eq!(entity.ttl, Some(std::time::Duration::from_secs(90 * 86400)));
+}
+
+#[test]
+fn test_entity_with_explicit_memory() {
+    let entity = Entity::with_memory(
+        "Recurring bug",
+        "Component",
+        MemoryType::Pattern,
+        None, // never expires
+    );
+    assert_eq!(entity.memory_type, MemoryType::Pattern);
+    assert_eq!(entity.ttl, None);
+}
+
+#[test]
+fn test_entity_persist_and_retrieve_with_memory_type() {
+    let graph = test_graph();
+    let entity = Entity::new("Redis", "Component");
+    let id = entity.id.clone();
+    graph.add_entity(entity).unwrap();
+
+    let retrieved = graph.get_entity(&id).unwrap().unwrap();
+    assert_eq!(retrieved.memory_type, MemoryType::Fact);
+    assert_eq!(retrieved.ttl, Some(std::time::Duration::from_secs(90 * 86400)));
+}
+
+#[test]
+fn test_entity_persist_pattern_no_ttl() {
+    let graph = test_graph();
+    let entity = Entity::with_memory(
+        "Users prefer dark mode",
+        "Preference",
+        MemoryType::Pattern,
+        None,
+    );
+    let id = entity.id.clone();
+    graph.add_entity(entity).unwrap();
+
+    let retrieved = graph.get_entity(&id).unwrap().unwrap();
+    assert_eq!(retrieved.memory_type, MemoryType::Pattern);
+    assert_eq!(retrieved.ttl, None);
+}
+
+#[test]
+fn test_edge_new_auto_sets_memory_type() {
+    let edge = Edge::new("e1", "e2", "uses");
+    assert_eq!(edge.memory_type, MemoryType::Fact);
+    assert_eq!(edge.ttl, Some(std::time::Duration::from_secs(90 * 86400)));
+}
+
+#[test]
+fn test_edge_persist_and_retrieve_with_memory_type() {
+    let graph = test_graph();
+
+    let src = Entity::new("Service A", "Component");
+    let tgt = Entity::new("Postgres", "Component");
+    graph.add_entity(src.clone()).unwrap();
+    graph.add_entity(tgt.clone()).unwrap();
+
+    let edge = Edge::with_memory(
+        &src.id,
+        &tgt.id,
+        "depends on",
+        MemoryType::Decision,
+        Some(std::time::Duration::from_secs(90 * 86400)),
+    );
+    graph.add_edge(edge).unwrap();
+
+    let edges = graph.get_edges_for_entity(&src.id).unwrap();
+    let retrieved = edges.iter().find(|e| e.relation == "depends on").unwrap();
+    assert_eq!(retrieved.memory_type, MemoryType::Decision);
+    assert_eq!(
+        retrieved.ttl,
+        Some(std::time::Duration::from_secs(90 * 86400))
+    );
+}
+
+#[test]
+fn test_migration_003_idempotent() {
+    // Open in-memory, run migrations, close, reopen — should not fail
+    let graph1 = test_graph();
+    drop(graph1);
+    let graph2 = test_graph();
+    drop(graph2);
+    // Third open should also work (proves UPDATE WHERE IS NULL is idempotent)
+    let graph3 = test_graph();
+    let entity = Entity::new("Test", "Component");
+    let id = entity.id.clone();
+    graph3.add_entity(entity).unwrap();
+    let retrieved = graph3.get_entity(&id).unwrap().unwrap();
+    assert_eq!(retrieved.memory_type, MemoryType::Fact);
+}

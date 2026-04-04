@@ -1,5 +1,76 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use std::fmt;
+
+/// Classification of a memory's type, driving TTL and decay behavior.
+/// - Fact: stable knowledge (90d default TTL)
+/// - Pattern: recurring observation (never expires)
+/// - Experience: one-time event (14d default TTL)
+/// - Preference: user preference (30d default TTL)
+/// - Decision: architectural choice (90d default TTL)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryType {
+    Fact,
+    Pattern,
+    Experience,
+    Preference,
+    Decision,
+}
+
+impl fmt::Display for MemoryType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MemoryType::Fact => write!(f, "fact"),
+            MemoryType::Pattern => write!(f, "pattern"),
+            MemoryType::Experience => write!(f, "experience"),
+            MemoryType::Preference => write!(f, "preference"),
+            MemoryType::Decision => write!(f, "decision"),
+        }
+    }
+}
+
+impl MemoryType {
+    /// Default TTL for each memory type. None means never expires.
+    pub fn default_ttl(&self) -> Option<Duration> {
+        match self {
+            MemoryType::Fact => Some(Duration::from_secs(90 * 86400)),
+            MemoryType::Pattern => None,
+            MemoryType::Experience => Some(Duration::from_secs(14 * 86400)),
+            MemoryType::Preference => Some(Duration::from_secs(30 * 86400)),
+            MemoryType::Decision => Some(Duration::from_secs(90 * 86400)),
+        }
+    }
+
+    /// Default TTL in seconds for SQLite storage. None maps to NULL.
+    pub fn default_ttl_seconds(&self) -> Option<i64> {
+        self.default_ttl().map(|d| d.as_secs() as i64)
+    }
+
+    /// Map an entity_type string to a MemoryType. Unknown types default to Fact.
+    pub fn from_entity_type(entity_type: &str) -> Self {
+        match entity_type.to_lowercase().as_str() {
+            "decision" => MemoryType::Decision,
+            "pattern" => MemoryType::Pattern,
+            "experience" => MemoryType::Experience,
+            "preference" => MemoryType::Preference,
+            _ => MemoryType::Fact,
+        }
+    }
+
+    /// Parse from a database string (case-insensitive). Defaults to Fact on unknown.
+    pub fn from_db(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "fact" => MemoryType::Fact,
+            "pattern" => MemoryType::Pattern,
+            "experience" => MemoryType::Experience,
+            "preference" => MemoryType::Preference,
+            "decision" => MemoryType::Decision,
+            _ => MemoryType::Fact,
+        }
+    }
+}
 
 /// An episode is the fundamental unit of information.
 /// It represents "something happened" — a decision, conversation, event.
@@ -80,6 +151,8 @@ pub struct Entity {
     pub id: String,
     pub name: String,
     pub entity_type: String,
+    pub memory_type: MemoryType,
+    pub ttl: Option<Duration>,
     pub summary: Option<String>,
     pub created_at: DateTime<Utc>,
     pub metadata: Option<serde_json::Value>,
@@ -87,10 +160,27 @@ pub struct Entity {
 
 impl Entity {
     pub fn new(name: &str, entity_type: &str) -> Self {
+        let memory_type = MemoryType::from_entity_type(entity_type);
         Self {
             id: uuid::Uuid::now_v7().to_string(),
             name: name.to_string(),
             entity_type: entity_type.to_string(),
+            memory_type,
+            ttl: memory_type.default_ttl(),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+        }
+    }
+
+    /// Create an entity with explicit memory_type and ttl.
+    pub fn with_memory(name: &str, entity_type: &str, memory_type: MemoryType, ttl: Option<Duration>) -> Self {
+        Self {
+            id: uuid::Uuid::now_v7().to_string(),
+            name: name.to_string(),
+            entity_type: entity_type.to_string(),
+            memory_type,
+            ttl,
             summary: None,
             created_at: Utc::now(),
             metadata: None,
@@ -106,6 +196,8 @@ pub struct Edge {
     pub source_id: String,
     pub target_id: String,
     pub relation: String,
+    pub memory_type: MemoryType,
+    pub ttl: Option<Duration>,
     pub fact: Option<String>,
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_until: Option<DateTime<Utc>>,
@@ -122,6 +214,33 @@ impl Edge {
             source_id: source_id.to_string(),
             target_id: target_id.to_string(),
             relation: relation.to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: MemoryType::Fact.default_ttl(),
+            fact: None,
+            valid_from: None,
+            valid_until: None,
+            recorded_at: Utc::now(),
+            confidence: 1.0,
+            episode_id: None,
+            metadata: None,
+        }
+    }
+
+    /// Create an edge with explicit memory_type and ttl.
+    pub fn with_memory(
+        source_id: &str,
+        target_id: &str,
+        relation: &str,
+        memory_type: MemoryType,
+        ttl: Option<Duration>,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::now_v7().to_string(),
+            source_id: source_id.to_string(),
+            target_id: target_id.to_string(),
+            relation: relation.to_string(),
+            memory_type,
+            ttl,
             fact: None,
             valid_from: None,
             valid_until: None,
