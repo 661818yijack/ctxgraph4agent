@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 use std::fmt;
+use std::time::Duration;
 
 /// Classification of a memory's type, driving TTL and decay behavior.
 /// - Fact: stable knowledge (90d default TTL)
@@ -70,6 +70,79 @@ impl MemoryType {
             _ => MemoryType::Fact,
         }
     }
+
+    /// Compute the decay score for a memory node at the current time.
+    ///
+    /// Returns a value in [0.0, 1.0] representing freshness:
+    /// - `base_confidence` at age 0 (just created)
+    /// - Decreasing over time according to the memory type's decay curve
+    /// - 0.0 if expired (age > ttl), except Pattern which never expires
+    ///
+    /// Decay formulas:
+    /// - Exponential (Fact, Preference, Decision):
+    ///   `base_confidence * exp(-λ * age)` where `λ = ln(2) / half_life`
+    ///   - Fact/Decision: `half_life = ttl * 0.5`
+    ///   - Preference:    `half_life = ttl * 0.7`
+    /// - Linear (Experience): `base_confidence * max(0.0, 1.0 - age / ttl)`
+    /// - Constant (Pattern):  `base_confidence` (no decay, ignores ttl)
+    pub fn decay_score(
+        &self,
+        base_confidence: f64,
+        created_at: DateTime<Utc>,
+        ttl: Option<Duration>,
+    ) -> f64 {
+        // Pattern never decays regardless of ttl
+        if *self == MemoryType::Pattern {
+            return base_confidence;
+        }
+
+        let Some(ttl) = ttl else {
+            // No ttl but not a Pattern — treat as no decay
+            return base_confidence;
+        };
+
+        let ttl_secs = ttl.as_secs_f64();
+
+        // ttl=0 edge case: immediately expired
+        if ttl_secs == 0.0 {
+            return 0.0;
+        }
+
+        let age_secs = (Utc::now() - created_at).num_seconds().max(0) as f64;
+
+        // Expired check (age strictly > ttl)
+        if age_secs > ttl_secs {
+            return 0.0;
+        }
+
+        match self {
+            MemoryType::Fact | MemoryType::Decision => {
+                let half_life = ttl_secs * 0.5;
+                base_confidence * decay_exponential(age_secs, half_life)
+            }
+            MemoryType::Preference => {
+                let half_life = ttl_secs * 0.7;
+                base_confidence * decay_exponential(age_secs, half_life)
+            }
+            MemoryType::Experience => base_confidence * decay_linear(age_secs, ttl_secs),
+            MemoryType::Pattern => unreachable!(),
+        }
+    }
+}
+
+/// Exponential decay: `exp(-ln(2) / half_life * age)`
+///
+/// Returns 1.0 at age=0, 0.5 at age=half_life, approaching 0 asymptotically.
+fn decay_exponential(age_secs: f64, half_life_secs: f64) -> f64 {
+    let lambda = std::f64::consts::LN_2 / half_life_secs;
+    (-lambda * age_secs).exp()
+}
+
+/// Linear decay: `max(0.0, 1.0 - age / ttl)`
+///
+/// Returns 1.0 at age=0, 0.0 at age=ttl.
+fn decay_linear(age_secs: f64, ttl_secs: f64) -> f64 {
+    (1.0 - age_secs / ttl_secs).max(0.0)
 }
 
 /// An episode is the fundamental unit of information.
@@ -174,7 +247,12 @@ impl Entity {
     }
 
     /// Create an entity with explicit memory_type and ttl.
-    pub fn with_memory(name: &str, entity_type: &str, memory_type: MemoryType, ttl: Option<Duration>) -> Self {
+    pub fn with_memory(
+        name: &str,
+        entity_type: &str,
+        memory_type: MemoryType,
+        ttl: Option<Duration>,
+    ) -> Self {
         Self {
             id: uuid::Uuid::now_v7().to_string(),
             name: name.to_string(),

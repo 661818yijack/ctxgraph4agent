@@ -594,13 +594,22 @@ fn test_empty_database_operations() {
 
 #[test]
 fn test_memory_type_from_entity_type_decision() {
-    assert_eq!(MemoryType::from_entity_type("Decision"), MemoryType::Decision);
-    assert_eq!(MemoryType::from_entity_type("decision"), MemoryType::Decision);
+    assert_eq!(
+        MemoryType::from_entity_type("Decision"),
+        MemoryType::Decision
+    );
+    assert_eq!(
+        MemoryType::from_entity_type("decision"),
+        MemoryType::Decision
+    );
 }
 
 #[test]
 fn test_memory_type_from_entity_type_unknown_falls_back_to_fact() {
-    assert_eq!(MemoryType::from_entity_type("UnknownType"), MemoryType::Fact);
+    assert_eq!(
+        MemoryType::from_entity_type("UnknownType"),
+        MemoryType::Fact
+    );
     assert_eq!(MemoryType::from_entity_type("Component"), MemoryType::Fact);
     assert_eq!(MemoryType::from_entity_type(""), MemoryType::Fact);
 }
@@ -696,7 +705,10 @@ fn test_entity_persist_and_retrieve_with_memory_type() {
 
     let retrieved = graph.get_entity(&id).unwrap().unwrap();
     assert_eq!(retrieved.memory_type, MemoryType::Fact);
-    assert_eq!(retrieved.ttl, Some(std::time::Duration::from_secs(90 * 86400)));
+    assert_eq!(
+        retrieved.ttl,
+        Some(std::time::Duration::from_secs(90 * 86400))
+    );
 }
 
 #[test]
@@ -748,6 +760,188 @@ fn test_edge_persist_and_retrieve_with_memory_type() {
         retrieved.ttl,
         Some(std::time::Duration::from_secs(90 * 86400))
     );
+}
+
+// ── A2: decay_score ──
+
+#[test]
+fn test_decay_fact_age_zero_returns_base_confidence() {
+    // Fact at age=0 should return base_confidence exactly
+    let created_at = Utc::now();
+    let ttl = Some(std::time::Duration::from_secs(90 * 86400));
+    let score = MemoryType::Fact.decay_score(1.0, created_at, ttl);
+    assert!(
+        (score - 1.0).abs() < 1e-6,
+        "Fact at age=0 should score ~1.0, got {score}"
+    );
+}
+
+#[test]
+fn test_decay_fact_at_ttl_scores_0_25() {
+    // Fact at age=ttl with half_life=ttl/2: exp(-2*ln(2)) = 0.25
+    let ttl_secs = 90u64 * 86400;
+    let ttl = Some(std::time::Duration::from_secs(ttl_secs));
+    let created_at = Utc::now() - chrono::Duration::seconds(ttl_secs as i64);
+    let score = MemoryType::Fact.decay_score(1.0, created_at, ttl);
+    assert!(
+        (score - 0.25).abs() < 1e-6,
+        "Fact at age=ttl should score ~0.25, got {score}"
+    );
+}
+
+#[test]
+fn test_decay_fact_at_half_ttl_scores_0_5() {
+    // Fact at age=half_life (ttl/2) should score 0.5
+    let ttl_secs = 90u64 * 86400;
+    let half_life = ttl_secs / 2;
+    let ttl = Some(std::time::Duration::from_secs(ttl_secs));
+    let created_at = Utc::now() - chrono::Duration::seconds(half_life as i64);
+    let score = MemoryType::Fact.decay_score(1.0, created_at, ttl);
+    assert!(
+        (score - 0.5).abs() < 1e-4,
+        "Fact at half-life should score ~0.5, got {score}"
+    );
+}
+
+#[test]
+fn test_decay_pattern_never_decays() {
+    // Pattern returns base_confidence regardless of age
+    let created_at = Utc::now() - chrono::Duration::days(365);
+    let score = MemoryType::Pattern.decay_score(0.8, created_at, None);
+    assert_eq!(score, 0.8, "Pattern should always return base_confidence");
+
+    // Even with a ttl provided, Pattern ignores it
+    let ttl = Some(std::time::Duration::from_secs(30 * 86400));
+    let score2 = MemoryType::Pattern.decay_score(0.8, created_at, ttl);
+    assert_eq!(score2, 0.8, "Pattern should ignore ttl");
+}
+
+#[test]
+fn test_decay_experience_linear_halfway() {
+    // Experience at age=ttl/2 should score 0.5
+    let ttl_secs = 14u64 * 86400;
+    let ttl = Some(std::time::Duration::from_secs(ttl_secs));
+    let created_at = Utc::now() - chrono::Duration::seconds((ttl_secs / 2) as i64);
+    let score = MemoryType::Experience.decay_score(1.0, created_at, ttl);
+    assert!(
+        (score - 0.5).abs() < 1e-4,
+        "Experience at half-ttl should score ~0.5, got {score}"
+    );
+}
+
+#[test]
+fn test_decay_experience_at_ttl_scores_zero() {
+    // Experience linear decay hits 0.0 at age=ttl
+    let ttl_secs = 14u64 * 86400;
+    let ttl = Some(std::time::Duration::from_secs(ttl_secs));
+    let created_at = Utc::now() - chrono::Duration::seconds(ttl_secs as i64);
+    let score = MemoryType::Experience.decay_score(1.0, created_at, ttl);
+    assert!(
+        score.abs() < 1e-6,
+        "Experience at age=ttl should score ~0.0, got {score}"
+    );
+}
+
+#[test]
+fn test_decay_preference_exponential() {
+    // Preference at age=0 scores base_confidence
+    let created_at = Utc::now();
+    let ttl = Some(std::time::Duration::from_secs(30 * 86400));
+    let score = MemoryType::Preference.decay_score(1.0, created_at, ttl);
+    assert!(
+        (score - 1.0).abs() < 1e-6,
+        "Preference at age=0 should score ~1.0, got {score}"
+    );
+
+    // At age=half_life (ttl*0.7) should score ~0.5
+    let ttl_secs = 30u64 * 86400;
+    let half_life = (ttl_secs as f64 * 0.7) as i64;
+    let created_at2 = Utc::now() - chrono::Duration::seconds(half_life);
+    let ttl2 = Some(std::time::Duration::from_secs(ttl_secs));
+    let score2 = MemoryType::Preference.decay_score(1.0, created_at2, ttl2);
+    assert!(
+        (score2 - 0.5).abs() < 1e-4,
+        "Preference at half-life should score ~0.5, got {score2}"
+    );
+}
+
+#[test]
+fn test_decay_decision_same_as_fact() {
+    // Decision uses same exponential as Fact (half_life = ttl * 0.5)
+    let ttl_secs = 90u64 * 86400;
+    let ttl = Some(std::time::Duration::from_secs(ttl_secs));
+
+    let created_at = Utc::now() - chrono::Duration::seconds(ttl_secs as i64);
+    let fact_score = MemoryType::Fact.decay_score(1.0, created_at, ttl);
+    let decision_score = MemoryType::Decision.decay_score(1.0, created_at, ttl);
+    assert!(
+        (fact_score - decision_score).abs() < 1e-10,
+        "Decision and Fact should have identical decay: fact={fact_score}, decision={decision_score}"
+    );
+}
+
+#[test]
+fn test_decay_expired_returns_zero() {
+    // Age > ttl should return 0.0
+    let ttl_secs = 90u64 * 86400;
+    let ttl = Some(std::time::Duration::from_secs(ttl_secs));
+    // Create 91 days ago — one day past ttl
+    let created_at = Utc::now() - chrono::Duration::days(91);
+
+    assert_eq!(MemoryType::Fact.decay_score(1.0, created_at, ttl), 0.0);
+    assert_eq!(
+        MemoryType::Experience.decay_score(1.0, created_at, ttl),
+        0.0
+    );
+    assert_eq!(
+        MemoryType::Preference.decay_score(1.0, created_at, ttl),
+        0.0
+    );
+    assert_eq!(MemoryType::Decision.decay_score(1.0, created_at, ttl), 0.0);
+}
+
+#[test]
+fn test_decay_ttl_none_returns_base_confidence() {
+    // Non-pattern with ttl=None returns base_confidence
+    let created_at = Utc::now() - chrono::Duration::days(100);
+    let score = MemoryType::Fact.decay_score(0.9, created_at, None);
+    assert_eq!(score, 0.9);
+}
+
+#[test]
+fn test_decay_ttl_zero_returns_zero() {
+    let created_at = Utc::now();
+    let ttl = Some(std::time::Duration::from_secs(0));
+    assert_eq!(MemoryType::Fact.decay_score(1.0, created_at, ttl), 0.0);
+    assert_eq!(
+        MemoryType::Experience.decay_score(1.0, created_at, ttl),
+        0.0
+    );
+}
+
+#[test]
+fn test_decay_scores_in_range() {
+    // All decay functions must return values in [0.0, 1.0]
+    let types = [
+        MemoryType::Fact,
+        MemoryType::Pattern,
+        MemoryType::Experience,
+        MemoryType::Preference,
+        MemoryType::Decision,
+    ];
+    let ages_days = [0i64, 7, 14, 30, 45, 90, 100, 365];
+
+    for mt in &types {
+        let ttl = mt.default_ttl();
+        for &age in &ages_days {
+            let created_at = Utc::now() - chrono::Duration::days(age);
+            let score = mt.decay_score(1.0, created_at, ttl);
+            assert!(
+                (0.0..=1.0).contains(&score),
+                "{mt:?} at age={age}d score={score} out of range"
+            );
+        }
+    }
 }
 
 #[test]
