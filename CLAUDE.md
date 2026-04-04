@@ -74,6 +74,35 @@ decay_function for experiences: linear drop to 0 at TTL
 
 A 3-day-old experience is more relevant than a 10-day-old one. A pattern from 6 months ago is equally relevant to one from yesterday.
 
+### Memory Lifecycle Timeline
+
+```
+Age 0          → freshly stored, full confidence
+Age 3 months   → RE-VERIFY threshold (Phase C triggers)
+                  Default retrieval window ends here
+Age 6 months   → CLEANUP threshold (Phase A6 sweeps)
+                  Expanded retrieval window ends here
+Age > 6 months → candidate for deletion or archival
+```
+
+**Retrieval policy (tiered):**
+- Default window: last 3 months (fast, relevant)
+- Expanded window: last 6 months (on demand, ask user to expand)
+- Beyond 6 months: manual/explicit query only
+
+**Why 3 months:** Facts, decisions, and preferences have 90-day TTLs. At 3 months, the system should re-verify stale memories (Phase C). After re-verification, TTL resets if still valid.
+
+**Why 6 months:** The cleanup sweep (Phase A6) purges memories that survived decay but were never re-verified. Experiences (14d TTL) and preferences (30d TTL) are long gone by 6 months.
+
+**Phase mapping:**
+| Age | Phase | Action |
+|-----|-------|--------|
+| 0-3 months | Normal | Full retrieval, normal decay |
+| 3 months | Phase C (Re-verify) | Surface stale memories for re-verification |
+| 3-6 months | Post-re-verify | Only re-verified + Pattern memories survive |
+| 6 months | Phase A6 (Cleanup) | Sweep expired/unverified memories |
+| > 6 months | Archive | Manual query only or deleted |
+
 ### 5. Re-verify (to build)
 Before a node expires, the system can trigger re-verification:
 

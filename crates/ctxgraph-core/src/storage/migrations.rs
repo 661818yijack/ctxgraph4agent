@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 
 use crate::error::Result;
 
@@ -206,31 +206,54 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
                     conn.execute_batch("ALTER TABLE entities ADD COLUMN embedding BLOB;")?;
                 }
             } else if *version == "003_memory_type_and_ttl" {
-                // Check each column individually for idempotency
-                let has_entity_memory_type: bool = {
-                    let mut stmt = conn.prepare(
-                        "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name = 'memory_type'"
-                    )?;
-                    stmt.query_row([], |row| row.get::<_, i64>(0)).map(|n| n > 0)?
-                };
-                if !has_entity_memory_type {
+                // Check each column independently on BOTH tables for safe partial-migration recovery.
+                // If interrupted mid-ALTER (e.g. entities gets columns but edges doesn't),
+                // reopening should add only the missing columns.
+                fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool> {
+                    let mut stmt =
+                        conn.prepare("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2")?;
+                    stmt.query_row(params![table, col], |row| row.get::<_, i64>(0))
+                        .map(|n| n > 0)
+                        .map_err(Into::into)
+                }
+
+                if !column_exists(conn, "entities", "memory_type")? {
                     conn.execute_batch(
-                        "ALTER TABLE entities ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'Fact';
-                         ALTER TABLE entities ADD COLUMN ttl_seconds INTEGER;
-                         ALTER TABLE edges ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'Fact';
-                         ALTER TABLE edges ADD COLUMN ttl_seconds INTEGER;
-                         UPDATE entities SET ttl_seconds = 7776000 WHERE ttl_seconds IS NULL;
-                         UPDATE edges SET ttl_seconds = 7776000 WHERE ttl_seconds IS NULL;
-                         CREATE INDEX IF NOT EXISTS idx_entities_memory_type ON entities(memory_type);
-                         CREATE INDEX IF NOT EXISTS idx_entities_created_at ON entities(created_at);"
-                    )?;
-                } else {
-                    // Columns exist but UPDATE is safe (WHERE IS NULL is idempotent)
-                    conn.execute_batch(
-                        "UPDATE entities SET ttl_seconds = 7776000 WHERE ttl_seconds IS NULL;
-                         UPDATE edges SET ttl_seconds = 7776000 WHERE ttl_seconds IS NULL;"
+                        "ALTER TABLE entities ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'Fact';",
                     )?;
                 }
+                if !column_exists(conn, "entities", "ttl_seconds")? {
+                    conn.execute_batch("ALTER TABLE entities ADD COLUMN ttl_seconds INTEGER;")?;
+                }
+                if !column_exists(conn, "edges", "memory_type")? {
+                    conn.execute_batch(
+                        "ALTER TABLE edges ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'Fact';",
+                    )?;
+                }
+                if !column_exists(conn, "edges", "ttl_seconds")? {
+                    conn.execute_batch("ALTER TABLE edges ADD COLUMN ttl_seconds INTEGER;")?;
+                }
+
+                // Backfill memory_type from entity_type for known types so pre-A1 rows
+                // with entity_type='Decision' etc. get the correct memory_type instead of 'Fact'.
+                conn.execute_batch(
+                    "UPDATE entities SET memory_type = LOWER(entity_type)
+                     WHERE entity_type IN ('Decision', 'Pattern', 'Experience', 'Preference');",
+                )?;
+
+                // Set default TTLs for existing rows (idempotent: only where ttl_seconds IS NULL)
+                conn.execute_batch(
+                    "UPDATE entities SET ttl_seconds = 7776000 WHERE ttl_seconds IS NULL;
+                     UPDATE edges SET ttl_seconds = 7776000 WHERE ttl_seconds IS NULL;",
+                )?;
+
+                // Indexes for lifecycle/cleanup queries (A6 and beyond)
+                conn.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_entities_memory_type ON entities(memory_type);
+                     CREATE INDEX IF NOT EXISTS idx_entities_created_at ON entities(created_at);
+                     CREATE INDEX IF NOT EXISTS idx_edges_memory_type ON edges(memory_type);
+                     CREATE INDEX IF NOT EXISTS idx_edges_recorded_at ON edges(recorded_at);",
+                )?;
             } else {
                 conn.execute_batch(sql)?;
             }

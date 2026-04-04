@@ -127,10 +127,7 @@ impl Graph {
         config_path: &Path,
     ) -> Result<()> {
         let config_content = std::fs::read_to_string(config_path).map_err(|e| {
-            CtxGraphError::Extraction(format!(
-                "failed to read {}: {e}",
-                config_path.display()
-            ))
+            CtxGraphError::Extraction(format!("failed to read {}: {e}", config_path.display()))
         })?;
 
         // Parse the full TOML
@@ -148,10 +145,7 @@ impl Graph {
         // Load LLM config section
         let llm_config: ctxgraph_extract::llm_extract::LlmConfig =
             if let Some(llm_table) = toml_value.get("llm") {
-                llm_table
-                    .clone()
-                    .try_into()
-                    .unwrap_or_default()
+                llm_table.clone().try_into().unwrap_or_default()
             } else {
                 Default::default()
             };
@@ -162,13 +156,9 @@ impl Graph {
             .and_then(|v| v.as_float())
             .unwrap_or(0.5);
 
-        let pipeline = ExtractionPipeline::with_llm_config(
-            schema,
-            models_dir,
-            confidence,
-            &llm_config,
-        )
-        .map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
+        let pipeline =
+            ExtractionPipeline::with_llm_config(schema, models_dir, confidence, &llm_config)
+                .map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
 
         self.pipeline = Some(pipeline);
         Ok(())

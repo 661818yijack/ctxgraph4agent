@@ -21,8 +21,8 @@ pub fn open_graph() -> ctxgraph::Result<Graph> {
     if let Some(models_dir) = find_models_dir(&db_path) {
         // Look for ctxgraph.toml next to .ctxgraph/ directory
         let config_path = db_path
-            .parent()                    // .ctxgraph/
-            .and_then(|p| p.parent())    // project root
+            .parent() // .ctxgraph/
+            .and_then(|p| p.parent()) // project root
             .map(|p| p.join("ctxgraph.toml"));
 
         let result = if let Some(ref cfg) = config_path {

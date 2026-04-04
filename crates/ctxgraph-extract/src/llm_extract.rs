@@ -1,9 +1,9 @@
-//! LLM-based entity and relation extraction via OpenRouter API.
+//! LLM-based entity and relation extraction via MiniMax API.
 //!
 //! Opt-in fallback for cross-domain extraction when local models (GLiNER/NuNER)
-//! produce low-confidence results. Activated by setting `OPENROUTER_API_KEY`.
+//! produce low-confidence results. Activated by setting `MINIMAX_API_KEY`.
 //!
-//! Default model: `google/gemini-2.0-flash-001` (~$0.0003/episode).
+//! Default model: `minimax-portal/MiniMax-M2.7-highspeed`.
 //! Override with `CTXGRAPH_LLM_MODEL`.
 
 use serde::{Deserialize, Serialize};
@@ -12,19 +12,19 @@ use crate::ner::ExtractedEntity;
 use crate::rel::ExtractedRelation;
 use crate::schema::ExtractionSchema;
 
-const DEFAULT_MODEL: &str = "gpt-4o-mini";
-const DEFAULT_URL: &str = "https://api.openai.com/v1/chat/completions";
+const DEFAULT_MODEL: &str = "minimax-portal/MiniMax-M2.7-highspeed";
+const DEFAULT_URL: &str = "https://api.minimax.io/anthropic/chat/completions";
 
 /// LLM extraction engine — works with any OpenAI-compatible endpoint.
 ///
-/// Supports: nvidia-litellm-router (free), OpenRouter, Ollama, OpenAI, Anthropic.
+/// Supports: MiniMax (default), Ollama, OpenAI, Anthropic, OpenRouter, NVIDIA.
 /// When the `cloakpipe` feature is enabled, PII is detected and stripped before
 /// any text is sent to the LLM, then entity names are mapped back after extraction.
 ///
 /// Configured via environment variables or ctxgraph.toml:
-/// - `CTXGRAPH_LLM_URL`: API base URL (default: localhost:4000 for nvidia-litellm-router)
-/// - `CTXGRAPH_LLM_KEY`: API key (or `OPENROUTER_API_KEY` for backward compat)
-/// - `CTXGRAPH_LLM_MODEL`: Model name (default: nvidia-auto)
+/// - `CTXGRAPH_LLM_URL`: API base URL (default: MiniMax endpoint)
+/// - `CTXGRAPH_LLM_KEY`: API key (or `MINIMAX_API_KEY` for backward compat)
+/// - `CTXGRAPH_LLM_MODEL`: Model name (default: minimax-portal/MiniMax-M2.7-highspeed)
 pub struct LlmExtractor {
     client: reqwest::blocking::Client,
     api_key: String,
@@ -120,7 +120,7 @@ pub enum LlmError {
 /// LLM configuration — can be loaded from TOML or environment variables.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LlmConfig {
-    /// Provider name: "openrouter", "ollama", "openai", "anthropic", "nvidia", or "custom"
+    /// Provider name: "minimax", "openrouter", "ollama", "openai", "anthropic", "nvidia", or "custom"
     #[serde(default)]
     pub provider: String,
     /// API key (or env var name to read from, if prefixed with "env:")
@@ -157,10 +157,10 @@ impl LlmExtractor {
         } else if !config.api_key_env.is_empty() {
             std::env::var(&config.api_key_env).ok()?
         } else {
-            // Infer from provider
             match config.provider.as_str() {
                 "nvidia" => "sk-litellm-master".to_string(),
                 "ollama" => "ollama".to_string(),
+                "minimax" => std::env::var("MINIMAX_API_KEY").ok()?,
                 "openrouter" => std::env::var("OPENROUTER_API_KEY").ok()?,
                 "openai" => std::env::var("OPENAI_API_KEY").ok()?,
                 "anthropic" => std::env::var("ANTHROPIC_API_KEY").ok()?,
@@ -178,6 +178,7 @@ impl LlmExtractor {
             match config.provider.as_str() {
                 "nvidia" => "http://localhost:4000/v1/chat/completions".to_string(),
                 "ollama" => "http://localhost:11434/v1/chat/completions".to_string(),
+                "minimax" => "https://api.minimax.io/anthropic/chat/completions".to_string(),
                 "openrouter" => "https://openrouter.ai/api/v1/chat/completions".to_string(),
                 "openai" => "https://api.openai.com/v1/chat/completions".to_string(),
                 "anthropic" => "https://api.anthropic.com/v1/chat/completions".to_string(),
@@ -191,6 +192,7 @@ impl LlmExtractor {
             match config.provider.as_str() {
                 "nvidia" => "nvidia-auto".to_string(),
                 "ollama" => "qwen2.5:7b".to_string(),
+                "minimax" => "minimax-portal/MiniMax-M2.7-highspeed".to_string(),
                 "openrouter" => "openai/gpt-4o-mini".to_string(),
                 "openai" => "gpt-4o-mini".to_string(),
                 "anthropic" => "claude-3-5-haiku-20241022".to_string(),
@@ -213,48 +215,24 @@ impl LlmExtractor {
 
     /// Create a new LLM extractor from environment variables.
     ///
-    /// Tries in order:
-    /// 1. `CTXGRAPH_LLM_KEY` + `CTXGRAPH_LLM_URL` (explicit config)
-    /// 2. `OPENAI_API_KEY` (OpenAI direct — default, best quality)
-    /// 3. `ANTHROPIC_API_KEY` (Anthropic direct)
-    /// 4. `OPENROUTER_API_KEY` (OpenRouter — multi-provider)
-    ///
-    /// Returns `None` if no API key is found.
+    /// Checks `MINIMAX_API_KEY` only.
+    /// Returns `None` if not set (silent local-only mode).
     pub fn from_env() -> Option<Self> {
-        let (api_key, default_url) = if let Ok(key) = std::env::var("CTXGRAPH_LLM_KEY") {
+        let api_key = if let Ok(key) = std::env::var("CTXGRAPH_LLM_KEY") {
             if key.is_empty() {
                 return None;
             }
-            (key, DEFAULT_URL.to_string())
-        } else if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+            key
+        } else if let Ok(key) = std::env::var("MINIMAX_API_KEY") {
             if key.is_empty() {
                 return None;
             }
-            (
-                key,
-                "https://api.openai.com/v1/chat/completions".to_string(),
-            )
-        } else if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-            if key.is_empty() {
-                return None;
-            }
-            (
-                key,
-                "https://api.anthropic.com/v1/chat/completions".to_string(),
-            )
-        } else if let Ok(key) = std::env::var("OPENROUTER_API_KEY") {
-            if key.is_empty() {
-                return None;
-            }
-            (
-                key,
-                "https://openrouter.ai/api/v1/chat/completions".to_string(),
-            )
+            key
         } else {
             return None;
         };
 
-        let url = std::env::var("CTXGRAPH_LLM_URL").unwrap_or(default_url);
+        let url = std::env::var("CTXGRAPH_LLM_URL").unwrap_or_else(|_| DEFAULT_URL.to_string());
         let model =
             std::env::var("CTXGRAPH_LLM_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
 
@@ -397,7 +375,6 @@ RULES:
                 let span_end = if span_start > 0 {
                     span_start + name.len()
                 } else {
-                    // Fallback: try original name
                     text.find(&e.name).map(|s| s + e.name.len()).unwrap_or(0)
                 };
                 ExtractedEntity {
@@ -420,11 +397,9 @@ RULES:
         text: &str,
         schema: &ExtractionSchema,
     ) -> Result<LlmExtractionResult, LlmError> {
-        // Try strict JSON schema first
         if let Ok(result) = self.extract_strict(text, schema) {
             return Ok(result);
         }
-        // Fall back to prompt-based JSON for small models
         self.extract_prompt_json(text, schema)
     }
 
@@ -484,7 +459,6 @@ RULES:
         let parsed: LlmResponse = serde_json::from_str(content)
             .map_err(|e| LlmError::Parse(format!("JSON parse: {e}\nRaw: {content}")))?;
 
-        // Map to internal types
         let entities = parsed
             .entities
             .into_iter()
@@ -493,7 +467,7 @@ RULES:
                 span_end: text.find(&e.name).map(|s| s + e.name.len()).unwrap_or(0),
                 text: e.name,
                 entity_type: e.entity_type,
-                confidence: 1.0, // LLM doesn't provide confidence
+                confidence: 1.0,
             })
             .collect();
 
@@ -514,8 +488,6 @@ RULES:
         })
     }
 
-    /// Fallback: prompt-based JSON extraction for small models that don't support
-    /// structured output / json_schema response format.
     fn extract_prompt_json(
         &self,
         text: &str,
@@ -586,7 +558,6 @@ Text: "{text}"
             .and_then(|c| c.message.content.as_deref())
             .ok_or_else(|| LlmError::Parse("empty response".into()))?;
 
-        // Extract JSON from the response — small models sometimes wrap it in markdown
         let json_str = extract_json_from_response(raw);
 
         let parsed: LlmResponse = serde_json::from_str(json_str)
@@ -630,30 +601,26 @@ Text: "{text}"
 }
 
 /// Extract JSON object from LLM response that may contain markdown fences,
-/// `<think>` tags, or other preamble.
+/// ` thinker ` tags, or other preamble.
 fn extract_json_from_response(raw: &str) -> &str {
-    // Strip <think>...</think> tags (Qwen, DeepSeek reasoning models)
-    let stripped = if let Some(think_end) = raw.find("</think>") {
+    let stripped = if let Some(think_end) = raw.find("</think >") {
         raw[think_end + 8..].trim()
     } else {
         raw
     };
 
-    // Try to find JSON between ```json ... ``` markers
     if let Some(start) = stripped.find("```json") {
         let after = &stripped[start + 7..];
         if let Some(end) = after.find("```") {
             return after[..end].trim();
         }
     }
-    // Try to find JSON between ``` ... ``` markers
     if let Some(start) = stripped.find("```") {
         let after = &stripped[start + 3..];
         if let Some(end) = after.find("```") {
             return after[..end].trim();
         }
     }
-    // Try to find { ... } directly
     if let Some(start) = stripped.find('{')
         && let Some(end) = stripped.rfind('}')
     {
@@ -753,7 +720,6 @@ pub fn pseudonymize_for_llm(text: &str) -> (String, std::collections::HashMap<St
     use cloakpipe_core::replacer::Replacer;
     use cloakpipe_core::vault::Vault;
 
-    // Use detection config with patterns + financial only (no NER to avoid GLiNER conflict)
     let config_toml = r#"
 secrets = true
 financial = true
@@ -801,7 +767,7 @@ enabled = false
 
     let mut vault = Vault::ephemeral();
     match Replacer::pseudonymize(text, &entities, &mut vault) {
-        Ok(result) => (result.text, result.mappings), // mappings: token → original
+        Ok(result) => (result.text, result.mappings),
         Err(_) => (text.to_string(), std::collections::HashMap::new()),
     }
 }
@@ -815,7 +781,6 @@ pub fn rehydrate_entities(
     entities
         .into_iter()
         .map(|mut e| {
-            // Check if entity text matches any pseudo-token (token → original)
             if let Some(original) = mappings.get(&e.text) {
                 e.text = original.clone();
             }
@@ -827,18 +792,14 @@ pub fn rehydrate_entities(
 fn canonicalize_llm_entity(name: &str, text: &str) -> String {
     let mut result = name.to_string();
 
-    // Strip leading articles
     for prefix in ["the ", "The ", "a ", "A ", "an ", "An "] {
         if result.starts_with(prefix) {
             result = result[prefix.len()..].to_string();
         }
     }
 
-    // Strip possessive 's (e.g., "Epic's MyChart" → "Epic MyChart")
     result = result.replace("'s ", " ");
 
-    // Strip verbose suffixes ONLY when the trimmed version is a proper noun
-    // or known entity. Avoid stripping meaningful parts like "report generation".
     let safe_suffixes = [
         " LMS",
         " EHR",
@@ -854,7 +815,6 @@ fn canonicalize_llm_entity(name: &str, text: &str) -> String {
     for suffix in &safe_suffixes {
         if result.ends_with(suffix) {
             let trimmed = &result[..result.len() - suffix.len()];
-            // Only strip if trimmed is at least 3 chars and found in text
             if trimmed.len() >= 3 && text.to_lowercase().contains(&trimmed.to_lowercase()) {
                 result = trimmed.to_string();
                 break;
@@ -862,7 +822,6 @@ fn canonicalize_llm_entity(name: &str, text: &str) -> String {
         }
     }
 
-    // If result doesn't appear in text but original does, keep original
     if !text.to_lowercase().contains(&result.to_lowercase())
         && text.to_lowercase().contains(&name.to_lowercase())
     {

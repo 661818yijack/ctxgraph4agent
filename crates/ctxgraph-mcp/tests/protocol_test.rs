@@ -58,7 +58,10 @@ fn test_initialize_result_shape() {
     assert!(result["capabilities"]["tools"].is_object());
     assert_eq!(result["serverInfo"]["name"].as_str().unwrap(), "ctxgraph");
     // Version should match the crate version (no longer hardcoded)
-    assert_eq!(result["serverInfo"]["version"].as_str().unwrap(), env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        result["serverInfo"]["version"].as_str().unwrap(),
+        env!("CARGO_PKG_VERSION")
+    );
 }
 
 #[test]

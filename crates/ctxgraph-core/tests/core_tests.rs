@@ -946,16 +946,28 @@ fn test_decay_scores_in_range() {
 
 #[test]
 fn test_migration_003_idempotent() {
-    // Open in-memory, run migrations, close, reopen — should not fail
-    let graph1 = test_graph();
-    drop(graph1);
-    let graph2 = test_graph();
-    drop(graph2);
-    // Third open should also work (proves UPDATE WHERE IS NULL is idempotent)
-    let graph3 = test_graph();
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    // First open: fresh DB, migration runs
+    let graph1 = ctxgraph::Graph::open_or_create(&db_path).unwrap();
     let entity = Entity::new("Test", "Component");
     let id = entity.id.clone();
-    graph3.add_entity(entity).unwrap();
-    let retrieved = graph3.get_entity(&id).unwrap().unwrap();
+    graph1.add_entity(entity).unwrap();
+    drop(graph1);
+
+    // Second open: same DB, migration re-runs (idempotent)
+    let graph2 = ctxgraph::Graph::open_or_create(&db_path).unwrap();
+    let retrieved = graph2.get_entity(&id).unwrap().unwrap();
     assert_eq!(retrieved.memory_type, MemoryType::Fact);
+    assert_eq!(
+        retrieved.ttl,
+        Some(std::time::Duration::from_secs(90 * 86400))
+    );
+    drop(graph2);
+
+    // Third open: verify still works after double migration
+    let graph3 = ctxgraph::Graph::open_or_create(&db_path).unwrap();
+    let retrieved2 = graph3.get_entity(&id).unwrap().unwrap();
+    assert_eq!(retrieved2.memory_type, MemoryType::Fact);
 }

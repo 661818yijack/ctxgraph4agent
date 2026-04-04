@@ -126,7 +126,7 @@ impl Storage {
                     name: row.get(1)?,
                     entity_type: row.get(2)?,
                     memory_type: MemoryType::from_db(&row.get::<_, String>(3)?),
-                    ttl: row.get::<_, Option<i64>>(4)?.map(|s| Duration::from_secs(s as u64)),
+                    ttl: row.get::<_, Option<i64>>(4)?.and_then(parse_ttl_seconds),
                     summary: row.get(5)?,
                     created_at: parse_datetime(&row.get::<_, String>(6)?),
                     metadata: row
@@ -152,7 +152,7 @@ impl Storage {
                     name: row.get(1)?,
                     entity_type: row.get(2)?,
                     memory_type: MemoryType::from_db(&row.get::<_, String>(3)?),
-                    ttl: row.get::<_, Option<i64>>(4)?.map(|s| Duration::from_secs(s as u64)),
+                    ttl: row.get::<_, Option<i64>>(4)?.and_then(parse_ttl_seconds),
                     summary: row.get(5)?,
                     created_at: parse_datetime(&row.get::<_, String>(6)?),
                     metadata: row
@@ -413,7 +413,7 @@ impl Storage {
                     name: row.get(1)?,
                     entity_type: row.get(2)?,
                     memory_type: MemoryType::from_db(&row.get::<_, String>(3)?),
-                    ttl: row.get::<_, Option<i64>>(4)?.map(|s| Duration::from_secs(s as u64)),
+                    ttl: row.get::<_, Option<i64>>(4)?.and_then(parse_ttl_seconds),
                     summary: row.get(5)?,
                     created_at: parse_datetime(&row.get::<_, String>(6)?),
                     metadata: row
@@ -545,7 +545,7 @@ impl Storage {
                     name: row.get(1)?,
                     entity_type: row.get(2)?,
                     memory_type: MemoryType::from_db(&row.get::<_, String>(3)?),
-                    ttl: row.get::<_, Option<i64>>(4)?.map(|s| Duration::from_secs(s as u64)),
+                    ttl: row.get::<_, Option<i64>>(4)?.and_then(parse_ttl_seconds),
                     summary: row.get(5)?,
                     created_at: parse_datetime(&row.get::<_, String>(6)?),
                     metadata: row
@@ -619,6 +619,16 @@ fn parse_datetime(s: &str) -> DateTime<Utc> {
         })
 }
 
+/// Safely convert a ttl_seconds value from DB (i64) to Duration.
+/// Negative values (corrupted data) are treated as None to avoid wrapping to huge durations.
+fn parse_ttl_seconds(secs: i64) -> Option<Duration> {
+    if secs >= 0 {
+        Some(Duration::from_secs(secs as u64))
+    } else {
+        None
+    }
+}
+
 /// Parse a JSON metadata string, logging a warning on failure instead of silently dropping data.
 fn parse_metadata(s: &str) -> Option<serde_json::Value> {
     match serde_json::from_str(s) {
@@ -636,7 +646,7 @@ fn map_entity_row(row: &rusqlite::Row) -> rusqlite::Result<Entity> {
         name: row.get(1)?,
         entity_type: row.get(2)?,
         memory_type: MemoryType::from_db(&row.get::<_, String>(3)?),
-        ttl: row.get::<_, Option<i64>>(4)?.map(|s| Duration::from_secs(s as u64)),
+        ttl: row.get::<_, Option<i64>>(4)?.and_then(parse_ttl_seconds),
         summary: row.get(5)?,
         created_at: parse_datetime(&row.get::<_, String>(6)?),
         metadata: row
@@ -652,7 +662,7 @@ fn map_edge_row(row: &rusqlite::Row) -> rusqlite::Result<Edge> {
         target_id: row.get(2)?,
         relation: row.get(3)?,
         memory_type: MemoryType::from_db(&row.get::<_, String>(4)?),
-        ttl: row.get::<_, Option<i64>>(5)?.map(|s| Duration::from_secs(s as u64)),
+        ttl: row.get::<_, Option<i64>>(5)?.and_then(parse_ttl_seconds),
         fact: row.get(6)?,
         valid_from: row.get::<_, Option<String>>(7)?.map(|s| parse_datetime(&s)),
         valid_until: row.get::<_, Option<String>>(8)?.map(|s| parse_datetime(&s)),
