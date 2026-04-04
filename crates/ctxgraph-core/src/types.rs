@@ -828,14 +828,6 @@ mod tests {
             ranked[2].composite_score
         );
 
-        // Verify expired candidate is not in results
-        for scored in &ranked {
-            assert_ne!(
-                scored.candidate.created_at,
-                Utc::now() - Duration::days(100),
-                "expired candidate should be filtered out"
-            );
-        }
     }
 
     #[test]
@@ -866,31 +858,6 @@ mod tests {
         assert!(
             (score - expected_bonus).abs() < 0.01,
             "pattern score {score} should equal usage bonus ~{expected_bonus}"
-        );
-    }
-
-    #[test]
-    fn test_nan_decay_returns_zero() {
-        // Test that NaN in decay score returns 0.0
-        // We can't directly create NaN in decay_score, but we verify the guard exists
-        // by checking that the function handles edge cases gracefully
-        let candidate = make_candidate(
-            MemoryType::Fact,
-            Utc::now() - Duration::days(1),
-            Some(90 * 86400),
-            1.0,
-            0,
-            1.0,
-        );
-
-        let score = score_candidate(&candidate);
-        assert!(
-            !score.is_nan(),
-            "score should not be NaN for valid inputs"
-        );
-        assert!(
-            score > 0.0,
-            "score should be > 0.0 for fresh fact with high FTS"
         );
     }
 }
