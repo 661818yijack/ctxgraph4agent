@@ -216,7 +216,7 @@ impl ExtractionPipeline {
             // - Few entities for text length (density < 1.5 per 10 words)
             // - Low average confidence (GLiNER unsure)
             // - Low valid type ratio (GLiNER assigning wrong types)
-            // - Text is complex (contains version numbers, URLs, stack traces)
+            // - Text is complex (contains multiple strong incident/code signals)
             //   which suggests messy real-world data where GLiNER struggles
             let unique_entity_count = {
                 let mut names: Vec<String> =
@@ -226,17 +226,18 @@ impl ExtractionPipeline {
                 names.len()
             };
             let text_lower = text.to_lowercase();
-            let looks_complex = text_lower.contains('@')
-                || text_lower.contains("v2")
-                || text_lower.contains("v3")
-                || text_lower.contains("#")
-                || text_lower.contains("::")
-                || text_lower.contains("->")
-                || text_lower.contains("stack")
-                || text_lower.contains("error:")
-                || text_lower.contains("broke")
-                || text_lower.contains("outage")
-                || text_lower.contains("incident");
+            let complexity_signals = [
+                text_lower.contains('@'),
+                text_lower.contains("#"),
+                text_lower.contains("::"),
+                text_lower.contains("->"),
+                text_lower.contains("outage"),
+                text_lower.contains("incident"),
+            ]
+            .into_iter()
+            .filter(|present| *present)
+            .count();
+            let looks_complex = complexity_signals >= 2;
             let very_sparse = word_count > 25 && unique_entity_count < 5;
 
             let should_escalate = entity_density < 1.5
