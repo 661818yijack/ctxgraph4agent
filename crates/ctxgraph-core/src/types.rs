@@ -458,6 +458,423 @@ pub struct CompressionGroupData {
     pub entities: Vec<Entity>,
 }
 
+// ── Retrieval Types (A4a + A4b) ───────────────────────────────────────────
+
+/// A candidate retrieved for scoring and ranking (A4a).
+///
+/// Produced by the candidate retrieval step before scoring.
+/// Contains all information needed for composite scoring in A4b.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievalCandidate {
+    /// Entity ID if this candidate is an entity, otherwise None.
+    pub entity_id: Option<String>,
+    /// Edge ID if this candidate is an edge, otherwise None.
+    pub edge_id: Option<String>,
+    /// Content preview for display.
+    pub content: String,
+    /// FTS5 BM25 score (raw, may exceed 1.0).
+    pub fts_score: f64,
+    /// Memory type driving TTL and decay behavior.
+    pub memory_type: MemoryType,
+    /// When this memory was created.
+    pub created_at: DateTime<Utc>,
+    /// Time-to-live for this memory (None = never expires).
+    pub ttl: Option<Duration>,
+    /// Base confidence at creation time.
+    pub base_confidence: f64,
+    /// How many times this memory has been recalled.
+    pub usage_count: u32,
+}
+
+/// A candidate with its composite score (A4b).
+///
+/// Returned by `score_candidate` and `Graph::rank_candidates`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoredCandidate {
+    /// The original retrieval candidate.
+    pub candidate: RetrievalCandidate,
+    /// Composite score = decay_score * normalized_fts_score * (1.0 + 0.1 * ln(1 + usage_count))
+    pub composite_score: f64,
+}
+
+/// Compute the composite score for a retrieval candidate.
+///
+/// Formula: `decay_score * normalized_fts_score * (1.0 + 0.1 * ln(1 + usage_count))`
+///
+/// - `decay_score`: freshness from MemoryType::decay_score (0.0 for expired)
+/// - `normalized_fts_score`: BM25 score clamped to [0.0, 1.0]
+/// - Usage bonus: `(1.0 + 0.1 * ln(1 + usage_count))` — 1.0 at usage_count=0
+///
+/// Special cases:
+/// - Expired memories (decay_score = 0.0): returns 0.0
+/// - Patterns: score is `max(score, 0.5)` to ensure visibility
+pub fn score_candidate(candidate: &RetrievalCandidate) -> f64 {
+    // Compute decay score
+    let decay = candidate.memory_type.decay_score(
+        candidate.base_confidence,
+        candidate.created_at,
+        candidate.ttl,
+    );
+
+    // Expired memories get score 0.0
+    if decay == 0.0 {
+        return 0.0;
+    }
+
+    // Normalize FTS score to [0.0, 1.0] range
+    // BM25 can exceed 1.0 for very relevant results, so we clamp
+    let normalized_fts = candidate.fts_score.clamp(0.0, 1.0);
+
+    // Usage bonus: (1.0 + 0.1 * ln(1 + usage_count))
+    // usage_count=0 → bonus = 1.0
+    // usage_count=100 → bonus ≈ 1.46
+    let usage_bonus = 1.0 + 0.1 * (1.0 + candidate.usage_count as f64).ln();
+
+    let score = decay * normalized_fts * usage_bonus;
+
+    // Patterns get a floor of 0.5
+    if candidate.memory_type == MemoryType::Pattern {
+        score.max(0.5)
+    } else {
+        score
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    fn make_candidate(
+        memory_type: MemoryType,
+        created_at: DateTime<Utc>,
+        ttl_seconds: Option<i64>,
+        base_confidence: f64,
+        usage_count: u32,
+        fts_score: f64,
+    ) -> RetrievalCandidate {
+        RetrievalCandidate {
+            entity_id: Some("test-entity".to_string()),
+            edge_id: None,
+            content: "test content".to_string(),
+            fts_score,
+            memory_type,
+            created_at,
+            ttl: ttl_seconds.map(|s| Duration::seconds(s).to_std().unwrap()),
+            base_confidence,
+            usage_count,
+        }
+    }
+
+    #[test]
+    fn test_fresh_fact_scores_higher_than_stale_with_high_usage() {
+        // Fresh fact: created 1 day ago, 90d TTL, high FTS, usage=10
+        let fresh = make_candidate(
+            MemoryType::Fact,
+            Utc::now() - Duration::days(1),
+            Some(90 * 86400),
+            1.0,
+            10,
+            0.8,
+        );
+
+        // Stale fact: created 60 days ago, 90d TTL, high FTS, usage=0
+        let stale = make_candidate(
+            MemoryType::Fact,
+            Utc::now() - Duration::days(60),
+            Some(90 * 86400),
+            1.0,
+            0,
+            0.8,
+        );
+
+        let fresh_score = score_candidate(&fresh);
+        let stale_score = score_candidate(&stale);
+
+        assert!(
+            fresh_score > stale_score,
+            "fresh={fresh_score} should score higher than stale={stale_score}"
+        );
+    }
+
+    #[test]
+    fn test_pattern_gets_minimum_0_5_floor() {
+        // Pattern with very low FTS score
+        let pattern = make_candidate(
+            MemoryType::Pattern,
+            Utc::now() - Duration::days(100),
+            None, // patterns never expire
+            1.0,
+            0,
+            0.1, // very low FTS
+        );
+
+        let score = score_candidate(&pattern);
+        assert!(score >= 0.5, "pattern score {score} should be at least 0.5");
+    }
+
+    #[test]
+    fn test_expired_memory_gets_zero_score() {
+        // Fact created 100 days ago with 90d TTL (expired)
+        let expired = make_candidate(
+            MemoryType::Fact,
+            Utc::now() - Duration::days(100),
+            Some(90 * 86400),
+            1.0,
+            5,
+            0.9,
+        );
+
+        let score = score_candidate(&expired);
+        assert_eq!(score, 0.0, "expired memory should have score 0.0");
+    }
+
+    #[test]
+    fn test_usage_count_zero_gives_no_bonus() {
+        // usage_count=0 should give bonus factor of 1.0
+        // Use a pattern (never decays) to isolate the usage bonus
+        let candidate = make_candidate(
+            MemoryType::Pattern,
+            Utc::now() - Duration::days(1),
+            None, // patterns never decay
+            1.0,
+            0,
+            1.0,
+        );
+
+        // decay=1.0 (pattern), normalized_fts=1.0, bonus=1.0
+        let score = score_candidate(&candidate);
+        // Score should be close to 1.0 (decay * fts * bonus = 1.0 * 1.0 * 1.0)
+        assert!(
+            (score - 1.0).abs() < 0.001,
+            "usage_count=0 should give bonus factor 1.0, score={score}"
+        );
+    }
+
+    #[test]
+    fn test_usage_count_100_gives_diminishing_returns_bonus() {
+        // usage_count=100 should give bonus factor ≈ 1 + 0.1*ln(101) ≈ 1.46
+        // Use a pattern (never decays) to isolate the usage bonus
+        let candidate = make_candidate(
+            MemoryType::Pattern,
+            Utc::now() - Duration::days(1),
+            None, // patterns never decay
+            1.0,
+            100,
+            1.0,
+        );
+
+        let expected_bonus = 1.0 + 0.1 * (1.0_f64 + 100.0_f64).ln();
+        // For pattern: score = max(1.0 * 1.0 * bonus, 0.5) = bonus
+        let expected_score = expected_bonus;
+
+        let score = score_candidate(&candidate);
+        assert!(
+            (score - expected_score).abs() < 0.01,
+            "usage_count=100 should give bonus ~1.46, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_composite_score_range_is_bounded() {
+        // Create various candidates and verify score range
+        let test_cases = vec![
+            make_candidate(
+                MemoryType::Fact,
+                Utc::now() - Duration::days(1),
+                Some(90 * 86400),
+                1.0,
+                0,
+                1.0,
+            ),
+            make_candidate(
+                MemoryType::Fact,
+                Utc::now() - Duration::days(1),
+                Some(90 * 86400),
+                1.0,
+                100,
+                1.0,
+            ),
+            make_candidate(
+                MemoryType::Pattern,
+                Utc::now() - Duration::days(1),
+                None,
+                1.0,
+                0,
+                0.1,
+            ),
+            make_candidate(
+                MemoryType::Experience,
+                Utc::now() - Duration::days(7),
+                Some(14 * 86400),
+                1.0,
+                50,
+                0.5,
+            ),
+        ];
+
+        for candidate in test_cases {
+            let score = score_candidate(&candidate);
+            assert!(
+                score >= 0.0 && score <= 1.5,
+                "score {score} should be in [0.0, 1.5] range"
+            );
+        }
+    }
+}
+
+// ── Skill Types (D2 + D3) ─────────────────────────────────────────────────
+
+/// Scope of a skill — determines visibility across agents (D3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SkillScope {
+    /// Only visible to the agent that created it.
+    #[default]
+    Private,
+    /// Visible to all agents.
+    Shared,
+}
+
+impl fmt::Display for SkillScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SkillScope::Private => write!(f, "private"),
+            SkillScope::Shared => write!(f, "shared"),
+        }
+    }
+}
+
+impl SkillScope {
+    /// Parse from a database string (case-insensitive).
+    pub fn from_db(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "shared" => SkillScope::Shared,
+            _ => SkillScope::Private,
+        }
+    }
+}
+
+/// Provenance metadata for a skill — tracks why and how a skill was created (D2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillProvenance {
+    /// Reasoning explaining why this skill was created.
+    pub reasoning: String,
+    /// Alternative approaches that were considered and rejected.
+    pub alternatives_rejected: Option<String>,
+    /// Assumptions made during skill creation.
+    pub assumptions: Option<String>,
+    /// Context facts that support this skill.
+    pub context_facts: Option<String>,
+    /// When this provenance was last verified.
+    pub verified_at: DateTime<Utc>,
+    /// When this provenance expires (different fields have different TTLs).
+    pub expires_at: DateTime<Utc>,
+    /// How many times this provenance has been renewed.
+    pub renewal_count: u32,
+}
+
+/// A skill — behavioral knowledge about what worked, what failed, and what
+/// the user preferred. Higher-level abstraction than a pattern (D2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Skill {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub trigger_condition: String,
+    pub action: String,
+    pub success_count: u32,
+    pub failure_count: u32,
+    pub confidence: f64,
+    pub superseded_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub entity_types: Vec<String>,
+    pub provenance: Option<SkillProvenance>,
+    /// Scope of the skill — Private (agent-only) or Shared (all agents) (D3).
+    pub scope: SkillScope,
+    /// The agent that created this skill (D3).
+    pub created_by_agent: String,
+}
+
+impl Skill {
+    /// Compute confidence from success/failure counts.
+    pub fn compute_confidence(success_count: u32, failure_count: u32) -> f64 {
+        let total = success_count + failure_count;
+        if total == 0 {
+            0.5 // neutral confidence when no data
+        } else {
+            success_count as f64 / total as f64
+        }
+    }
+
+    /// Generate provenance with configurable TTLs (D2 AC11).
+    pub fn generate_provenance(
+        reasoning: String,
+        source_summaries: &[String],
+        reasoning_ttl_days: i64,
+        context_facts_ttl_days: i64,
+    ) -> SkillProvenance {
+        let now = Utc::now();
+        // expires_at uses the shorter of the two TTLs
+        let min_ttl = reasoning_ttl_days.min(context_facts_ttl_days);
+        SkillProvenance {
+            reasoning,
+            alternatives_rejected: None,
+            assumptions: None,
+            context_facts: if source_summaries.is_empty() {
+                None
+            } else {
+                Some(source_summaries.join("; "))
+            },
+            verified_at: now,
+            expires_at: now + chrono::Duration::days(min_ttl),
+            renewal_count: 0,
+        }
+    }
+}
+
+/// A draft skill — intermediate struct produced by SkillCreator before LLM synthesis (D2).
+#[derive(Debug, Clone)]
+pub struct DraftSkill {
+    pub entity_types: Vec<String>,
+    pub success_count: u32,
+    pub failure_count: u32,
+    pub source_pattern_ids: Vec<String>,
+    pub source_summaries: Vec<String>,
+}
+
+/// Configuration for skill creation — defines success/failure relations (D2 AC4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillCreatorConfig {
+    /// Edge relations that indicate success (default: ["fixed", "resolved", "success"]).
+    pub success_relations: Vec<String>,
+    /// Edge relations that indicate failure (default: ["deprecated", "failed", "abandoned"]).
+    pub failure_relations: Vec<String>,
+    /// TTL in days for provenance reasoning field (default: 180).
+    pub reasoning_ttl_days: i64,
+    /// TTL in days for provenance context_facts field (default: 90).
+    pub context_facts_ttl_days: i64,
+}
+
+impl Default for SkillCreatorConfig {
+    fn default() -> Self {
+        Self {
+            success_relations: vec![
+                "fixed".to_string(),
+                "resolved".to_string(),
+                "success".to_string(),
+            ],
+            failure_relations: vec![
+                "deprecated".to_string(),
+                "failed".to_string(),
+                "abandoned".to_string(),
+            ],
+            reasoning_ttl_days: 180,
+            context_facts_ttl_days: 90,
+        }
+    }
+}
+
 /// A pattern candidate extracted from co-occurrence analysis.
 ///
 /// Each candidate represents something that appears repeatedly across
@@ -481,4 +898,22 @@ pub struct PatternCandidate {
     pub confidence: f64,
     /// Human-readable description (populated by D1b LLM step; always None for D1a).
     pub description: Option<String>,
+}
+
+/// The result of a full learning pipeline run (D4).
+///
+/// Aggregates the outcomes from D1a (pattern extraction), D1b (description),
+/// D2 (skill creation), and D3 (supersession).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearningOutcome {
+    /// Total pattern candidates found in D1a.
+    pub patterns_found: usize,
+    /// Pattern candidates that were new (not duplicates of stored patterns).
+    pub patterns_new: usize,
+    /// Skills successfully created in D2.
+    pub skills_created: usize,
+    /// Existing skills superseded by new skills.
+    pub skills_updated: usize,
+    /// IDs of all skills created.
+    pub skill_ids: Vec<String>,
 }

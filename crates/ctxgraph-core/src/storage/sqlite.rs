@@ -10,7 +10,7 @@ use crate::storage::migrations::run_migrations;
 use crate::types::*;
 
 pub struct Storage {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl Storage {
@@ -888,6 +888,197 @@ impl Storage {
         Ok(id)
     }
 
+    // ── Skills (D2 + D3) ──────────────────────────────────────────────────
+
+    /// Create a new skill in the database.
+    ///
+    /// Stores the skill with all fields, serializing `entity_types` and
+    /// `provenance` as JSON strings.
+    pub fn create_skill(&self, skill: &Skill) -> Result<()> {
+        let entity_types_json = serde_json::to_string(&skill.entity_types)?;
+        let provenance_json = match skill.provenance.as_ref() {
+            Some(p) => Some(serde_json::to_string(p)?),
+            None => None,
+        };
+
+        self.conn.execute(
+            "INSERT INTO skills (id, name, description, trigger_condition, action,
+             success_count, failure_count, confidence, superseded_by, created_at,
+             entity_types, provenance, scope, created_by_agent)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                skill.id,
+                skill.name,
+                skill.description,
+                skill.trigger_condition,
+                skill.action,
+                skill.success_count,
+                skill.failure_count,
+                skill.confidence,
+                skill.superseded_by,
+                skill.created_at.to_rfc3339(),
+                entity_types_json,
+                provenance_json,
+                skill.scope.to_string(),
+                skill.created_by_agent,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// List all active (non-superseded) skills.
+    ///
+    /// Returns skills where `superseded_by IS NULL`, ordered by `created_at DESC`.
+    pub fn list_skills(&self) -> Result<Vec<Skill>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, trigger_condition, action,
+                    success_count, failure_count, confidence, superseded_by,
+                    created_at, entity_types, provenance, scope, created_by_agent
+             FROM skills
+             WHERE superseded_by IS NULL
+             ORDER BY created_at DESC",
+        )?;
+
+        let skills = stmt
+            .query_map([], map_skill_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(skills)
+    }
+
+    /// List all skills including superseded ones.
+    pub fn list_all_skills(&self) -> Result<Vec<Skill>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, trigger_condition, action,
+                    success_count, failure_count, confidence, superseded_by,
+                    created_at, entity_types, provenance, scope, created_by_agent
+             FROM skills
+             ORDER BY created_at DESC",
+        )?;
+
+        let skills = stmt
+            .query_map([], map_skill_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(skills)
+    }
+
+    /// Get a single skill by ID.
+    pub fn get_skill(&self, id: &str) -> Result<Option<Skill>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, trigger_condition, action,
+                    success_count, failure_count, confidence, superseded_by,
+                    created_at, entity_types, provenance, scope, created_by_agent
+             FROM skills WHERE id = ?1",
+        )?;
+
+        let result = stmt.query_row(params![id], map_skill_row).optional()?;
+        Ok(result)
+    }
+
+    /// Supersede a skill by setting its `superseded_by` field.
+    ///
+    /// The old skill is kept for audit but excluded from retrieval via `list_skills`.
+    pub fn supersede_skill(&self, skill_id: &str, superseded_by: &str) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE skills SET superseded_by = ?1 WHERE id = ?2 AND superseded_by IS NULL",
+            params![superseded_by, skill_id],
+        )?;
+
+        if changed == 0 {
+            return Err(CtxGraphError::NotFound(format!(
+                "skill {skill_id} not found or already superseded"
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Change a skill's scope from Private to Shared (D3).
+    ///
+    /// This is a one-way operation — skills cannot be un-shared.
+    pub fn share_skill(&self, skill_id: &str) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE skills SET scope = 'shared' WHERE id = ?1 AND scope = 'private'",
+            params![skill_id],
+        )?;
+
+        if changed == 0 {
+            return Err(CtxGraphError::NotFound(format!(
+                "skill {skill_id} not found or already shared"
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Get skills for a specific agent (D3).
+    ///
+    /// Returns shared skills (visible to all agents) plus private skills
+    /// owned by the specified agent. Superseded skills are excluded.
+    pub fn get_skills_for_agent(&self, agent: &str) -> Result<Vec<Skill>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, trigger_condition, action,
+                    success_count, failure_count, confidence, superseded_by,
+                    created_at, entity_types, provenance, scope, created_by_agent
+             FROM skills
+             WHERE superseded_by IS NULL
+               AND (scope = 'shared' OR created_by_agent = ?1)
+             ORDER BY created_at DESC",
+        )?;
+
+        let skills = stmt
+            .query_map(params![agent], map_skill_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(skills)
+    }
+
+    /// Search skills via FTS5 full-text search.
+    ///
+    /// Searches both name and description fields. Returns skills ordered
+    /// by FTS5 relevance (rank). Only active (non-superseded) skills are returned.
+    pub fn search_skills(&self, query: &str, limit: usize) -> Result<Vec<(Skill, f64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.name, s.description, s.trigger_condition, s.action,
+                    s.success_count, s.failure_count, s.confidence, s.superseded_by,
+                    s.created_at, s.entity_types, s.provenance, s.scope, s.created_by_agent,
+                    fts.rank
+             FROM skills_fts fts
+             JOIN skills s ON s.id = fts.skill_id
+             WHERE skills_fts MATCH ?1 AND s.superseded_by IS NULL
+             ORDER BY fts.rank
+             LIMIT ?2",
+        )?;
+
+        let results = stmt
+            .query_map(params![query, limit as i64], |row| {
+                let skill = Skill {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    trigger_condition: row.get(3)?,
+                    action: row.get(4)?,
+                    success_count: row.get(5)?,
+                    failure_count: row.get(6)?,
+                    confidence: row.get(7)?,
+                    superseded_by: row.get(8)?,
+                    created_at: parse_datetime(&row.get::<_, String>(9)?),
+                    entity_types: parse_json_vec(&row.get::<_, Option<String>>(10)?),
+                    provenance: row
+                        .get::<_, Option<String>>(11)?
+                        .and_then(|s| serde_json::from_str(&s).ok()),
+                    scope: SkillScope::from_db(&row.get::<_, String>(12)?),
+                    created_by_agent: row.get(13)?,
+                };
+                let rank: f64 = row.get(14)?;
+                Ok((skill, -rank)) // FTS5 rank is negative (lower = better)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(results)
+    }
+
     /// Get all stored patterns (LearnedPattern entities).
     ///
     /// Returns `PatternCandidate` objects with descriptions populated from the
@@ -970,6 +1161,35 @@ fn truncate_at_word_boundary(s: &str, max_len: usize) -> String {
     } else {
         truncated.to_string()
     }
+}
+
+/// Parse a JSON string into a Vec<String>. Returns empty vec on parse failure.
+fn parse_json_vec(s: &Option<String>) -> Vec<String> {
+    match s {
+        None => Vec::new(),
+        Some(json_str) => serde_json::from_str(json_str).unwrap_or_default(),
+    }
+}
+
+fn map_skill_row(row: &rusqlite::Row) -> rusqlite::Result<Skill> {
+    Ok(Skill {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        description: row.get(2)?,
+        trigger_condition: row.get(3)?,
+        action: row.get(4)?,
+        success_count: row.get(5)?,
+        failure_count: row.get(6)?,
+        confidence: row.get(7)?,
+        superseded_by: row.get(8)?,
+        created_at: parse_datetime(&row.get::<_, String>(9)?),
+        entity_types: parse_json_vec(&row.get::<_, Option<String>>(10)?),
+        provenance: row
+            .get::<_, Option<String>>(11)?
+            .and_then(|s| serde_json::from_str(&s).ok()),
+        scope: SkillScope::from_db(&row.get::<_, String>(12)?),
+        created_by_agent: row.get(13)?,
+    })
 }
 
 fn map_entity_row(row: &rusqlite::Row) -> rusqlite::Result<Entity> {

@@ -1,6 +1,7 @@
 pub mod decisions;
 pub mod entities;
 pub mod init;
+pub mod learn;
 pub mod log;
 pub mod mcp;
 pub mod models;

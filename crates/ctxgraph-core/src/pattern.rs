@@ -142,6 +142,12 @@ impl OccurrenceEntry {
     }
 }
 
+impl Default for PatternExtractor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PatternExtractor {
     /// Create a new `PatternExtractor` instance.
     ///
@@ -199,13 +205,13 @@ impl PatternExtractor {
 
             // Count entity types from all entities in the group (dedup by type)
             for entity in &group.entities {
-                if counted_this_group.insert(entity.id.clone()) {
-                    if counted_types_this_group.insert(entity.entity_type.clone()) {
-                        type_counts
-                            .entry(entity.entity_type.clone())
-                            .and_modify(|e| e.increment(gid))
-                            .or_insert_with(|| OccurrenceEntry::new(gid));
-                    }
+                if counted_this_group.insert(entity.id.clone())
+                    && counted_types_this_group.insert(entity.entity_type.clone())
+                {
+                    type_counts
+                        .entry(entity.entity_type.clone())
+                        .and_modify(|e| e.increment(gid))
+                        .or_insert_with(|| OccurrenceEntry::new(gid));
                 }
             }
 
@@ -255,6 +261,7 @@ impl PatternExtractor {
                 }
 
                 // Also count entity types for source and target if not already counted
+                #[allow(clippy::collapsible_if)]
                 if let Some(src_type) = entity_type_map.get(&edge.source_id) {
                     if counted_types_this_group.insert(src_type.clone()) {
                         type_counts
@@ -263,6 +270,7 @@ impl PatternExtractor {
                             .or_insert_with(|| OccurrenceEntry::new(gid));
                     }
                 }
+                #[allow(clippy::collapsible_if)]
                 if let Some(tgt_type) = entity_type_map.get(&edge.target_id) {
                     if counted_types_this_group.insert(tgt_type.clone()) {
                         type_counts

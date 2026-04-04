@@ -198,6 +198,51 @@ const MIGRATIONS: &[(&str, &str)] = &[
     CREATE INDEX IF NOT EXISTS idx_episodes_memory_type ON episodes(memory_type);
     "#,
     ),
+    (
+        "007_skills_table",
+        r#"
+    CREATE TABLE IF NOT EXISTS skills (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        trigger_condition TEXT NOT NULL,
+        action TEXT NOT NULL,
+        success_count INTEGER NOT NULL DEFAULT 0,
+        failure_count INTEGER NOT NULL DEFAULT 0,
+        confidence REAL NOT NULL DEFAULT 0.0,
+        superseded_by TEXT,
+        created_at TEXT NOT NULL,
+        entity_types TEXT NOT NULL DEFAULT '[]',
+        provenance TEXT,
+        scope TEXT NOT NULL DEFAULT 'private',
+        created_by_agent TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts USING fts5(skill_id, name, description);
+
+    CREATE INDEX IF NOT EXISTS idx_skills_superseded ON skills(superseded_by);
+    CREATE INDEX IF NOT EXISTS idx_skills_scope ON skills(scope);
+    CREATE INDEX IF NOT EXISTS idx_skills_agent ON skills(created_by_agent);
+
+    -- FTS5 triggers to keep skills_fts in sync
+    CREATE TRIGGER IF NOT EXISTS skills_ai AFTER INSERT ON skills BEGIN
+        INSERT INTO skills_fts(skill_id, name, description)
+        VALUES (new.id, new.name, new.description);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS skills_ad AFTER DELETE ON skills BEGIN
+        INSERT INTO skills_fts(skills_fts, rowid, skill_id, name, description)
+        VALUES ('delete', old.rowid, old.id, old.name, old.description);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS skills_au AFTER UPDATE ON skills BEGIN
+        INSERT INTO skills_fts(skills_fts, rowid, skill_id, name, description)
+        VALUES ('delete', old.rowid, old.id, old.name, old.description);
+        INSERT INTO skills_fts(skill_id, name, description)
+        VALUES (new.id, new.name, new.description);
+    END;
+    "#,
+    ),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {

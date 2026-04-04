@@ -67,6 +67,29 @@ enum Commands {
     /// Show graph statistics
     Stats,
 
+    /// Run the learning pipeline to extract patterns and create skills
+    Learn {
+        /// Show what would be learned without persisting
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skill scope: private or shared
+        #[arg(long, default_value = "private")]
+        scope: String,
+
+        /// Maximum number of skills to create per run
+        #[arg(long, default_value = "50")]
+        limit: usize,
+
+        /// Agent name (for scope tracking)
+        #[arg(long, default_value = "assistant")]
+        agent: String,
+
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
     /// Manage ONNX models
     Models {
         #[command(subcommand)]
@@ -168,6 +191,25 @@ fn main() {
             DecisionsAction::Show { id } => commands::decisions::show(id),
         },
         Commands::Stats => commands::stats::run(),
+        Commands::Learn {
+            dry_run,
+            scope,
+            limit,
+            agent,
+            format,
+        } => {
+            let scope = match scope.as_str() {
+                "shared" => ctxgraph::SkillScope::Shared,
+                _ => ctxgraph::SkillScope::Private,
+            };
+            commands::learn::run(commands::learn::LearnOptions {
+                dry_run,
+                scope,
+                limit,
+                agent,
+                format,
+            })
+        }
         Commands::Models { action } => match action {
             ModelsAction::Download => commands::models::download(),
         },

@@ -9,6 +9,7 @@
 > configurable, C4 update format defined, D2 success/failure relations configurable, D2 skill synthesis template→LLM + DraftSkill pipeline + memory_type: Pattern removed (skills not entities) + confidence formula + provenance renewal_count separated from C2 + LLM failure fallback + deferred provenance-entity linking/success_count live updates/provenance re-evaluation
 > D3 simplified: skill_sources table→columns on skills table, persistence AC removed, skill budget integration defined (0.8 floor score), sharing irreversibility documented as POC,
 > D4 pipeline defined (D1a→D1b→dedup→D2→D3), --limit caps skills not patterns, --format json added, --agent flag added, dedup/supersession check added, edge case tests added
+> A5 review fixes: decisions_ttl default fixed to never (matches CLAUDE.md), compress_after=14d default added to AC2, max_episodes default 1000 added, fallback resolution test added, default_agent config key defined (AC8)
 
 ## Phase A: TTL + Decay (Foundation)
 
@@ -278,13 +279,14 @@ Implement the budget enforcement step that greedily fills a token budget from ra
 Extend `ctxgraph.toml` with a `[policies.<agent_name>]` section that configures TTL, budget, and compression settings per agent. Each policy specifies TTLs per memory_type, memory_budget_tokens, compress_after duration, max_episodes, max_patterns_included, and stale_threshold. The `MemoryPolicyConfig` struct is loaded alongside the existing `ExtractionSchema`. A `set_policy` MCP tool allows runtime policy changes (session override only — not persisted to file; persisted policies must be written to ctxgraph.toml). The `retrieve_for_context` method (A4c) uses the active agent's policy.
 
 ### Acceptance Criteria
-1. `ctxgraph.toml` supports `[policies.<name>]` with keys: `facts_ttl`, `experiences_ttl`, `patterns_ttl` (always "never"), `preferences_ttl`, `decisions_ttl`, `memory_budget_tokens`, `compress_after`, `max_episodes`, `max_patterns_included` (default 50), `stale_threshold` (default 0.3), `provenance_ttl_days` (default 180), `context_ttl_days` (default 90)
-2. `MemoryPolicyConfig` struct deserializes from TOML with defaults matching the assistant policy from CLAUDE.md (facts=90d, experiences=14d, patterns=never, preferences=30d, decisions=90d, budget=20000, provenance_ttl_days=180, context_ttl_days=90)
+1. `ctxgraph.toml` supports `[policies.<name>]` with keys: `facts_ttl`, `experiences_ttl`, `patterns_ttl` (always "never"), `preferences_ttl`, `decisions_ttl`, `memory_budget_tokens`, `compress_after`, `max_episodes` (default 1000), `max_patterns_included` (default 50), `stale_threshold` (default 0.3), `provenance_ttl_days` (default 180), `context_ttl_days` (default 90)
+2. `MemoryPolicyConfig` struct deserializes from TOML with defaults matching the assistant policy from CLAUDE.md (facts=90d, experiences=14d, patterns=never, preferences=30d, decisions=never, budget=20000, compress_after=14d, provenance_ttl_days=180, context_ttl_days=90)
 3. `ctxgraph.toml.example` updated with the policies section
 4. New MCP tool `set_policy` allows changing TTL/budget at runtime for the active agent (session override, not persisted)
 5. `Graph::init` loads policies from `.ctxgraph/ctxgraph.toml` if present, falls back to defaults
 6. Invalid policy values (e.g. negative TTL, budget < 1000) produce a clear error
 7. Validation warning if `compress_after < 7` days (logged but not blocking)
+8. Config section `[policies]` supports optional `default_agent = "assistant"` key — used by CLI commands (D4's `--agent` flag default) and MCP session context
 
 ### Technical Requirements
 - **Files to create/modify:**
@@ -301,6 +303,7 @@ Extend `ctxgraph.toml` with a `[policies.<agent_name>]` section that configures 
 - Unit: invalid TTL string like "banana" returns `CtxGraphError::Schema(...)`
 - Unit: policy with budget < 1000 returns validation error
 - Unit: compress_after = 3 days logs warning but still parses
+- Unit: `for_agent` with unknown agent name returns default policy (fallback behavior)
 - Integration: `Graph::init` creates DB and loads default policy
 - Integration: MCP `set_policy` tool changes budget, subsequent retrievals use new budget (session-scoped)
 - Integration: MCP `set_policy` does not write to ctxgraph.toml file
