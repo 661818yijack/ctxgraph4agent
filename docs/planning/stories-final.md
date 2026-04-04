@@ -7,6 +7,8 @@
 > A3 trimmed: renewal_count deferred to C2, touch_many/get_usage_stats/MemoryTable/indexes removed, effort M→S, B1 summary template→LLM + memory_type Pattern→Fact + LLM moved to Graph layer + fallback added, D1b description template→LLM + ExtractedPattern/PatternEvidence types removed + known simplification documented, B3 compression no longer runs every query, C2 uses renewal_count
 > not usage_count, C1 uses entity_id matching with confidence threshold, C3 stale_threshold
 > configurable, C4 update format defined, D2 success/failure relations configurable, D2 skill synthesis template→LLM + DraftSkill pipeline + memory_type: Pattern removed (skills not entities) + confidence formula + provenance renewal_count separated from C2 + LLM failure fallback + deferred provenance-entity linking/success_count live updates/provenance re-evaluation
+> D3 simplified: skill_sources table→columns on skills table, persistence AC removed, skill budget integration defined (0.8 floor score), sharing irreversibility documented as POC,
+> D4 pipeline defined (D1a→D1b→dedup→D2→D3), --limit caps skills not patterns, --format json added, --agent flag added, dedup/supersession check added, edge case tests added
 
 ## Phase A: TTL + Decay (Foundation)
 
@@ -910,21 +912,29 @@ Build on extracted patterns to create Skills — behavioral knowledge about what
 **Depends on:** D2
 
 ### Description
-Skills persist across sessions (they're in SQLite, so this is automatic) and can optionally be shared across agents. Add a `scope` field to Skill: "private" (agent-only) or "shared" (available to all agents using the same graph DB). Shared skills are included in retrieval for any agent's `retrieve_for_context` call. Add a `skill_sources` table tracking which agents created/contributed to each skill (includes `created_by_agent` field). Sharing is one-way: private -> shared, not reversible.
+
+**Persistence.** Skills persist across sessions automatically via SQLite persistence — no special handling needed beyond D2's storage.
+
+**Scope and ownership.** Add a `scope` field to Skill: `"private"` (agent-only) or `"shared"` (available to all agents using the same graph DB). Add a `created_by_agent` column to the `skills` table (set at creation time from the calling context — D4's `learn` command or CLI provides the agent name). D3's Storage functions accept `created_by_agent` as a parameter.
+
+**Sharing model.** Sharing is one-way (private → shared, not reversible) as a POC simplification — shared skills may have been consumed by other agents' retrievals, so un-sharing could cause inconsistencies. Reversible sharing can be added later.
+
+**Budget integration.** Skills consume budget tokens. Skills are retrieved via FTS5 search on `name` + `description`, scored at a fixed floor of 0.8 (higher than patterns' 0.5 — skills are actionable rules, more valuable than raw patterns), and go through the same `enforce_budget` as entity/edge candidates. This keeps a single retrieval pipeline with no separate injection step.
 
 ### Acceptance Criteria
 1. `Skill` struct has `scope: SkillScope` field with variants `Private` and `Shared`
-2. `Skill` struct has `created_by_agent: String` field (set at creation time)
+2. `Skill` struct has `created_by_agent: String` field (set at creation time from calling context)
 3. `Storage::share_skill(id: &str) -> Result<()>` changes scope from Private to Shared
 4. `retrieve_for_context` includes shared skills for any agent, private skills only for owning agent
-5. `skill_sources` table tracks `(skill_id, agent_name, created_at)` for provenance
-6. Skills survive across sessions (no action needed — SQLite persistence)
+5. `skills` table has `scope` and `created_by_agent` columns (ALTER TABLE, no new table)
+6. Skills retrieved via FTS5 on `name` + `description` enter the candidate set with a floor score of 0.8 and go through the same `enforce_budget` as entity/edge candidates
 
 ### Technical Requirements
 - **Files to create/modify:**
   - `crates/ctxgraph-core/src/types.rs` — add `SkillScope` enum, `scope` and `created_by_agent` fields on `Skill`
-  - `crates/ctxgraph-core/src/storage/migrations.rs` — add migration 008 (skill_sources table, scope column)
-  - `crates/ctxgraph-core/src/storage/sqlite.rs` — add `share_skill`, update `retrieve_for_context` to include skills
+  - `crates/ctxgraph-core/src/storage/migrations.rs` — add migration 008 (ALTER TABLE skills ADD COLUMN scope, created_by_agent)
+  - `crates/ctxgraph-core/src/storage/sqlite.rs` — add `share_skill`, update `get_skills_for_agent` to query skills table with WHERE filter on `scope` and `created_by_agent` (no join on skill_sources)
+  - `crates/ctxgraph-core/src/graph.rs` — update `retrieve_for_context` to query skills table via FTS5 and include matching skills as `ScoredCandidate` entries with 0.8 floor score before `enforce_budget`
 - **New types/functions:**
   - `SkillScope` enum: `Private`, `Shared`
   - `Storage::share_skill(&self, id: &str) -> Result<()>`
@@ -934,8 +944,8 @@ Skills persist across sessions (they're in SQLite, so this is automatic) and can
 ### Test Plan
 - Integration: create private skill for agent "coding", verify agent "coding" sees it, agent "finance" does not
 - Integration: `share_skill` makes skill visible to all agents
-- Integration: `skill_sources` tracks which agent created the skill (created_by_agent populated)
-- Integration: new session (reopen DB) — skills still present
+- Integration: skills matching a query appear in `retrieve_for_context` output with score ≥ 0.8
+- Integration: skills participate in budget enforcement (large skill sets don't exceed budget_tokens)
 - Unit: skill with no scope defaults to Private
 
 ---
@@ -948,37 +958,71 @@ Skills persist across sessions (they're in SQLite, so this is automatic) and can
 **Depends on:** D1a, D1b, D2, D3
 
 ### Description
-Expose the learning pipeline via CLI and MCP. CLI gets `ctxgraph learn` subcommand that runs pattern extraction and skill creation, with options to scope output and show results. MCP gets `learn`, `list_skills`, and `share_skill` tools. The CLI shows a summary of new patterns found and skills created/updated. Add skill display to `ctxgraph stats` output.
+Expose the learning pipeline via CLI and MCP. Both interfaces trigger the same underlying orchestration (CLI for humans, MCP for agents).
+
+**Explicit trigger:** Per CLAUDE.md, skills are created from compressed experience patterns — not from every episode. The learn command is an explicit invocation (manual or agent-driven) that runs the full pipeline on demand.
+
+**Pipeline:** The learn command orchestrates the following steps:
+1. Load compression groups via `Storage::get_pattern_candidates` (D1a prerequisite data)
+2. Extract pattern candidates via `PatternExtractor::extract(groups, config)` (D1a)
+3. Generate descriptions via `Graph::generate_pattern_description` for each candidate (D1b)
+4. Dedup: retrieve existing patterns via `Storage::get_patterns`, skip candidates that already exist (same entity_pair + relation_triplet)
+5. Create skills from new + existing patterns via `Graph::create_skills_from_patterns` (D2)
+6. Supersession: check new skills against existing skills; if entity_types overlap and actions differ, supersede old skill via `Storage::supersede_skill`
+7. Assign scope from `--scope` flag (D3), default Private
+
+This fulfills the design philosophy: "Phase D's learn command is itself a retrieval decision point (retrieve patterns before creating skills)."
+
+**CLI/MCP parity:** Both expose the same pipeline. CLI is for human operators; MCP is for agents. CLI shows a summary of new patterns found and skills created/updated. Add skill display to `ctxgraph stats` output.
+
+**MCP tool note:** `list_skills` and `share_skill` MCP tools extend beyond CLAUDE.md's high-level MCP tool list — they provide skill management capabilities needed for the Learn workflow.
 
 ### Acceptance Criteria
 1. CLI: `ctxgraph learn` runs full learning pipeline and reports new patterns and skills
 2. CLI: `ctxgraph learn --dry-run` shows what would be learned without persisting
 3. CLI: `ctxgraph learn --scope shared` creates skills as shared by default
-4. CLI: `ctxgraph learn --limit 10` limits how many patterns/skills are created per run
-5. MCP: `list_skills` tool returns all active (non-superseded) skills for the agent
-6. MCP: `share_skill` tool with `{id: "..."}` changes skill scope to shared
+4. CLI: `ctxgraph learn --limit 10` caps the number of skills created per run (pattern extraction count is controlled by D1a's `max_patterns_per_extraction` config)
+5. CLI: `ctxgraph learn --format json` outputs machine-readable JSON with `{patterns_found, patterns_new, skills_created, skills_updated, skill_ids}`
+6. CLI: `ctxgraph learn --agent coding` specifies which agent owns created skills (defaults to config's `default_agent` or `"assistant"`)
 7. CLI: `ctxgraph stats` output includes skill count, pattern count, and shared vs private breakdown
 8. MCP: `learn` tool runs full pipeline: extract patterns from recent compressions, create/update skills, return count of created/updated skills
+9. MCP: `list_skills` tool returns all active (non-superseded) skills for the agent
+10. MCP: `share_skill` tool with `{id: "..."}` changes skill scope to shared
+11. Dedup: learn retrieves existing patterns before extraction; candidates matching existing patterns (same entity_pair + relation_triplet) are skipped
+12. Supersession: learn checks new skills against existing skills; if entity_types overlap and actions differ, old skill is superseded via `Storage::supersede_skill`
 
 ### Technical Requirements
 - **Files to create/modify:**
+  - `crates/ctxgraph-core/src/graph.rs` — add `Graph::run_learning_pipeline` (orchestrates D1a→D1b→dedup→D2→D3)
   - `crates/ctxgraph-cli/src/commands/learn.rs` — new command module
   - `crates/ctxgraph-cli/src/commands/mod.rs` — register learn module
   - `crates/ctxgraph-cli/src/main.rs` — add `Learn` subcommand
   - `crates/ctxgraph-mcp/src/tools.rs` — add `list_skills`, `share_skill`, `learn` tool definitions
   - `crates/ctxgraph-cli/src/commands/stats.rs` — extend to include skill/pattern counts
-- **New types/functions:** `commands::learn::run(dry_run, scope, limit)`, MCP tool handlers for `list_skills`, `share_skill`
+- **New types/functions:**
+  - `Graph::run_learning_pipeline(agent_name: &str, scope: SkillScope, limit: usize) -> Result<LearningOutcome>` — orchestrates the full D1a→D1b→dedup→D2→D3 pipeline
+  - `commands::learn::run(dry_run, scope, limit, agent, format)` — CLI entry point, calls `Graph::run_learning_pipeline`
+  - MCP `learn` tool handler — calls `Graph::run_learning_pipeline(agent_name, scope, limit)`, agent_name from session context
+  - MCP `list_skills` tool handler — calls `Storage::get_skills_for_agent`
+  - MCP `share_skill` tool handler — calls `Storage::share_skill`
+- **New types:** `LearningOutcome { patterns_found: usize, patterns_new: usize, skills_created: usize, skills_updated: usize, skill_ids: Vec<String> }`
 - **Config changes:** none
 
 ### Test Plan
 - Integration: `ctxgraph learn` on DB with compressed episodes creates patterns and skills
 - Integration: `ctxgraph learn --dry-run` outputs "would create N patterns, M skills" without writing
 - Integration: `ctxgraph learn --scope shared` creates skills with Shared scope
-- Integration: `ctxgraph learn --limit 5` creates at most 5 patterns
+- Integration: `ctxgraph learn --limit 5` creates at most 5 skills (not patterns)
+- Integration: `ctxgraph learn --format json` outputs JSON with `patterns_found`, `patterns_new`, `skills_created`, `skills_updated`, `skill_ids`
+- Integration: `ctxgraph learn --agent coding` sets `created_by_agent = "coding"` on new skills
 - Integration: MCP `list_skills` returns JSON array of active skills
 - Integration: MCP `share_skill` with valid ID returns success
 - Integration: `ctxgraph stats` shows "Skills: 5 (3 shared, 2 private)"
 - Integration: MCP learn tool returns created/updated skills count
+- Edge case: `ctxgraph learn` on DB with no compressed episodes returns empty results (not error)
+- Edge case: `ctxgraph learn` when all patterns already exist creates no new patterns but may still create/update skills
+- Edge case: MCP `share_skill` with invalid ID returns error
+- Edge case: MCP `share_skill` on already-shared skill is idempotent (returns success, no-op)
 
 ---
 
@@ -1011,8 +1055,8 @@ C4 (reverify CLI/MCP) ── depends on C1, C2, C3
 D1a (co-occurrence counting) ── depends on B1, B2, A1
 │   └── D1b (description generation) ── depends on D1a
 │       └── D2 (skill creation, LLM synthesis) ── depends on D1b, A5
-│           └── D3 (cross-session sharing) ── depends on D2
-│               └── D4 (learn CLI/MCP) ── depends on D1a, D1b, D2, D3
+│           └── D3 (cross-session sharing, budget integration) ── depends on D2
+│               └── D4 (learn CLI/MCP, dedup, supersession) ── depends on D1a, D1b, D2, D3
 ```
 
 # Effort Summary
@@ -1034,7 +1078,7 @@ D1a (co-occurrence counting) ── depends on B1, B2, A1
 | 005 | A6 | Add `archived_entities`, `archived_edges`, `system_metadata` tables (for TTL cleanup); add index on `(memory_type, created_at)` |
 | 006 | B1 | Add `compression_id` to episodes |
 | 007 | D2 | Add `skills` table + FTS5 index on description |
-| 008 | D3 | Add `skill_sources` table, `scope` and `created_by_agent` columns to skills |
+| 008 | D3 | Add `scope` and `created_by_agent` columns to skills table |
 | 009 | C2 | Add `renewal_count INTEGER NOT NULL DEFAULT 0` to entities + edges |
 
 > **Note:** Migration numbers reflect implementation phase order. Implement in numerical sequence.
@@ -1066,5 +1110,6 @@ D1a (co-occurrence counting) ── depends on B1, B2, A1
 - **C3**: `stale_threshold` configurable per agent (default 0.3), pagination added, `StaleAction::Keep` variant added
 - **C4**: Update format defined: `{id, content?, memory_type?}`, CLI `--content` flag specified
 - **D2**: Skill synthesis uses LLM (not mechanical transform). `SkillCreator::draft_skills` produces `DraftSkill` intermediates; `Graph::synthesize_skill` calls LLM for behavioral `trigger_condition`/`action`. Skills table has no `memory_type` column (skills are not entities). `confidence` formula defined. Provenance `renewal_count` separate from C2's entity/edge counter. LLM failure returns error. Deferred: provenance-entity linking, `success_count`/`failure_count` live updates, provenance LLM re-evaluation.
-- **D3**: `created_by_agent` field added to Skill
+- **D3**: Simplified — `skill_sources` table removed, `scope`/`created_by_agent` columns added to skills table via ALTER TABLE (migration 008). Cross-session persistence AC removed (automatic via SQLite). Skill budget integration defined: skills retrieved via FTS5 with 0.8 floor score, enter same `enforce_budget` pipeline as entities/edges. `graph.rs` added to files to modify. Sharing documented as one-way (irreversible) POC simplification. `created_by_agent` passed from calling context (D4).
+- **D4**: Pipeline orchestration defined (D1a→D1b→dedup→D2→D3). `--limit` caps skills created (not patterns). `--format json` and `--agent` flags added. Dedup against existing patterns and supersession check against existing skills. Edge case tests added.
 - **A5**: `set_policy` semantics clarified (session override, not persisted)

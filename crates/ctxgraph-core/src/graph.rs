@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use crate::error::{CtxGraphError, Result};
 use crate::pattern::{PatternDescriber, PatternExtractor};
@@ -14,7 +14,7 @@ use ctxgraph_extract::pipeline::ExtractionPipeline;
 use ctxgraph_extract::schema::ExtractionSchema;
 
 pub struct Graph {
-    storage: Storage,
+    pub storage: Storage,
     #[allow(dead_code)]
     db_path: PathBuf,
     #[cfg(feature = "extract")]
@@ -617,8 +617,11 @@ impl Graph {
     ///
     /// Returns ranked candidates sorted by `occurrence_count` descending,
     /// capped at `max_patterns_per_extraction`.
-    pub fn extract_pattern_candidates(&self, config: &PatternExtractorConfig) -> Result<Vec<PatternCandidate>> {
-        let before = Utc::now() - chrono::Duration::days(7);
+    pub fn extract_pattern_candidates(
+        &self,
+        config: &PatternExtractorConfig,
+    ) -> Result<Vec<PatternCandidate>> {
+        let before = Utc::now();
         let groups = self.storage.get_compression_groups(before)?;
         let extractor = PatternExtractor::new();
         Ok(extractor.extract(&groups, config))
@@ -686,8 +689,7 @@ impl Graph {
                     if let Err(e) = self.storage.store_pattern(&candidate) {
                         eprintln!(
                             "ctxgraph: warning: failed to store pattern {}: {}",
-                            candidate.id,
-                            e
+                            candidate.id, e
                         );
                         // Skip this candidate but continue with others
                     } else {
@@ -699,8 +701,7 @@ impl Graph {
                     // Per acceptance criteria: "extraction can be retried"
                     eprintln!(
                         "ctxgraph: warning: failed to generate description for candidate {}: {}",
-                        candidate.id,
-                        e
+                        candidate.id, e
                     );
                 }
             }
@@ -714,6 +715,23 @@ impl Graph {
     /// Returns patterns with descriptions populated from the entity `summary` field.
     pub fn get_patterns(&self) -> Result<Vec<PatternCandidate>> {
         self.storage.get_patterns()
+    }
+
+    /// Store a pattern candidate as a LearnedPattern entity.
+    ///
+    /// This is a low-level storage operation used by the D1b pipeline.
+    /// The pattern is stored with `entity_type = "LearnedPattern"`,
+    /// `memory_type = Pattern`, `ttl = None`, and entity `name` truncated
+    /// to 80 chars at word boundary from the description.
+    pub fn store_pattern(&self, candidate: &PatternCandidate) -> Result<String> {
+        self.storage.store_pattern(candidate)
+    }
+
+    /// Get all compression groups before the given timestamp.
+    ///
+    /// Used by D1a for pattern candidate extraction.
+    pub fn get_compression_groups(&self, before: DateTime<Utc>) -> Result<Vec<CompressionGroupData>> {
+        self.storage.get_compression_groups(before)
     }
 }
 

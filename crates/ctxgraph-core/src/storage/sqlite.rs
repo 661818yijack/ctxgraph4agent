@@ -771,7 +771,10 @@ impl Storage {
     /// - Edges from the source episodes
     ///
     /// This method is used by D1a (co-occurrence counting) to extract pattern candidates.
-    pub fn get_compression_groups(&self, before: DateTime<Utc>) -> Result<Vec<CompressionGroupData>> {
+    pub fn get_compression_groups(
+        &self,
+        before: DateTime<Utc>,
+    ) -> Result<Vec<CompressionGroupData>> {
         // Find all compressed summary episodes (source = 'compression') recorded before `before`
         let mut stmt = self.conn.prepare(
             "SELECT id, content, source, recorded_at, metadata, compression_id, memory_type
@@ -792,20 +795,18 @@ impl Storage {
                     memory_type: MemoryType::from_db(&row.get::<_, String>(6)?),
                 })
             })?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         let mut groups = Vec::new();
         for comp_ep in comp_episodes {
             // Get source episode IDs for this compression group
             // Source episodes have compression_id = comp_ep.id
-            let mut src_stmt = self.conn.prepare(
-                "SELECT id FROM episodes WHERE compression_id = ?1",
-            )?;
+            let mut src_stmt = self
+                .conn
+                .prepare("SELECT id FROM episodes WHERE compression_id = ?1")?;
             let source_ids: Vec<String> = src_stmt
                 .query_map(params![comp_ep.id.clone()], |row| row.get(0))?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<std::result::Result<Vec<_>, _>>()?;
 
             // Get entities linked to source episodes
             let mut entity_stmt = self.conn.prepare(
@@ -817,8 +818,7 @@ impl Storage {
             )?;
             let entities: Vec<Entity> = entity_stmt
                 .query_map(params![comp_ep.id.clone()], map_entity_row)?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<std::result::Result<Vec<_>, _>>()?;
 
             // Get edges from source episodes (episode_id matches source episode IDs)
             let mut edge_stmt = self.conn.prepare(
@@ -831,8 +831,7 @@ impl Storage {
             )?;
             let edges: Vec<Edge> = edge_stmt
                 .query_map(params![comp_ep.id.clone()], map_edge_row)?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<std::result::Result<Vec<_>, _>>()?;
 
             groups.push(CompressionGroupData {
                 compression_id: comp_ep.id,
@@ -849,7 +848,10 @@ impl Storage {
     ///
     /// Loads all compression groups via `get_compression_groups` and runs the pure-logic
     /// `PatternExtractor` to produce ranked candidates filtered by the given config.
-    pub fn get_pattern_candidates(&self, config: &PatternExtractorConfig) -> Result<Vec<PatternCandidate>> {
+    pub fn get_pattern_candidates(
+        &self,
+        config: &PatternExtractorConfig,
+    ) -> Result<Vec<PatternCandidate>> {
         let before = Utc::now();
         let groups = self.get_compression_groups(before)?;
         let extractor = PatternExtractor::new();
@@ -913,8 +915,7 @@ impl Storage {
                     description: summary,
                 })
             })?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(candidates)
     }

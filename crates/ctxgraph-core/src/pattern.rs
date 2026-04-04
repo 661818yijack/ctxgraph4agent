@@ -40,6 +40,86 @@ pub trait PatternDescriber {
     ) -> crate::error::Result<String>;
 }
 
+// ── Test implementations ──────────────────────────────────────────────────────
+
+/// A PatternDescriber implementation that returns hardcoded behavioral descriptions.
+/// Useful for testing the D1b pipeline without a real LLM.
+pub struct MockPatternDescriber {
+    /// Fixed description to return for all candidates.
+    description: String,
+}
+
+impl MockPatternDescriber {
+    /// Create a MockPatternDescriber with a fixed description.
+    pub fn new(description: impl Into<String>) -> Self {
+        Self {
+            description: description.into(),
+        }
+    }
+
+    /// Create a MockPatternDescriber that generates a description based on candidate data.
+    pub fn for_candidate(candidate: &PatternCandidate) -> Self {
+        // Generate a realistic behavioral description based on candidate type
+        let description = if let Some(ref triplet) = candidate.relation_triplet {
+            let (src, rel, tgt) = triplet;
+            format!(
+                "When {} is involved, {} tends to trigger {} — this pattern has been observed repeatedly and the agent should anticipate this dependency.",
+                src, rel, tgt
+            )
+        } else if let Some(ref pair) = candidate.entity_pair {
+            let (a, b) = pair;
+            format!(
+                "The {} and {} frequently co-occur in problem scenarios — the agent should consider their interdependence when troubleshooting.",
+                a, b
+            )
+        } else {
+            let types = candidate.entity_types.join(", ");
+            format!(
+                "Entity type(s) {} appear across multiple contexts — this suggests a recurring theme that warrants attention.",
+                types
+            )
+        };
+        Self { description }
+    }
+}
+
+impl PatternDescriber for MockPatternDescriber {
+    fn generate(
+        &self,
+        _candidate: &PatternCandidate,
+        _source_summaries: &[String],
+    ) -> crate::error::Result<String> {
+        Ok(self.description.clone())
+    }
+}
+
+/// A PatternDescriber implementation that always returns an error.
+/// Useful for testing LLM failure handling in the D1b pipeline.
+pub struct FailingPatternDescriber {
+    message: String,
+}
+
+impl FailingPatternDescriber {
+    /// Create a FailingPatternDescriber with a custom error message.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl PatternDescriber for FailingPatternDescriber {
+    fn generate(
+        &self,
+        _candidate: &PatternCandidate,
+        _source_summaries: &[String],
+    ) -> crate::error::Result<String> {
+        Err(crate::error::CtxGraphError::Extraction(
+            self.message.clone(),
+        ))
+    }
+}
+
 /// Internal accumulator for a single co-occurrence entry.
 struct OccurrenceEntry {
     count: u32,
@@ -110,8 +190,7 @@ impl PatternExtractor {
         // Accumulators
         let mut type_counts: HashMap<String, OccurrenceEntry> = HashMap::new();
         let mut pair_counts: HashMap<(String, String), OccurrenceEntry> = HashMap::new();
-        let mut triplet_counts: HashMap<(String, String, String), OccurrenceEntry> =
-            HashMap::new();
+        let mut triplet_counts: HashMap<(String, String, String), OccurrenceEntry> = HashMap::new();
 
         for group in groups {
             let gid = &group.compression_id;
@@ -130,6 +209,10 @@ impl PatternExtractor {
                 }
             }
 
+            // Track deduplicated pair/triplet keys per group to avoid overcounting
+            let mut counted_pairs_this_group: HashSet<(String, String)> = HashSet::new();
+            let mut counted_triplets_this_group: HashSet<(String, String, String)> = HashSet::new();
+
             // Count entity pairs and relation triplets from edges
             for edge in &group.edges {
                 // Resolve source entity name/type
@@ -143,23 +226,33 @@ impl PatternExtractor {
                     .unwrap_or_else(|| edge.target_id.clone());
 
                 // Count the entity pair (sorted by name for canonical ordering)
+                // Dedup per group: only count each unique pair once per group
                 let pair_key = if source_name <= target_name {
                     (source_name.clone(), target_name.clone())
                 } else {
                     (target_name.clone(), source_name.clone())
                 };
 
-                pair_counts
-                    .entry(pair_key)
-                    .and_modify(|e| e.increment(gid))
-                    .or_insert_with(|| OccurrenceEntry::new(gid));
+                if counted_pairs_this_group.insert(pair_key.clone()) {
+                    pair_counts
+                        .entry(pair_key)
+                        .and_modify(|e| e.increment(gid))
+                        .or_insert_with(|| OccurrenceEntry::new(gid));
+                }
 
                 // Count the relation triplet (directional — order matters)
-                let triplet_key = (source_name.clone(), edge.relation.clone(), target_name.clone());
-                triplet_counts
-                    .entry(triplet_key)
-                    .and_modify(|e| e.increment(gid))
-                    .or_insert_with(|| OccurrenceEntry::new(gid));
+                // Dedup per group: only count each unique triplet once per group
+                let triplet_key = (
+                    source_name.clone(),
+                    edge.relation.clone(),
+                    target_name.clone(),
+                );
+                if counted_triplets_this_group.insert(triplet_key.clone()) {
+                    triplet_counts
+                        .entry(triplet_key)
+                        .and_modify(|e| e.increment(gid))
+                        .or_insert_with(|| OccurrenceEntry::new(gid));
+                }
 
                 // Also count entity types for source and target if not already counted
                 if let Some(src_type) = entity_type_map.get(&edge.source_id) {
@@ -257,9 +350,24 @@ impl PatternExtractor {
 
         // Sort by occurrence_count descending
         candidates.sort_by(|a, b| {
-            b.occurrence_count
-                .cmp(&a.occurrence_count)
-                .then_with(|| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal))
+            b.occurrence_count.cmp(&a.occurrence_count).then_with(|| {
+                b.confidence
+                    .partial_cmp(&a.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        });
+
+        // Filter by min_entity_types: only applies to entity-type-only candidates.
+        // Pair/triplet candidates inherently represent multi-entity patterns and
+        // are always kept regardless of entity type dedup.
+        let min_types = config.min_entity_types;
+        candidates.retain(|c| {
+            // Always keep pair/triplet candidates
+            if c.entity_pair.is_some() || c.relation_triplet.is_some() {
+                return true;
+            }
+            // Entity-type-only candidates: filter by min_entity_types
+            c.entity_types.len() >= min_types
         });
 
         // Cap at max_patterns_per_extraction
@@ -293,7 +401,13 @@ mod tests {
     }
 
     /// Helper to create a test edge with a fixed ID.
-    fn make_edge(id: &str, source_id: &str, target_id: &str, relation: &str, episode_id: &str) -> Edge {
+    fn make_edge(
+        id: &str,
+        source_id: &str,
+        target_id: &str,
+        relation: &str,
+        episode_id: &str,
+    ) -> Edge {
         Edge {
             id: id.to_string(),
             source_id: source_id.to_string(),
@@ -353,7 +467,10 @@ mod tests {
         let groups = vec![group1, group2];
         let config = PatternExtractorConfig::default(); // min_occurrence_count = 3
         let candidates = PatternExtractor::new().extract(&groups, &config);
-        assert!(candidates.is_empty(), "expected no candidates with only 2 groups and threshold 3");
+        assert!(
+            candidates.is_empty(),
+            "expected no candidates with only 2 groups and threshold 3"
+        );
     }
 
     #[test]
@@ -362,7 +479,7 @@ mod tests {
             make_entity("e1", "Docker", "Component"),
             make_entity("e2", "Network", "Component"),
         ];
-        let edge = make_edge("edge1", "e1", "e2", "depends_on", "ep1");
+        let _edge = make_edge("edge1", "e1", "e2", "depends_on", "ep1");
 
         let mut groups = Vec::new();
         for i in 1..=4 {
@@ -397,7 +514,11 @@ mod tests {
         assert_eq!(t.occurrence_count, 4);
         assert_eq!(
             t.relation_triplet.as_ref().unwrap(),
-            &(String::from("Docker"), String::from("depends_on"), String::from("Network"))
+            &(
+                String::from("Docker"),
+                String::from("depends_on"),
+                String::from("Network")
+            )
         );
     }
 
@@ -637,7 +758,10 @@ mod tests {
 
         // Should be ("Apple", "Zebra") — alphabetical, not ("Zebra", "Apple")
         let (a, b) = pair.entity_pair.as_ref().unwrap();
-        assert!(a <= b, "entity pair should be in canonical order: got ({a}, {b})");
+        assert!(
+            a <= b,
+            "entity pair should be in canonical order: got ({a}, {b})"
+        );
     }
 
     #[test]

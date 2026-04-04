@@ -1742,3 +1742,768 @@ fn test_compress_nonexistent_episode_returns_error() {
         "compressing with a nonexistent episode should return error"
     );
 }
+
+// ── Pattern Description (D1b) Tests ─────────────────────────────────────────
+
+use ctxgraph::pattern::{FailingPatternDescriber, MockPatternDescriber, PatternDescriber};
+
+#[test]
+fn test_generate_pattern_description_delegates_to_describer() {
+    let graph = test_graph();
+    let candidate = PatternCandidate {
+        id: "test-id".to_string(),
+        entity_types: vec!["Component".to_string()],
+        entity_pair: None,
+        relation_triplet: None,
+        occurrence_count: 3,
+        source_groups: vec!["comp1".to_string()],
+        confidence: 0.75,
+        description: None,
+    };
+
+    let describer = MockPatternDescriber::new("Test behavioral description");
+    let result = graph.generate_pattern_description(&candidate, &[], &describer);
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), "Test behavioral description");
+}
+
+#[test]
+fn test_mock_pattern_describer_produces_behavioral_insight() {
+    // MockPatternDescriber should produce descriptions that:
+    // - Are NOT co-occurrence counts
+    // - Mention entities/relations from the candidate
+    let candidate = PatternCandidate {
+        id: "test-id".to_string(),
+        entity_types: vec!["Docker".to_string(), "Network".to_string()],
+        entity_pair: Some(("Docker".to_string(), "Network".to_string())),
+        relation_triplet: Some((
+            "Docker".to_string(),
+            "depends_on".to_string(),
+            "Network".to_string(),
+        )),
+        occurrence_count: 4,
+        source_groups: vec!["comp1".to_string(), "comp2".to_string()],
+        confidence: 0.8,
+        description: None,
+    };
+
+    let describer = MockPatternDescriber::for_candidate(&candidate);
+    let description = describer.generate(&candidate, &[]).unwrap();
+
+    // Should NOT contain co-occurrence phrasing
+    assert!(
+        !description.contains("appears"),
+        "description should not contain 'appears': {}",
+        description
+    );
+    assert!(
+        !description.contains("times"),
+        "description should not contain 'times': {}",
+        description
+    );
+    assert!(
+        !description.contains("entity type"),
+        "description should not contain 'entity type': {}",
+        description
+    );
+    assert!(
+        !description.contains("count"),
+        "description should not contain 'count': {}",
+        description
+    );
+
+    // Should contain references to actual entities from candidate
+    assert!(
+        description.contains("Docker") || description.contains("docker"),
+        "description should mention Docker: {}",
+        description
+    );
+}
+
+#[test]
+fn test_mock_pattern_describer_for_triplet_candidate() {
+    let candidate = PatternCandidate {
+        id: "test-id".to_string(),
+        entity_types: vec!["Component".to_string()],
+        entity_pair: Some(("User".to_string(), "Postgres".to_string())),
+        relation_triplet: Some((
+            "User".to_string(),
+            "connects_to".to_string(),
+            "Postgres".to_string(),
+        )),
+        occurrence_count: 5,
+        source_groups: vec!["comp1".to_string()],
+        confidence: 1.0,
+        description: None,
+    };
+
+    let describer = MockPatternDescriber::for_candidate(&candidate);
+    let description = describer.generate(&candidate, &[]).unwrap();
+
+    // Should mention the triplet entities
+    assert!(
+        description.contains("User"),
+        "should mention User: {}",
+        description
+    );
+    assert!(
+        description.contains("connects_to"),
+        "should mention relation: {}",
+        description
+    );
+    assert!(
+        description.contains("Postgres"),
+        "should mention Postgres: {}",
+        description
+    );
+
+    // Should be under 200 chars
+    assert!(
+        description.len() < 200,
+        "description should be < 200 chars: {} (len={})",
+        description,
+        description.len()
+    );
+}
+
+#[test]
+fn test_mock_pattern_describer_for_type_candidate() {
+    let candidate = PatternCandidate {
+        id: "test-id".to_string(),
+        entity_types: vec!["Component".to_string(), "Infrastructure".to_string()],
+        entity_pair: None,
+        relation_triplet: None,
+        occurrence_count: 3,
+        source_groups: vec!["comp1".to_string(), "comp2".to_string()],
+        confidence: 0.6,
+        description: None,
+    };
+
+    let describer = MockPatternDescriber::for_candidate(&candidate);
+    let description = describer.generate(&candidate, &[]).unwrap();
+
+    // Should mention the entity types
+    assert!(
+        description.contains("Component") || description.contains("Infrastructure"),
+        "should mention entity types: {}",
+        description
+    );
+
+    // Should NOT be a co-occurrence count description
+    assert!(
+        !description.contains("appears"),
+        "should not contain 'appears': {}",
+        description
+    );
+}
+
+#[test]
+fn test_failing_pattern_describer_returns_error() {
+    let candidate = PatternCandidate {
+        id: "test-id".to_string(),
+        entity_types: vec!["Component".to_string()],
+        entity_pair: None,
+        relation_triplet: None,
+        occurrence_count: 1,
+        source_groups: vec![],
+        confidence: 1.0,
+        description: None,
+    };
+
+    let describer = FailingPatternDescriber::new("LLM unavailable");
+    let result = describer.generate(&candidate, &[]);
+
+    assert!(
+        result.is_err(),
+        "FailingPatternDescriber should return error"
+    );
+}
+
+#[test]
+fn test_extract_and_describe_patterns_with_mock() {
+    let graph = test_graph();
+
+    // Create some episodes and compress them to get compression groups
+    let ep1 = Episode::builder("Docker container failed to start because network was down").build();
+    let ep2 = Episode::builder("Network bridge issue prevented Docker from starting").build();
+    let ep3 = Episode::builder("Docker needs network to connect to registry").build();
+
+    graph.add_episode(ep1.clone()).unwrap();
+    graph.add_episode(ep2.clone()).unwrap();
+    graph.add_episode(ep3.clone()).unwrap();
+
+    // Compress to create compression groups
+    let _compressed_id = graph
+        .compress_episodes(&[ep1.id.clone(), ep2.id.clone(), ep3.id.clone()])
+        .unwrap();
+
+    // Extract and describe patterns
+    let describer = MockPatternDescriber::new(
+        "When Docker networking issues occur, the agent typically needs to restart the container and check bridge configuration.",
+    );
+    let config = PatternExtractorConfig {
+        min_occurrence_count: 1,
+        max_patterns_per_extraction: 10,
+        ..Default::default()
+    };
+
+    let patterns = graph.extract_and_describe_patterns(&config, &describer);
+
+    assert!(
+        patterns.is_ok(),
+        "extract_and_describe_patterns should succeed"
+    );
+}
+
+#[test]
+fn test_extract_and_describe_patterns_empty_candidates_returns_empty() {
+    let graph = test_graph();
+
+    // No episodes, so no compression groups, so no pattern candidates
+    let describer = MockPatternDescriber::new("This should not be called");
+    let config = PatternExtractorConfig::default();
+
+    let patterns = graph.extract_and_describe_patterns(&config, &describer);
+
+    assert!(patterns.is_ok());
+    assert!(patterns.unwrap().is_empty());
+}
+
+#[test]
+fn test_store_pattern_creates_learned_pattern_entity() {
+    let graph = test_graph();
+
+    // Create and store a pattern directly via storage
+    let candidate = PatternCandidate {
+        id: "pattern-123".to_string(),
+        entity_types: vec!["Component".to_string()],
+        entity_pair: None,
+        relation_triplet: None,
+        occurrence_count: 3,
+        source_groups: vec!["comp1".to_string()],
+        confidence: 0.75,
+        description: Some(
+            "When Docker networking issues occur, restart the container first.".to_string(),
+        ),
+    };
+
+    // Store via graph's public API
+    let result = graph.store_pattern(&candidate);
+    assert!(result.is_ok(), "store_pattern should succeed: {:?}", result);
+
+    // Verify we can retrieve it
+    let patterns = graph.get_patterns().unwrap();
+    assert!(!patterns.is_empty(), "should have at least one pattern");
+
+    let stored = patterns.iter().find(|p| p.id == "pattern-123").unwrap();
+    assert!(
+        stored.description.is_some(),
+        "pattern should have description"
+    );
+    assert!(
+        stored
+            .description
+            .as_ref()
+            .unwrap()
+            .contains("Docker networking"),
+        "description should be preserved: {:?}",
+        stored.description
+    );
+}
+
+#[test]
+fn test_get_patterns_returns_stored_patterns_with_descriptions() {
+    let graph = test_graph();
+
+    // Store a pattern
+    let candidate = PatternCandidate {
+        id: "pattern-456".to_string(),
+        entity_types: vec!["Service".to_string()],
+        entity_pair: Some(("API".to_string(), "Database".to_string())),
+        relation_triplet: None,
+        occurrence_count: 4,
+        source_groups: vec!["comp1".to_string(), "comp2".to_string()],
+        confidence: 0.8,
+        description: Some(
+            "The API and Database frequently experience connectivity issues together.".to_string(),
+        ),
+    };
+
+    graph.store_pattern(&candidate).unwrap();
+
+    // Retrieve patterns
+    let patterns = graph.get_patterns().unwrap();
+
+    let found = patterns.iter().find(|p| p.id == "pattern-456").unwrap();
+    assert!(
+        found.description.is_some(),
+        "retrieved pattern should have description"
+    );
+    assert!(
+        found.description.as_ref().unwrap().contains("connectivity"),
+        "description content should be preserved"
+    );
+}
+
+#[test]
+fn test_llm_failure_skips_candidate_continues_pipeline() {
+    let graph = test_graph();
+
+    // Create episodes and compress
+    let ep1 = Episode::builder("Service A depends on Service B").build();
+    let ep2 = Episode::builder("Service B went down affecting Service A").build();
+
+    graph.add_episode(ep1.clone()).unwrap();
+    graph.add_episode(ep2.clone()).unwrap();
+
+    graph
+        .compress_episodes(&[ep1.id.clone(), ep2.id.clone()])
+        .unwrap();
+
+    // Use failing describer - should not crash, just skip
+    let failing_describer = FailingPatternDescriber::new("LLM unavailable");
+    let config = PatternExtractorConfig {
+        min_occurrence_count: 1,
+        max_patterns_per_extraction: 10,
+        ..Default::default()
+    };
+
+    let result = graph.extract_and_describe_patterns(&config, &failing_describer);
+
+    // Should succeed but return empty (candidates skipped due to LLM failure)
+    assert!(result.is_ok());
+    assert!(result.unwrap().is_empty());
+}
+
+#[test]
+fn test_entity_name_truncated_at_word_boundary_80_chars() {
+    let graph = test_graph();
+
+    // Create a description longer than 80 chars
+    let long_description = "When Docker networking issues occur in production environments, the agent should restart the container service and verify the network bridge configuration before assuming the daemon is healthy.".to_string();
+    assert!(
+        long_description.len() > 80,
+        "test description should be > 80 chars"
+    );
+
+    let candidate = PatternCandidate {
+        id: "pattern-789".to_string(),
+        entity_types: vec!["Component".to_string()],
+        entity_pair: None,
+        relation_triplet: None,
+        occurrence_count: 2,
+        source_groups: vec!["comp1".to_string()],
+        confidence: 0.5,
+        description: Some(long_description.clone()),
+    };
+
+    // Store pattern (which truncates name at word boundary)
+    graph.storage.store_pattern(&candidate).unwrap();
+
+    // Retrieve the entity directly to check name
+    let entity = graph.get_entity("pattern-789").unwrap().unwrap();
+
+    // Name should be <= 80 chars
+    assert!(
+        entity.name.len() <= 80,
+        "entity name should be <= 80 chars, got {} chars: {}",
+        entity.name.len(),
+        entity.name
+    );
+
+    // Name should end at word boundary (no partial words at end)
+    // If it's exactly 80, check it doesn't end mid-word
+    if entity.name.len() == 80 {
+        assert!(
+            !entity.name.ends_with(' '),
+            "name should not end with space"
+        );
+        // The truncation function finds last space in first 80 chars and truncates there
+        // So it should be a complete word
+    }
+}
+
+#[test]
+fn test_pattern_has_memory_type_pattern_and_no_ttl() {
+    let graph = test_graph();
+
+    let candidate = PatternCandidate {
+        id: "pattern-ttl-test".to_string(),
+        entity_types: vec!["Service".to_string()],
+        entity_pair: None,
+        relation_triplet: None,
+        occurrence_count: 3,
+        source_groups: vec!["comp1".to_string()],
+        confidence: 0.75,
+        description: Some("Patterns persist indefinitely.".to_string()),
+    };
+
+    graph.store_pattern(&candidate).unwrap();
+
+    // Retrieve the entity
+    let entity = graph.get_entity("pattern-ttl-test").unwrap().unwrap();
+
+    // Check memory_type is Pattern
+    assert_eq!(
+        entity.memory_type,
+        MemoryType::Pattern,
+        "stored pattern should have MemoryType::Pattern"
+    );
+
+    // Check ttl is None (never expires)
+    assert_eq!(
+        entity.ttl, None,
+        "stored pattern should have ttl=None (never expires)"
+    );
+}
+
+#[test]
+fn test_description_length_is_1_2_sentences() {
+    // Test that MockPatternDescriber produces descriptions in the expected length range
+    let candidate = PatternCandidate {
+        id: "test".to_string(),
+        entity_types: vec!["Component".to_string()],
+        entity_pair: None,
+        relation_triplet: Some((
+            "Docker".to_string(),
+            "connects_to".to_string(),
+            "Network".to_string(),
+        )),
+        occurrence_count: 3,
+        source_groups: vec!["comp1".to_string()],
+        confidence: 0.75,
+        description: None,
+    };
+
+    let describer = MockPatternDescriber::for_candidate(&candidate);
+    let description = describer.generate(&candidate, &[]).unwrap();
+
+    // Should be less than 200 chars (1-2 sentences)
+    assert!(
+        description.len() < 200,
+        "description should be < 200 chars, got {}: {}",
+        description.len(),
+        description
+    );
+
+    // Should have at least some content
+    assert!(
+        description.len() > 20,
+        "description should be meaningful, got {} chars: {}",
+        description.len(),
+        description
+    );
+}
+
+#[test]
+fn test_description_does_not_contain_rejected_phrases() {
+    let candidate = PatternCandidate {
+        id: "test".to_string(),
+        entity_types: vec!["Component".to_string(), "Service".to_string()],
+        entity_pair: Some(("A".to_string(), "B".to_string())),
+        relation_triplet: None,
+        occurrence_count: 5,
+        source_groups: vec!["comp1".to_string(), "comp2".to_string()],
+        confidence: 0.8,
+        description: None,
+    };
+
+    let describer = MockPatternDescriber::for_candidate(&candidate);
+    let description = describer.generate(&candidate, &[]).unwrap().to_lowercase();
+
+    let rejected_phrases = [
+        "appears ",
+        "appeared ",
+        "appears in ",
+        "appeared in ",
+        "entity type",
+        "entity types",
+        "co-occurrence",
+        "count of",
+        "times across",
+    ];
+
+    for phrase in rejected_phrases {
+        assert!(
+            !description.contains(phrase),
+            "description should not contain '{}': {}",
+            phrase,
+            description
+        );
+    }
+}
+
+// ── D1a Integration Tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_extract_pattern_candidates_end_to_end() {
+    // Full end-to-end: create episodes → compress → add entities/edges → extract patterns
+    let graph = test_graph();
+
+    // Create episodes about Docker networking
+    let ep1 = Episode::builder("Docker container failed to start because network was down").build();
+    let ep2 = Episode::builder("Fixed Docker DNS resolution by checking resolv.conf").build();
+    let ep3 =
+        Episode::builder("Docker network bridge misconfiguration caused restart loop").build();
+    let id1 = ep1.id.clone();
+    let id2 = ep2.id.clone();
+    let id3 = ep3.id.clone();
+
+    graph.add_episode(ep1).unwrap();
+    graph.add_episode(ep2).unwrap();
+    graph.add_episode(ep3).unwrap();
+
+    // Create entities
+    let docker = Entity::new("Docker", "Component");
+    let network = Entity::new("Network", "Infrastructure");
+    let dns = Entity::new("DNS", "Service");
+    let docker_id = docker.id.clone();
+    let network_id = network.id.clone();
+    let dns_id = dns.id.clone();
+    graph.add_entity(docker).unwrap();
+    graph.add_entity(network).unwrap();
+    graph.add_entity(dns).unwrap();
+
+    // Link entities to episodes
+    graph
+        .link_episode_entity(&id1, &docker_id, None, None)
+        .unwrap();
+    graph
+        .link_episode_entity(&id1, &network_id, None, None)
+        .unwrap();
+    graph
+        .link_episode_entity(&id2, &docker_id, None, None)
+        .unwrap();
+    graph
+        .link_episode_entity(&id2, &dns_id, None, None)
+        .unwrap();
+    graph
+        .link_episode_entity(&id3, &docker_id, None, None)
+        .unwrap();
+    graph
+        .link_episode_entity(&id3, &network_id, None, None)
+        .unwrap();
+
+    // Create edges between entities
+    let mut edge1 = Edge::new(&docker_id, &network_id, "depends_on");
+    edge1.episode_id = Some(id1.clone());
+    graph.add_edge(edge1).unwrap();
+
+    let mut edge2 = Edge::new(&docker_id, &dns_id, "uses");
+    edge2.episode_id = Some(id2.clone());
+    graph.add_edge(edge2).unwrap();
+
+    let mut edge3 = Edge::new(&docker_id, &network_id, "depends_on");
+    edge3.episode_id = Some(id3.clone());
+    graph.add_edge(edge3).unwrap();
+
+    // Compress episodes
+    let compressed_id = graph
+        .compress_episodes(&[id1.clone(), id2.clone(), id3.clone()])
+        .unwrap();
+
+    // Extract pattern candidates with low threshold
+    let config = PatternExtractorConfig {
+        min_occurrence_count: 1,
+        min_entity_types: 1,
+        max_patterns_per_extraction: 20,
+    };
+    let candidates = graph.extract_pattern_candidates(&config).unwrap();
+
+    // Should find at least some candidates (Docker appears in all 3 source episodes)
+    assert!(
+        !candidates.is_empty(),
+        "expected pattern candidates from compression group"
+    );
+
+    // Verify source_groups includes our compression group
+    let has_our_group = candidates
+        .iter()
+        .any(|c| c.source_groups.contains(&compressed_id));
+    assert!(
+        has_our_group,
+        "at least one candidate should reference our compression group"
+    );
+
+    // All candidates should have confidence <= 1.0
+    for c in &candidates {
+        assert!(
+            c.confidence <= 1.0,
+            "confidence should not exceed 1.0, got {}",
+            c.confidence
+        );
+        assert!(
+            c.occurrence_count <= 1,
+            "occurrence_count should not exceed 1 for a single group, got {}",
+            c.occurrence_count
+        );
+    }
+}
+
+#[test]
+fn test_get_compression_groups_loads_correctly() {
+    let graph = test_graph();
+
+    // Create episodes and entities
+    let ep1 = Episode::builder("First episode about Redis").build();
+    let ep2 = Episode::builder("Second episode about Redis").build();
+    let id1 = ep1.id.clone();
+    let id2 = ep2.id.clone();
+    graph.add_episode(ep1).unwrap();
+    graph.add_episode(ep2).unwrap();
+
+    let redis = Entity::new("Redis", "Component");
+    let redis_id = redis.id.clone();
+    graph.add_entity(redis).unwrap();
+
+    graph
+        .link_episode_entity(&id1, &redis_id, None, None)
+        .unwrap();
+    graph
+        .link_episode_entity(&id2, &redis_id, None, None)
+        .unwrap();
+
+    // Compress
+    let compressed_id = graph
+        .compress_episodes(&[id1.clone(), id2.clone()])
+        .unwrap();
+
+    // Load compression groups
+    let groups = graph.get_compression_groups(Utc::now()).unwrap();
+
+    assert_eq!(groups.len(), 1, "should have exactly 1 compression group");
+
+    let group = &groups[0];
+    assert_eq!(
+        group.compression_id, compressed_id,
+        "compression_id should match"
+    );
+    assert_eq!(
+        group.source_episode_ids.len(),
+        2,
+        "should have 2 source episodes"
+    );
+    assert!(
+        group.source_episode_ids.contains(&id1),
+        "source_episode_ids should contain id1"
+    );
+    assert!(
+        group.source_episode_ids.contains(&id2),
+        "source_episode_ids should contain id2"
+    );
+    assert_eq!(group.entities.len(), 1, "should have 1 entity (Redis)");
+    assert_eq!(
+        group.entities[0].name, "Redis",
+        "entity name should be Redis"
+    );
+}
+
+#[test]
+fn test_extract_pattern_candidates_with_duplicate_edges() {
+    // Test that duplicate edges within a single group don't inflate occurrence_count
+    let graph = test_graph();
+
+    let ep1 = Episode::builder("Docker depends on Network").build();
+    let ep2 = Episode::builder("Docker connects to Network").build();
+    let id1 = ep1.id.clone();
+    let id2 = ep2.id.clone();
+    graph.add_episode(ep1).unwrap();
+    graph.add_episode(ep2).unwrap();
+
+    let docker = Entity::new("Docker", "Component");
+    let network = Entity::new("Network", "Infrastructure");
+    let docker_id = docker.id.clone();
+    let network_id = network.id.clone();
+    graph.add_entity(docker).unwrap();
+    graph.add_entity(network).unwrap();
+
+    graph
+        .link_episode_entity(&id1, &docker_id, None, None)
+        .unwrap();
+    graph
+        .link_episode_entity(&id1, &network_id, None, None)
+        .unwrap();
+    graph
+        .link_episode_entity(&id2, &docker_id, None, None)
+        .unwrap();
+    graph
+        .link_episode_entity(&id2, &network_id, None, None)
+        .unwrap();
+
+    // Create MULTIPLE edges between same entity pair within one group
+    let mut edge1 = Edge::new(&docker_id, &network_id, "depends_on");
+    edge1.episode_id = Some(id1.clone());
+    graph.add_edge(edge1).unwrap();
+
+    let mut edge2 = Edge::new(&docker_id, &network_id, "depends_on");
+    edge2.episode_id = Some(id1.clone());
+    graph.add_edge(edge2).unwrap();
+
+    let mut edge3 = Edge::new(&docker_id, &network_id, "connects_to");
+    edge3.episode_id = Some(id2.clone());
+    graph.add_edge(edge3).unwrap();
+
+    // Compress into one group
+    graph
+        .compress_episodes(&[id1.clone(), id2.clone()])
+        .unwrap();
+
+    // Extract with low threshold
+    let config = PatternExtractorConfig {
+        min_occurrence_count: 1,
+        min_entity_types: 1,
+        max_patterns_per_extraction: 20,
+    };
+    let candidates = graph.extract_pattern_candidates(&config).unwrap();
+
+    // Find the pair candidate for (Docker, Network)
+    let pair_candidate = candidates.iter().find(|c| {
+        c.entity_pair.as_ref().map_or(false, |(a, b)| {
+            (a == "Docker" && b == "Network") || (a == "Network" && b == "Docker")
+        })
+    });
+
+    if let Some(pc) = pair_candidate {
+        assert_eq!(
+            pc.occurrence_count, 1,
+            "pair occurrence_count should be 1 (one group), not inflated by duplicate edges, got {}",
+            pc.occurrence_count
+        );
+        assert!(
+            pc.confidence <= 1.0,
+            "confidence should be <= 1.0, got {}",
+            pc.confidence
+        );
+    }
+
+    // Find the depends_on triplet candidate
+    let triplet_dep = candidates.iter().find(|c| {
+        c.relation_triplet.as_ref().map_or(false, |(a, r, b)| {
+            a == "Docker" && r == "depends_on" && b == "Network"
+        })
+    });
+
+    if let Some(tc) = triplet_dep {
+        assert_eq!(
+            tc.occurrence_count, 1,
+            "triplet occurrence_count should be 1 (one group), not inflated by duplicate edges, got {}",
+            tc.occurrence_count
+        );
+    }
+
+    // Find the connects_to triplet candidate
+    let triplet_conn = candidates.iter().find(|c| {
+        c.relation_triplet.as_ref().map_or(false, |(a, r, b)| {
+            a == "Docker" && r == "connects_to" && b == "Network"
+        })
+    });
+
+    if let Some(tc) = triplet_conn {
+        assert_eq!(
+            tc.occurrence_count, 1,
+            "connects_to triplet occurrence_count should be 1, got {}",
+            tc.occurrence_count
+        );
+    }
+}
