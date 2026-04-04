@@ -381,6 +381,12 @@ impl Storage {
 
         let mut contradictions = Vec::new();
 
+        // Collect IDs of edges in this batch so we skip them when querying DB.
+        // Edges are inserted before contradiction checking, so same-batch siblings
+        // would otherwise appear as "existing" contradictions.
+        let new_edge_ids: std::collections::HashSet<_> =
+            new_edges.iter().map(|e| e.id.clone()).collect();
+
         for new_edge in new_edges {
             // Get the source entity name for fallback matching
             let source_entity_name = self
@@ -393,6 +399,13 @@ impl Storage {
             let existing_edges = self.get_current_edges_for_entity(&new_edge.source_id)?;
 
             for existing_edge in existing_edges {
+                // Skip edges that are part of the same ingestion batch.
+                // Edges are inserted before contradiction checking, so same-batch
+                // siblings would appear as current edges otherwise.
+                if new_edge_ids.contains(&existing_edge.id) {
+                    continue;
+                }
+
                 // Only match edges where the existing edge has the same
                 // source as the new edge (same subject), not edges where the entity
                 // is the target.
@@ -443,42 +456,10 @@ impl Storage {
                     continue;
                 }
 
-                // Same target_id — check if fact strings differ meaningfully
-                let old_fact = existing_edge.fact.as_deref();
-                let new_fact = new_edge.fact.as_deref();
-
-                // If both have no fact string, they're identical (no contradiction)
-                if old_fact.is_none() && new_fact.is_none() {
-                    continue;
-                }
-
-                // If one has fact and other doesn't, or they differ, check threshold
-                let fact_differs = old_fact != new_fact;
-                if !fact_differs {
-                    continue;
-                }
-
-                // Fact strings differ — treat as potential contradiction if above threshold
-                if existing_edge.confidence < contradiction_threshold {
-                    let now = Utc::now();
-                    let _ = self.invalidate_edge_internal(&existing_edge.id, now);
-                    continue;
-                }
-
-                let entity_id = Some(new_edge.source_id.clone());
-                let old_value = old_fact.unwrap_or(&existing_edge.target_id).to_string();
-                let new_value = new_fact.unwrap_or(&new_edge.target_id).to_string();
-
-                contradictions.push(Contradiction {
-                    old_edge_id: existing_edge.id,
-                    new_edge_id: new_edge.id.clone(),
-                    entity_id,
-                    entity_name: source_entity_name.clone(),
-                    relation: new_edge.relation.clone(),
-                    old_value,
-                    new_value,
-                    existing_confidence: existing_edge.confidence,
-                });
+                // Same target_id = same entity. Per spec: contradiction only when
+                // target entities differ. No contradiction even if fact strings differ
+                // (aliasing / wording variation does not change entity identity).
+                continue;
             }
         }
 
