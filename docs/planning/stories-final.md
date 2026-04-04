@@ -4,9 +4,9 @@
 > Memory lifecycle: Store → TTL → Forget → Decay → Re-verify → Compress → Budget → Learn
 >
 > Changes from Round 1: A4 split into A4a/A4b/A4c, D1 split into D1a/D1b, A6 (TTL cleanup) added,
-> A3 trimmed: renewal_count deferred to C2, touch_many/get_usage_stats/MemoryTable/indexes removed, effort M→S, B1 summary template→LLM + memory_type Pattern→Fact + LLM moved to Graph layer + fallback added, B3 compression no longer runs every query, C2 uses renewal_count
+> A3 trimmed: renewal_count deferred to C2, touch_many/get_usage_stats/MemoryTable/indexes removed, effort M→S, B1 summary template→LLM + memory_type Pattern→Fact + LLM moved to Graph layer + fallback added, D1b description template→LLM + ExtractedPattern/PatternEvidence types removed + known simplification documented, B3 compression no longer runs every query, C2 uses renewal_count
 > not usage_count, C1 uses entity_id matching with confidence threshold, C3 stale_threshold
-> configurable, C4 update format defined, D2 success/failure relations configurable.
+> configurable, C4 update format defined, D2 success/failure relations configurable, D2 skill synthesis template→LLM + DraftSkill pipeline + memory_type: Pattern removed (skills not entities) + confidence formula + provenance renewal_count separated from C2 + LLM failure fallback + deferred provenance-entity linking/success_count live updates/provenance re-evaluation
 
 ## Phase A: TTL + Decay (Foundation)
 
@@ -597,7 +597,7 @@ When a new episode is ingested, the system checks existing facts for contradicti
 **Depends on:** A1, A3
 
 ### Description
-When a memory is recalled via `retrieve_for_context` and its content is actually used (appears in the context sent to the agent), its TTL is implicitly renewed. Renewal resets the effective age to 0 for decay calculation purposes by updating `created_at` to `Utc::now()`. This is gated by a `max_renewals` policy setting (default 5). **Critical fix:** renewal counting uses the separate `renewal_count` field from A3 (NOT `usage_count`) — `renewal_count` only increments when renewal actually occurs, while `usage_count` tracks general recall frequency for scoring. Only Facts and Preferences are eligible for renewal; Experiences are not (they decay linearly and are meant to be forgotten).
+When a memory is recalled via `retrieve_for_context` and its content is actually used (appears in the context sent to the agent), its TTL is implicitly renewed. Renewal resets the effective age to 0 for decay calculation purposes by updating `created_at` to `Utc::now()`. This is gated by a `max_renewals` policy setting (default 5). **Critical fix:** renewal counting uses `renewal_count` (added in this story's migration 009, NOT `usage_count` from A3) — `renewal_count` only increments when renewal actually occurs, while `usage_count` tracks general recall frequency for scoring. Only Facts and Preferences are eligible for renewal; Experiences are not (they decay linearly and are meant to be forgotten).
 
 ### Acceptance Criteria
 1. `Storage::renew_memory(id: &str, memory_type: MemoryType) -> Result<bool>` updates `created_at` to now and increments `renewal_count` if renewal is allowed
@@ -611,8 +611,9 @@ When a memory is recalled via `retrieve_for_context` and its content is actually
 ### Technical Requirements
 - **Files to create/modify:**
   - `crates/ctxgraph-core/src/types.rs` — add `max_renewals` to `MemoryPolicyConfig` / `AgentPolicy`
+  - `crates/ctxgraph-core/src/storage/migrations.rs` — add migration 009 (`renewal_count INTEGER NOT NULL DEFAULT 0` on entities + edges)
   - `crates/ctxgraph-core/src/storage/sqlite.rs` — add `renew_memory`, integrate into `retrieve_for_context`
-- **New types/functions:** `Storage::renew_memory(&self, id: &str, table: MemoryTable) -> Result<bool>`
+- **New types/functions:** `Storage::renew_memory(&self, id: &str, memory_type: MemoryType) -> Result<bool>`
 - **Config changes:** `max_renewals = 5` in `[policies.<agent>]`
 
 ### Test Plan
@@ -735,7 +736,7 @@ Implement the candidate generation step for pattern extraction using co-occurren
 1. `PatternExtractor` struct analyzes compression groups and returns co-occurrence counts
 2. Counts three types of co-occurrences: entity type frequency, entity pair frequency, relation triplet frequency
 3. Candidates with count >= `min_occurrence_count` (default 3, configurable) are returned as `PatternCandidate`
-4. `PatternCandidate { id: String, entity_types: Vec<String>, entity_pair: Option<(String, String)>, relation_triplet: Option<(String, String, String)>, occurrence_count: u32, source_groups: Vec<String>, confidence: f64 }`
+4. `PatternCandidate { id: String, entity_types: Vec<String>, entity_pair: Option<(String, String)>, relation_triplet: Option<(String, String, String)>, occurrence_count: u32, source_groups: Vec<String>, confidence: f64, description: Option<String> }` — `description` is `None` after D1a; D1b populates it via LLM generation
 5. `PatternExtractorConfig` struct with `min_occurrence_count: u32` (default 3), `min_entity_types: usize` (default 2), `max_patterns_per_extraction: usize` (default 20)
 6. Results ranked by occurrence_count descending, capped at `max_patterns_per_extraction`
 7. `Storage::get_pattern_candidates(config: &PatternExtractorConfig) -> Result<Vec<PatternCandidate>>` orchestrates extraction
@@ -747,7 +748,7 @@ Implement the candidate generation step for pattern extraction using co-occurren
   - `crates/ctxgraph-core/src/storage/sqlite.rs` — add `get_pattern_candidates`, helper to load compression group edges
   - `crates/ctxgraph-core/src/graph.rs` — add `Graph::extract_pattern_candidates` orchestration
 - **New types/functions:**
-  - `PatternCandidate { id: String, entity_types: Vec<String>, entity_pair: Option<(String, String)>, relation_triplet: Option<(String, String, String)>, occurrence_count: u32, source_groups: Vec<String>, confidence: f64 }`
+  - `PatternCandidate { id: String, entity_types: Vec<String>, entity_pair: Option<(String, String)>, relation_triplet: Option<(String, String, String)>, occurrence_count: u32, source_groups: Vec<String>, confidence: f64, description: Option<String> }` — `description` is `None` after D1a; D1b populates it
   - `PatternExtractorConfig { min_occurrence_count: u32, min_entity_types: usize, max_patterns_per_extraction: usize }`
   - `CompressionGroupData { compression_id: String, source_episode_ids: Vec<String>, edges: Vec<Edge>, entities: Vec<Entity> }`
   - `PatternExtractor::extract(&self, groups: &[CompressionGroupData], config: &PatternExtractorConfig) -> Vec<PatternCandidate>`
@@ -772,38 +773,54 @@ Implement the candidate generation step for pattern extraction using co-occurren
 **Depends on:** D1a
 
 ### Description
-Implement description generation for pattern candidates using template strings (MVP — no LLM call). Given a `PatternCandidate` from D1a, generate a human-readable description using predefined templates based on the pattern type. Templates: entity type co-occurrence -> "Entity type [type] appears in [count] similar contexts"; entity pair co-occurrence -> "[Entity A] and [Entity B] frequently co-occur ([count] times)"; relation triplet -> "In [count] similar contexts, [Entity A] [relation] [Entity B]". Descriptions are stored with the pattern entity. This is the second of two stories that replace the original D1.
+Implement description generation for pattern candidates. Given a `PatternCandidate` from D1a, generate a human-readable description that captures the **behavioral insight**, not just the co-occurrence metadata.
+
+CLAUDE.md's vision for the Learn phase is: *"pattern recognized, takes 1 attempt"* and *"agent already knows the user's Docker setup, common pitfalls, preferred fix approach."* Template strings like *"Entity type Component appears in 5 similar contexts"* are metadata, not behavioral knowledge. They're useless for D2 (skill creation) and D4 (learn command) — the entire downstream Learn pipeline depends on descriptions worth reading.
+
+Descriptions are generated via LLM. The input is the pattern candidate's co-occurrence data plus source episode summaries (from compression groups). The output is a 1-2 sentence behavioral description. Volume is bounded: `max_patterns_per_extraction = 20` per cycle, and extraction doesn't run every query (D4's `learn` command is explicit, not automatic). Cost is negligible.
+
+**Architecture:** Same as B1 — LLM call in `Graph` layer, `Storage` only persists. `PatternCandidate` gains a `description: String` field (D1a defines the struct with a placeholder; D1b adds this field and populates it). No parallel type hierarchy.
+
+**Known simplification:** Patterns are stored as entities with `entity_type = "LearnedPattern"` in the `entities` table. This conflates two concepts (entities = things mentioned; patterns = observations about entities) but is acceptable for POC. A dedicated `patterns` table can be added later if needed.
+
+**Retrieval integration:** Patterns stored by D1b are automatically included in the memory budget during retrieval (Phase A4/Budget). Since patterns are small and permanent, they bypass freshness scoring and are always injected. This is not implemented in D1b — it is wired in during the Budget story (A4b/A4c).
 
 ### Acceptance Criteria
-1. `generate_description(candidate: &PatternCandidate) -> String` produces a human-readable description
-2. Entity type template: "Entity type [type] appears in [count] similar contexts"
-3. Entity pair template: "[entity_a] and [entity_b] frequently co-occur ([count] times)"
-4. Relation triplet template: "In [count] similar contexts, [entity_a] [relation] [entity_b]"
-5. Description includes top entity types and occurrence count
-6. `Storage::store_pattern(candidate: &PatternCandidate, description: &str) -> Result<String>` persists pattern with generated description
-7. `Storage::get_patterns() -> Result<Vec<ExtractedPattern>>` retrieves all learned patterns with descriptions
-8. Patterns stored as entities with `entity_type = "LearnedPattern"` and `memory_type = Pattern` (never expires)
+1. `Graph::generate_pattern_description(candidate: &PatternCandidate, source_summaries: &[String]) -> Result<String>` calls LLM to produce a 1-2 sentence behavioral description
+2. Description prompt includes co-occurrence data and source summaries as context. The prompt MUST instruct the LLM to produce descriptions that follow the CLAUDE.md behavioral quality bar — NOT co-occurrence counts. Examples:
+   - **GOOD:** *"When debugging Docker networking issues, the agent typically needs to restart the service container and clear the network bridge — avoid assuming the daemon is healthy."*
+   - **GOOD:** *"The user prefers using dark mode and resists configuration changes unless the rationale is clearly explained."*
+   - **BAD (rejected):** *"Entity type Component appears in 5 similar contexts."* (metadata, not behavioral)
+   - **BAD (rejected):** *"Entity pair (User, Postgres) appears 3 times across source summaries."* (counts, not insight)
+3. `Storage::store_pattern(&self, candidate: &PatternCandidate) -> Result<String>` persists pattern as entity with `entity_type = "LearnedPattern"`, `memory_type = Pattern` (never expires), and the LLM-generated description. The entity `name` field is set to the first 80 characters of the description (truncated at word boundary).
+4. `Storage::get_patterns() -> Result<Vec<PatternCandidate>>` retrieves all stored patterns with their descriptions populated
+5. Patterns have `memory_type: Pattern` and `ttl = None` (never expires) — correct per CLAUDE.md
+6. LLM call failure returns error, pattern is not stored, extraction can be retried
+7. Empty candidate list returns empty result (not error)
 
 ### Technical Requirements
 - **Files to create/modify:**
-  - `crates/ctxgraph-core/src/types.rs` — add `ExtractedPattern`, `PatternEvidence`
-  - `crates/ctxgraph-core/src/pattern.rs` — add `generate_description` function
-  - `crates/ctxgraph-core/src/storage/sqlite.rs` — add `store_pattern`, `get_patterns`, `get_patterns_for_entity`
+  - `crates/ctxgraph-core/src/types.rs` — add `description: Option<String>` field to `PatternCandidate` (D1a already defined this field as `None`; D1b populates it)
+  - `crates/ctxgraph-core/src/pattern.rs` — add `generate_description` (pure LLM call, no I/O)
+  - `crates/ctxgraph-core/src/storage/sqlite.rs` — add `store_pattern`, `get_patterns`
+  - `crates/ctxgraph-core/src/graph.rs` — add `Graph::extract_and_describe_patterns` orchestration (D1a + D1b combined pipeline)
 - **New types/functions:**
-  - `ExtractedPattern { id: String, name: String, description: String, evidence: Vec<PatternEvidence>, confidence: f64, created_at: DateTime<Utc> }`
-  - `PatternEvidence { entity_types: Vec<String>, relation_triplet: Option<(String, String, String)>, source_groups: Vec<String>, occurrence_count: u32 }`
-  - `generate_description(candidate: &PatternCandidate) -> String`
-  - `Storage::store_pattern(&self, candidate: &PatternCandidate, description: &str) -> Result<String>`
-  - `Storage::get_patterns(&self) -> Result<Vec<ExtractedPattern>>`
-- **Config changes:** none
+  - `Graph::generate_pattern_description(candidate: &PatternCandidate, source_summaries: &[String]) -> Result<String>`
+  - `Storage::store_pattern(&self, candidate: &PatternCandidate) -> Result<String>`
+  - `Storage::get_patterns(&self) -> Result<Vec<PatternCandidate>>`
+- **Config changes:** none (uses Graph's default model, per-agent override deferred to A5)
 
 ### Test Plan
-- Unit: entity type candidate produces "Entity type Component appears in 5 similar contexts"
-- Unit: entity pair candidate produces "nginx and docker frequently co-occur (4 times)"
-- Unit: relation triplet candidate produces "In 3 similar contexts, user reported bug_in"
-- Integration: full pipeline — compress groups, extract candidates (D1a), generate descriptions (D1b), store patterns
-- Integration: stored pattern has `memory_type: Pattern` and no TTL (never expires)
+- Unit: `generate_pattern_description` produces 1-2 sentence behavioral insight (not co-occurrence counts or entity names)
+- Unit: description mentions entities and relations from the candidate, not just numbers
+- Unit: description does NOT contain phrases like "appears N times" or "entity type" (rejected patterns)
+- Unit: description length is 1-2 sentences (< 200 chars)
+- Unit: entity `name` field is truncated description at 80 chars (word boundary)
+- Integration: full pipeline — compress groups (B1) → extract candidates (D1a) → generate descriptions (D1b) → store patterns
+- Integration: stored pattern has `memory_type = Pattern` and `ttl = None`
 - Integration: `get_patterns` returns previously extracted patterns with descriptions
+- Unit: LLM call failure (mocked) returns error, no pattern stored
+- Integration: `learn` command with no pattern candidates returns empty list gracefully
 
 ---
 
@@ -815,44 +832,73 @@ Implement description generation for pattern candidates using template strings (
 **Depends on:** D1b, A5
 
 ### Description
-Build on extracted patterns to create Skills — behavioral knowledge about what worked, what failed, and what the user preferred. A Skill is a higher-level abstraction than a pattern: it encodes an actionable rule. Skills are created when patterns show consistent success/failure signals. **Review fix:** success/failure relation names are configurable via `MemoryPolicyConfig` (not hardcoded as "fixed"/"deprecated"). Default success relations: `["fixed", "resolved", "success"]`; default failure relations: `["deprecated", "failed", "abandoned"]`. Skills can evolve: if new evidence contradicts a skill, it gets a `superseded_by` link to the updated skill. Skills have `memory_type: Pattern` and never expire. Skills are only created when explicitly triggered (via D4's `learn` command), not automatically.
+Build on extracted patterns to create Skills — behavioral knowledge about what worked, what failed, and what the user preferred. A Skill is a higher-level abstraction than a pattern: it encodes an actionable rule. Skills are created when patterns show consistent success/failure signals.
+
+**Skill synthesis uses LLM** (not mechanical transform). A `PatternCandidate` has co-occurrence data (`entity_types`, `entity_pair`, `relation_triplet`, `occurrence_count`, `description`). Turning that into a `trigger_condition` ("when to apply") and `action` ("what to do") requires understanding the behavioral insight — the same reasoning we applied in B1 (summaries) and D1b (pattern descriptions). Template approaches produce metadata, not knowledge. CLAUDE.md defines skills as: *"What worked → do this pattern again. What failed → never do this again. What the user preferred → always do it this way."* The skill's `trigger_condition` and `action` fields ARE that knowledge — they can't be mechanically derived.
+
+**Architecture:** Same as B1/D1b — LLM call lives in `Graph` layer (orchestration), not in `Storage` (persistence). `SkillCreator` is pure logic that builds a draft Skill struct from pattern data. `Graph::create_skills_from_patterns` orchestrates: draft skills → LLM populates behavioral fields → store. Storage only handles insert/read.
+
+**Fallback:** If LLM fails, skill creation returns error. No partial/draft skills stored. Retry on next `learn` cycle.
+
+**Configurable relations:** success/failure relation names are configurable via `MemoryPolicyConfig` (not hardcoded). Default success relations: `["fixed", "resolved", "success"]`; default failure relations: `["deprecated", "failed", "abandoned"]`.
+
+**Lifecycle:** Skills never expire (they're proven behaviors per CLAUDE.md). Skills can be superseded: if new evidence contradicts a skill, it gets a `superseded_by` link to the updated skill. Skills with `superseded_by` set are excluded from retrieval but kept for audit. Skills are only created when explicitly triggered (via D4's `learn` command), not automatically.
+
+**Provenance (Layer 2 — perishable):** Skills carry optional provenance tracking WHY the skill exists (reasoning, alternatives rejected, assumptions, context facts). Provenance is auto-generated from the pattern's source data during creation — not a manual LLM call. Provenance has its own TTL (default 180 days) separate from the skill core. See `docs/planning/design-note-skill-provenance-ttl.md` for full design. Provenance is stored as a JSON column on the skills table (no separate table — POC simplification). Provenance renewal uses its own `renewal_count` field (separate from entity/edge `renewal_count` in C2 — skills are not entities).
+
+**Deferred (POC):**
+- Provenance-entity linking (`skill_provenance_edges` table for automatic context shift detection) — deferred per design note open question #2
+- `success_count`/`failure_count` live updates after creation — skills start with counts from source patterns; post-creation tracking is a future enhancement
+- Provenance LLM re-evaluation when expired — deferred (design note open question #4)
 
 ### Acceptance Criteria
-1. `Skill` struct with fields: `id`, `name`, `description`, `trigger_condition` (when to apply), `action` (what to do), `success_count`, `failure_count`, `confidence`, `superseded_by: Option<String>`
-2. `SkillCreator` analyzes patterns with success/failure signals (configurable relation names) and creates skills
-3. `MemoryPolicyConfig` has `success_relations: Vec<String>` (default ["fixed", "resolved", "success"]) and `failure_relations: Vec<String>` (default ["deprecated", "failed", "abandoned"])
-4. Skills stored in a new `skills` table with FTS5 index on description
-5. `Storage::create_skill(skill: &Skill) -> Result<String>` and `Storage::list_skills() -> Result<Vec<Skill>>`
-6. When new evidence contradicts a skill, `Storage::supersede_skill(old_id, new_id)` updates the old skill
-7. Skills with `superseded_by` set are excluded from retrieval but kept for audit
-8. Skill struct includes optional provenance: `Option<SkillProvenance>` with fields `reasoning`, `alternatives_rejected`, `assumptions`, `context_facts`, `verified_at`, `expires_at`, `renewal_count`
-9. Provenance TTL defaults: 180 days for reasoning, 90 days for context_facts (configurable via MemoryPolicyConfig's `provenance_ttl_days` and `context_ttl_days`)
+1. `Skill` struct with fields: `id`, `name`, `description`, `trigger_condition` (when to apply), `action` (what to do), `success_count`, `failure_count`, `confidence`, `superseded_by: Option<String>`, `created_at`, `entity_types: Vec<String>`, `provenance: Option<SkillProvenance>`
+2. `Graph::create_skills_from_patterns(patterns: &[PatternCandidate], success_relations: &[String], failure_relations: &[String]) -> Result<Vec<Skill>>` orchestrates: filter patterns by success/failure signals → draft skills → LLM synthesizes `name`, `trigger_condition`, `action`, `description` → store
+3. LLM synthesis prompt takes pattern co-occurrence data + source summaries as input. The prompt MUST produce behavioral rules aligned with CLAUDE.md — NOT metadata. Examples:
+   - **GOOD `trigger_condition`:** *"When debugging Docker networking issues involving container-to-container connectivity"*
+   - **GOOD `action`:** *"Restart the service container, clear the network bridge, verify DNS resolution — do NOT assume the daemon is healthy"*
+   - **BAD (rejected):** *"When entity types [Component, Network] appear together"* (metadata, not behavioral)
+   - **BAD (rejected):** *"Apply pattern 3"* (meaningless without context)
+4. `MemoryPolicyConfig` has `success_relations: Vec<String>` (default `["fixed", "resolved", "success"]`) and `failure_relations: Vec<String>` (default `["deprecated", "failed", "abandoned"]`)
+5. Skills stored in a new `skills` table (no `memory_type` column — skills are not entities; they never expire by design). FTS5 index on `name` + `description`
+6. `Storage::create_skill(skill: &Skill) -> Result<String>` and `Storage::list_skills() -> Result<Vec<Skill>>` and `Storage::search_skills(query: &str) -> Result<Vec<Skill>>`
+7. When new evidence contradicts a skill, `Storage::supersede_skill(old_id, new_id)` updates old skill's `superseded_by` field
+8. Skills with `superseded_by` set are excluded from retrieval but kept for audit
+9. `Skill.confidence` = `success_count as f64 / (success_count + failure_count) as f64` (at creation time; post-creation confidence updates deferred)
+10. Skill provenance: `Option<SkillProvenance>` with fields `reasoning`, `alternatives_rejected`, `assumptions`, `context_facts`, `verified_at`, `expires_at`, `renewal_count`. Auto-generated from pattern source data at creation. Stored as JSON column.
+11. Provenance TTL defaults: 180 days for reasoning (configurable via `provenance_ttl_days`), 90 days for context_facts (configurable via `context_ttl_days`) — both in `MemoryPolicyConfig` per agent
 
 ### Technical Requirements
 - **Files to create/modify:**
-  - `crates/ctxgraph-core/src/types.rs` — add `Skill` struct
-  - `crates/ctxgraph-core/src/storage/migrations.rs` — add migration 007 (skills table + FTS5)
-  - `crates/ctxgraph-core/src/storage/sqlite.rs` — add `create_skill`, `list_skills`, `supersede_skill`, `search_skills`
-  - `crates/ctxgraph-core/src/skill.rs` — new module with `SkillCreator`
-  - `crates/ctxgraph-core/src/types.rs` — add `success_relations` and `failure_relations` to `AgentPolicy`
+  - `crates/ctxgraph-core/src/types.rs` — add `Skill`, `SkillProvenance` structs; add `success_relations`, `failure_relations`, `provenance_ttl_days`, `context_ttl_days` to `AgentPolicy`
+  - `crates/ctxgraph-core/src/storage/migrations.rs` — add migration 007 (skills table + FTS5 on name + description)
+  - `crates/ctxgraph-core/src/storage/sqlite.rs` — add `create_skill`, `list_skills`, `supersede_skill`, `search_skills`; provenance serialized/deserialized as JSON
+  - `crates/ctxgraph-core/src/skill.rs` — new module with `SkillCreator` (pure logic: draft skills from pattern data, filter by success/failure signals)
+  - `crates/ctxgraph-core/src/graph.rs` — add `Graph::create_skills_from_patterns` (orchestration + LLM synthesis + storage)
 - **New types/functions:**
   - `Skill { id: String, name: String, description: String, trigger_condition: String, action: String, success_count: u32, failure_count: u32, confidence: f64, superseded_by: Option<String>, created_at: DateTime<Utc>, entity_types: Vec<String>, provenance: Option<SkillProvenance> }`
-  - `SkillProvenance { reasoning: String, alternatives_rejected: Option<String>, assumptions: Option<String>, context_facts: Option<String>, verified_at: DateTime<Utc>, expires_at: DateTime<Utc>, renewal_count: u32 }` (stored as JSON column on skills table; no separate migration needed, deferred to POC per design note decision)
-  - `SkillCreator::create_from_patterns(patterns: &[ExtractedPattern], success_relations: &[String], failure_relations: &[String]) -> Vec<Skill>`
+  - `SkillProvenance { reasoning: String, alternatives_rejected: Option<String>, assumptions: Option<String>, context_facts: Option<String>, verified_at: DateTime<Utc>, expires_at: DateTime<Utc>, renewal_count: u32 }` (stored as JSON column on skills table)
+  - `SkillCreator::draft_skills(patterns: &[PatternCandidate], success_relations: &[String], failure_relations: &[String]) -> Vec<DraftSkill>` — pure logic, no I/O, no LLM
+  - `DraftSkill { entity_types: Vec<String>, success_count: u32, failure_count: u32, source_pattern_ids: Vec<String>, source_summaries: Vec<String> }` — intermediate struct before LLM synthesis
+  - `Graph::create_skills_from_patterns(patterns: &[PatternCandidate], success_relations: &[String], failure_relations: &[String]) -> Result<Vec<Skill>>` — full pipeline
+  - `Graph::synthesize_skill(draft: &DraftSkill) -> Result<(String, String, String, String)>` — LLM call returning `(name, trigger_condition, action, description)`
   - `Storage::create_skill(&self, skill: &Skill) -> Result<String>`
   - `Storage::supersede_skill(&self, old_id: &str, new_id: &str) -> Result<()>`
-- **Config changes:** `success_relations` and `failure_relations` in `[policies.<agent>]`
+- **Config changes:** `success_relations`, `failure_relations`, `provenance_ttl_days` (default 180), `context_ttl_days` (default 90) in `[policies.<agent>]`
 
 ### Test Plan
-- Integration: extract patterns from 5 compression groups about Docker fixes, create skill with custom success_relation "fixed", verify skill stored
-- Integration: skill has `memory_type: Pattern` and no TTL
-- Integration: list_skills returns active skills (not superseded ones)
+- Integration: extract patterns from 5 compression groups about Docker fixes, create skills, verify skill has behavioral `trigger_condition` and `action` (not entity type names)
+- Integration: skill `name`, `trigger_condition`, `action`, `description` are all human-readable behavioral text (not metadata like "entity types: [Component, Network]")
+- Integration: `list_skills` returns active skills (not superseded ones)
 - Integration: supersede a skill, verify old skill has `superseded_by` set, new skill is active
-- Unit: `SkillCreator` with no success/failure signals creates no skills
-- Integration: custom success_relations ["resolved", "success"] correctly match edges
-- Integration: `search_skills` via FTS5 finds relevant skills
-- Integration: skill created with provenance, provenance fields readable
-- Unit: SkillProvenance expires_at = created_at + provenance_ttl_days
+- Unit: `SkillCreator::draft_skills` with no success/failure signals returns empty vec
+- Integration: custom success_relations `["resolved", "success"]` correctly filter patterns
+- Integration: `search_skills` via FTS5 finds relevant skills by name or description
+- Integration: skill created with provenance, provenance JSON round-trips correctly
+- Unit: `SkillProvenance.expires_at` = `created_at + provenance_ttl_days`
+- Unit: `Skill.confidence` = `success_count / (success_count + failure_count)` at creation
+- Unit: LLM call failure (mocked) returns error, no skill stored
+- Integration: empty pattern list returns empty skill list (not error)
 
 ---
 
@@ -942,7 +988,7 @@ Expose the learning pipeline via CLI and MCP. CLI gets `ctxgraph learn` subcomma
 A1 (TTL + memory_type fields)
 ├── A2 (decay_score)
 │   └── A4b (scoring + ranking) ── depends on A1, A2, A3, A4a
-├── A3 (usage_count + renewal_count tracking)
+├── A3 (usage_count + last_recalled_at tracking)
 │   ├── A4b (scoring + ranking)
 │   ├── A6 (TTL enforcement/cleanup) ── depends on A1, A2, A3
 │   └── C2 (implicit renewal) ── depends on A1, A3
@@ -964,7 +1010,7 @@ C4 (reverify CLI/MCP) ── depends on C1, C2, C3
 
 D1a (co-occurrence counting) ── depends on B1, B2, A1
 │   └── D1b (description generation) ── depends on D1a
-│       └── D2 (skill creation, configurable relations) ── depends on D1b, A5
+│       └── D2 (skill creation, LLM synthesis) ── depends on D1b, A5
 │           └── D3 (cross-session sharing) ── depends on D2
 │               └── D4 (learn CLI/MCP) ── depends on D1a, D1b, D2, D3
 ```
@@ -973,11 +1019,11 @@ D1a (co-occurrence counting) ── depends on B1, B2, A1
 
 | Phase | Stories | P0 | P1 | P2 | Total Effort |
 |-------|---------|----|----|-----|-------------|
-| A     | 8       | 6  | 2  | 0   | 1L + 6M + 1S |
+| A     | 8       | 6  | 2  | 0   | 1L + 5M + 2S |
 | B     | 4       | 1  | 3  | 0   | 1L + 2M + 1S |
 | C     | 4       | 1  | 1  | 2   | 1L + 2M + 1S |
 | D     | 5       | 0  | 3  | 2   | 2L + 2M + 1S |
-| Total | 21      | 8  | 9  | 4   | 5L + 12M + 4S |
+| Total | 21      | 8  | 9  | 4   | 5L + 11M + 5S |
 
 # Migration Plan
 
@@ -989,6 +1035,7 @@ D1a (co-occurrence counting) ── depends on B1, B2, A1
 | 006 | B1 | Add `compression_id` to episodes |
 | 007 | D2 | Add `skills` table + FTS5 index on description |
 | 008 | D3 | Add `skill_sources` table, `scope` and `created_by_agent` columns to skills |
+| 009 | C2 | Add `renewal_count INTEGER NOT NULL DEFAULT 0` to entities + edges |
 
 > **Note:** Migration numbers reflect implementation phase order. Implement in numerical sequence.
 
@@ -998,7 +1045,7 @@ D1a (co-occurrence counting) ── depends on B1, B2, A1
 
 1. **A4 split into A4a/A4b/A4c** — retrieval, scoring, and budget enforcement are now separate stories with clear boundaries. A4b scoring uses `usage_count` (recall frequency) not `renewal_count`.
 
-2. **A3 gains `renewal_count` field** — separate from `usage_count`. `usage_count` tracks recall frequency (for A4b scoring). `renewal_count` tracks TTL renewals (for C2 limiting). Migration 004 updated accordingly.
+2. **A3 trimmed** — `renewal_count` deferred to C2 where it's consumed (C2 adds its own migration). A3 only adds `usage_count` + `last_recalled_at`. Removed `touch_many`, `get_usage_stats`, `MemoryTable` enum, and premature indexes. Effort M→S.
 
 3. **C2 uses `renewal_count` not `usage_count`** — renewal limit checks `renewal_count >= max_renewals`, not `usage_count`. Fixes the logical conflict where frequently-used memories couldn't be renewed.
 
@@ -1006,18 +1053,18 @@ D1a (co-occurrence counting) ── depends on B1, B2, A1
 
 5. **A6 TTL enforcement added** — new P0 story for deleting/archiving expired memories after grace_period. Without this, data grows indefinitely.
 
-6. **D1 split into D1a/D1b** — D1a uses co-occurrence counting (concrete algorithm, configurable thresholds). D1b uses template-based description generation (no LLM).
+6. **D1 split into D1a/D1b** — D1a uses co-occurrence counting (concrete algorithm, configurable thresholds). D1b uses LLM-based description generation (not template).
 
 ## Non-Critical Fixes Applied
 
 - **A1**: Migration 003 uses `WHERE ttl_seconds IS NULL` for idempotency
 - **A2**: Explicit formula documentation, edge case for ttl=0
-- **A3**: Added `touch_many` batch operation, `get_usage_stats` only counts active records
-- **B1**: Summary generation algorithm defined (extract entities, list top-3 relations, format as template)
+- **A3**: Trimmed to `usage_count` + `last_recalled_at` only. `renewal_count` deferred to C2. Removed `touch_many`, `get_usage_stats`, `MemoryTable` enum, premature indexes. Effort M→S.
+- **B1**: Rewritten — LLM-based summary generation (not template). `memory_type: Fact` for compressed summaries (not Pattern). LLM call in Graph layer, Storage only persists. LLM failure leaves source episodes untouched (retry next cycle). Removed `compression_groups` table, `compressed_at` field.
 - **B2**: Inherited edges get new IDs, metadata merge strategy defined, uniqueness constraint added
 - **C1**: Uses entity_id for matching (entity_name as fallback), adds confidence threshold, entity name normalization
 - **C3**: `stale_threshold` configurable per agent (default 0.3), pagination added, `StaleAction::Keep` variant added
 - **C4**: Update format defined: `{id, content?, memory_type?}`, CLI `--content` flag specified
-- **D2**: Success/failure relation names configurable via policy (not hardcoded)
+- **D2**: Skill synthesis uses LLM (not mechanical transform). `SkillCreator::draft_skills` produces `DraftSkill` intermediates; `Graph::synthesize_skill` calls LLM for behavioral `trigger_condition`/`action`. Skills table has no `memory_type` column (skills are not entities). `confidence` formula defined. Provenance `renewal_count` separate from C2's entity/edge counter. LLM failure returns error. Deferred: provenance-entity linking, `success_count`/`failure_count` live updates, provenance LLM re-evaluation.
 - **D3**: `created_by_agent` field added to Skill
 - **A5**: `set_policy` semantics clarified (session override, not persisted)

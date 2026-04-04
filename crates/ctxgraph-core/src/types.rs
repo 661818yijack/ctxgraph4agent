@@ -419,3 +419,66 @@ pub struct SearchFilter {
     pub entity_type: Option<String>,
     pub limit: Option<usize>,
 }
+
+/// Configuration for pattern extraction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatternExtractorConfig {
+    /// Minimum co-occurrence count for a pattern to be considered a candidate.
+    pub min_occurrence_count: u32,
+    /// Minimum number of distinct entity types in a candidate (for entity-type-level patterns).
+    pub min_entity_types: usize,
+    /// Maximum number of pattern candidates to return per extraction run.
+    pub max_patterns_per_extraction: usize,
+}
+
+impl Default for PatternExtractorConfig {
+    fn default() -> Self {
+        Self {
+            min_occurrence_count: 3,
+            min_entity_types: 2,
+            max_patterns_per_extraction: 20,
+        }
+    }
+}
+
+/// A compression group with its associated data for pattern extraction.
+///
+/// Represents one compressed episode (the "summary") together with all source
+/// episodes, their edges, and their entities — the raw material from which
+/// co-occurrence patterns are mined.
+#[derive(Debug, Clone)]
+pub struct CompressionGroupData {
+    /// ID of the compressed (summary) episode.
+    pub compression_id: String,
+    /// IDs of the original episodes that were compressed.
+    pub source_episode_ids: Vec<String>,
+    /// All edges associated with the source episodes.
+    pub edges: Vec<Edge>,
+    /// All entities referenced by the source episodes.
+    pub entities: Vec<Entity>,
+}
+
+/// A pattern candidate extracted from co-occurrence analysis.
+///
+/// Each candidate represents something that appears repeatedly across
+/// compression groups — either an entity type, an entity pair, or a
+/// relation triplet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatternCandidate {
+    /// Unique identifier for this pattern candidate.
+    pub id: String,
+    /// Entity types involved in this pattern.
+    pub entity_types: Vec<String>,
+    /// Entity pair (by name) if this is a pair-level or triplet-level pattern.
+    pub entity_pair: Option<(String, String)>,
+    /// Relation triplet (source_name, relation, target_name) if applicable.
+    pub relation_triplet: Option<(String, String, String)>,
+    /// How many compression groups this pattern appeared in.
+    pub occurrence_count: u32,
+    /// IDs of compression groups where this pattern was observed.
+    pub source_groups: Vec<String>,
+    /// Normalized confidence: occurrence_count / total_groups.
+    pub confidence: f64,
+    /// Human-readable description (populated by D1b LLM step; always None for D1a).
+    pub description: Option<String>,
+}

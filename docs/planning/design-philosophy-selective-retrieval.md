@@ -111,5 +111,5 @@ User decides whether to dig deeper. The agent never assumes older is better -- i
 
 - Design note: skill-provenance-ttl.md (why provenance matters for skill enhancement)
 - hermes-mindgraph-plugin research: proactive_graph_retrieve() and _ProactiveMetrics
-- Phase A stories: decay_score, TTL, renewal_count
+- Phase A stories: decay_score, TTL, renewal (C2)
 - Phase D stories: skill creation (D2), learn command (D4)

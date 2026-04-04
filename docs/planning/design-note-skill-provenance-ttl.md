@@ -157,7 +157,7 @@ Provenance TTL reuses Phase A infrastructure directly:
 
 - `decay_score()` from A2 applies to provenance
 - TTL cleanup from A6 marks expired provenance for pruning (not the skill itself)
-- The `renewal_count` field from A3 tracks how often provenance has been refreshed
+- The `renewal_count` field on `SkillProvenance` is independent of entity/edge renewal (C2) — skills are not entities
 
 This is additive -- Phase A doesn't need changes. Provenance is just another thing with a TTL.
 

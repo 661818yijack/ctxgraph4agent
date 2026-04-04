@@ -1,7 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use chrono::Utc;
+
 use crate::error::{CtxGraphError, Result};
+use crate::pattern::{PatternDescriber, PatternExtractor};
 use crate::storage::Storage;
 use crate::types::*;
 
@@ -602,6 +605,115 @@ impl Graph {
         before: chrono::DateTime<chrono::Utc>,
     ) -> Result<Vec<Episode>> {
         self.storage.list_uncompressed_episodes(before)
+    }
+
+    // ── Pattern Extraction (D1a + D1b) ────────────────────────────────────────
+
+    /// Extract pattern candidates from compression groups using co-occurrence counting (D1a).
+    ///
+    /// Loads compression groups from the last 7 days and runs the `PatternExtractor`
+    /// to find entity types, entity pairs, and relation triplets that appear
+    /// repeatedly across groups.
+    ///
+    /// Returns ranked candidates sorted by `occurrence_count` descending,
+    /// capped at `max_patterns_per_extraction`.
+    pub fn extract_pattern_candidates(&self, config: &PatternExtractorConfig) -> Result<Vec<PatternCandidate>> {
+        let before = Utc::now() - chrono::Duration::days(7);
+        let groups = self.storage.get_compression_groups(before)?;
+        let extractor = PatternExtractor::new();
+        Ok(extractor.extract(&groups, config))
+    }
+
+    /// Generate a behavioral description for a pattern candidate using the LLM (D1b).
+    ///
+    /// Uses the provided `PatternDescriber` implementation to generate a 1-2 sentence
+    /// description that captures the behavioral insight, NOT co-occurrence metadata.
+    ///
+    /// This is a pure delegation — the actual LLM call happens in the `PatternDescriber`.
+    pub fn generate_pattern_description(
+        &self,
+        candidate: &PatternCandidate,
+        source_summaries: &[String],
+        describer: &dyn PatternDescriber,
+    ) -> Result<String> {
+        describer.generate(candidate, source_summaries)
+    }
+
+    /// Full D1a + D1b pipeline: extract candidates and generate descriptions.
+    ///
+    /// Orchestrates:
+    /// 1. Extract pattern candidates from compression groups (D1a)
+    /// 2. For each candidate, generate a behavioral description using LLM (D1b)
+    /// 3. Store each described pattern as a LearnedPattern entity
+    ///
+    /// If LLM description generation fails for a candidate, that candidate is skipped
+    /// but others continue. Returns partial results on partial failure.
+    ///
+    /// Returns the list of successfully stored pattern candidates with descriptions.
+    pub fn extract_and_describe_patterns(
+        &self,
+        config: &PatternExtractorConfig,
+        describer: &dyn PatternDescriber,
+    ) -> Result<Vec<PatternCandidate>> {
+        // D1a: extract candidates
+        let candidates = self.extract_pattern_candidates(config)?;
+
+        // Empty candidate list is not an error — return early
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut described = Vec::new();
+        for mut candidate in candidates {
+            // Get source episode contents for context
+            let source_summaries: Vec<String> = candidate
+                .source_groups
+                .iter()
+                .filter_map(|gid| {
+                    self.storage
+                        .get_episode(gid)
+                        .ok()
+                        .flatten()
+                        .map(|ep| ep.content)
+                })
+                .collect();
+
+            // D1b: generate description
+            match self.generate_pattern_description(&candidate, &source_summaries, describer) {
+                Ok(description) => {
+                    candidate.description = Some(description.clone());
+                    // Store the pattern
+                    if let Err(e) = self.storage.store_pattern(&candidate) {
+                        eprintln!(
+                            "ctxgraph: warning: failed to store pattern {}: {}",
+                            candidate.id,
+                            e
+                        );
+                        // Skip this candidate but continue with others
+                    } else {
+                        described.push(candidate);
+                    }
+                }
+                Err(e) => {
+                    // LLM failure: skip this candidate but continue
+                    // Per acceptance criteria: "extraction can be retried"
+                    eprintln!(
+                        "ctxgraph: warning: failed to generate description for candidate {}: {}",
+                        candidate.id,
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok(described)
+    }
+
+    /// List all stored patterns (LearnedPattern entities).
+    ///
+    /// Returns patterns with descriptions populated from the entity `summary` field.
+    pub fn get_patterns(&self) -> Result<Vec<PatternCandidate>> {
+        self.storage.get_patterns()
     }
 }
 

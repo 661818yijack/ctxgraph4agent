@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
 
 use crate::error::{CtxGraphError, Result};
+use crate::pattern::PatternExtractor;
 use crate::storage::migrations::run_migrations;
 use crate::types::*;
 
@@ -758,6 +759,165 @@ impl Storage {
 
         Ok(edges)
     }
+
+    // ── Pattern Extraction (D1a) ─────────────────────────────────────────────
+
+    /// Get all compression groups with their associated entities and edges.
+    ///
+    /// A compression group consists of:
+    /// - One compressed (summary) episode (`compression_id IS NULL`)
+    /// - All source episodes that were compressed into it (`compression_id = summary_id`)
+    /// - Entities linked to the source episodes
+    /// - Edges from the source episodes
+    ///
+    /// This method is used by D1a (co-occurrence counting) to extract pattern candidates.
+    pub fn get_compression_groups(&self, before: DateTime<Utc>) -> Result<Vec<CompressionGroupData>> {
+        // Find all compressed summary episodes (source = 'compression') recorded before `before`
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content, source, recorded_at, metadata, compression_id, memory_type
+             FROM episodes WHERE source = 'compression' AND recorded_at < ?1",
+        )?;
+
+        let comp_episodes: Vec<Episode> = stmt
+            .query_map(params![before.to_rfc3339()], |row| {
+                Ok(Episode {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    source: row.get(2)?,
+                    recorded_at: parse_datetime(&row.get::<_, String>(3)?),
+                    metadata: row
+                        .get::<_, Option<String>>(4)?
+                        .and_then(|s| parse_metadata(&s)),
+                    compression_id: row.get(5)?,
+                    memory_type: MemoryType::from_db(&row.get::<_, String>(6)?),
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut groups = Vec::new();
+        for comp_ep in comp_episodes {
+            // Get source episode IDs for this compression group
+            // Source episodes have compression_id = comp_ep.id
+            let mut src_stmt = self.conn.prepare(
+                "SELECT id FROM episodes WHERE compression_id = ?1",
+            )?;
+            let source_ids: Vec<String> = src_stmt
+                .query_map(params![comp_ep.id.clone()], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            // Get entities linked to source episodes
+            let mut entity_stmt = self.conn.prepare(
+                "SELECT DISTINCT e.id, e.name, e.entity_type, e.memory_type, e.ttl_seconds,
+                        e.summary, e.created_at, e.metadata, e.usage_count, e.last_recalled_at
+                 FROM entities e
+                 JOIN episode_entities ee ON e.id = ee.entity_id
+                 WHERE ee.episode_id IN (SELECT id FROM episodes WHERE compression_id = ?1)",
+            )?;
+            let entities: Vec<Entity> = entity_stmt
+                .query_map(params![comp_ep.id.clone()], map_entity_row)?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            // Get edges from source episodes (episode_id matches source episode IDs)
+            let mut edge_stmt = self.conn.prepare(
+                "SELECT e.id, e.source_id, e.target_id, e.relation, e.memory_type, e.ttl_seconds,
+                        e.fact, e.valid_from, e.valid_until, e.recorded_at, e.confidence,
+                        e.episode_id, e.metadata, e.usage_count, e.last_recalled_at
+                 FROM edges e
+                 WHERE e.episode_id IN (SELECT id FROM episodes WHERE compression_id = ?1)
+                 AND e.valid_until IS NULL",
+            )?;
+            let edges: Vec<Edge> = edge_stmt
+                .query_map(params![comp_ep.id.clone()], map_edge_row)?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            groups.push(CompressionGroupData {
+                compression_id: comp_ep.id,
+                source_episode_ids: source_ids,
+                entities,
+                edges,
+            });
+        }
+
+        Ok(groups)
+    }
+
+    /// Extract pattern candidates from all compression groups using co-occurrence counting.
+    ///
+    /// Loads all compression groups via `get_compression_groups` and runs the pure-logic
+    /// `PatternExtractor` to produce ranked candidates filtered by the given config.
+    pub fn get_pattern_candidates(&self, config: &PatternExtractorConfig) -> Result<Vec<PatternCandidate>> {
+        let before = Utc::now();
+        let groups = self.get_compression_groups(before)?;
+        let extractor = PatternExtractor::new();
+        Ok(extractor.extract(&groups, config))
+    }
+
+    /// Store a pattern candidate as a LearnedPattern entity.
+    ///
+    /// The pattern is stored with:
+    /// - `entity_type = "LearnedPattern"`
+    /// - `memory_type = Pattern`
+    /// - `ttl = None` (never expires)
+    /// - `name` = first 80 chars of description (truncated at word boundary)
+    /// - `summary` = the behavioral description from D1b
+    ///
+    /// Returns the entity ID of the stored pattern.
+    pub fn store_pattern(&self, candidate: &PatternCandidate) -> Result<String> {
+        let id = candidate.id.clone();
+
+        // Truncate description at word boundary for entity name (max 80 chars)
+        let name = candidate
+            .description
+            .as_ref()
+            .map(|d| truncate_at_word_boundary(d, 80))
+            .unwrap_or_else(|| format!("Pattern {}", &id[..8]));
+
+        // Create the pattern entity with Pattern memory type (never expires)
+        let mut entity = Entity::with_memory(&name, "LearnedPattern", MemoryType::Pattern, None);
+        entity.id = id.clone();
+        // Store the behavioral description in the summary field
+        entity.summary = candidate.description.clone();
+
+        self.insert_entity(&entity)?;
+        Ok(id)
+    }
+
+    /// Get all stored patterns (LearnedPattern entities).
+    ///
+    /// Returns `PatternCandidate` objects with descriptions populated from the
+    /// entity `summary` field. Other fields (occurrence_count, source_groups, etc.)
+    /// are not tracked on stored patterns and will be zero/empty.
+    pub fn get_patterns(&self) -> Result<Vec<PatternCandidate>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata,
+                    usage_count, last_recalled_at
+             FROM entities WHERE entity_type = 'LearnedPattern'",
+        )?;
+
+        let candidates: Vec<PatternCandidate> = stmt
+            .query_map([], |row| {
+                let entity = map_entity_row(row)?;
+                let summary = row.get::<_, Option<String>>(5)?;
+                Ok(PatternCandidate {
+                    id: entity.id,
+                    entity_types: vec![],
+                    entity_pair: None,
+                    relation_triplet: None,
+                    occurrence_count: 0, // not tracked on stored pattern
+                    source_groups: vec![],
+                    confidence: 1.0,
+                    description: summary,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(candidates)
+    }
 }
 
 // ── Helper functions ──
@@ -791,6 +951,23 @@ fn parse_metadata(s: &str) -> Option<serde_json::Value> {
             eprintln!("ctxgraph: warning: failed to parse metadata JSON: {e}");
             None
         }
+    }
+}
+
+/// Truncate a string at a word boundary to max_len characters.
+///
+/// If the string is longer than max_len, finds the last space within
+/// the first max_len characters and truncates there.
+fn truncate_at_word_boundary(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        return s.to_string();
+    }
+    let truncated = &s[..max_len];
+    // Find the last space in the truncated portion
+    if let Some(last_space) = truncated.rfind(' ') {
+        s[..last_space].trim().to_string()
+    } else {
+        truncated.to_string()
     }
 }
 
