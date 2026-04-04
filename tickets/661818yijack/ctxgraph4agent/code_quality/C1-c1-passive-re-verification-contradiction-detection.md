@@ -4,7 +4,7 @@ title: "C1: Passive re-verification (contradiction detection)"
 repo: 661818yijack/ctxgraph4agent
 category: code_quality
 severity: high
-status: open
+status: completed
 owner: apex-agent
 phase: C
 priority: P0
@@ -13,7 +13,10 @@ depends_on:
 - A1
 - A3
 created_at: '2026-04-04T08:55:00.000000Z'
-updated_at: '2026-04-04T08:55:00.000000Z'
+updated_at: '2026-04-04T16:10:00.000000Z'
+completed_at: '2026-04-04T16:10:00.000000Z'
+commits:
+- 2128512 "feat(C1): passive re-verification via contradiction detection"
 tags:
 - c1
 - phase-c
