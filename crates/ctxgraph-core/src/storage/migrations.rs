@@ -156,6 +156,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "003_memory_type_and_ttl",
         r#"
+    -- NOTE: This SQL is not executed for version 003; the Rust-side idempotent path
+    -- (below) handles it instead. Keep this in sync or remove in a future cleanup.
     -- Add memory_type and ttl_seconds to entities
     ALTER TABLE entities ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'Fact';
     ALTER TABLE entities ADD COLUMN ttl_seconds INTEGER;
@@ -238,10 +240,23 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
                 // with entity_type='Decision' etc. get the correct memory_type instead of 'Fact'.
                 conn.execute_batch(
                     "UPDATE entities SET memory_type = LOWER(entity_type)
-                     WHERE entity_type IN ('Decision', 'Pattern', 'Experience', 'Preference');",
+                     WHERE LOWER(entity_type) IN ('decision', 'pattern', 'experience', 'preference');",
                 )?;
 
-                // Set default TTLs for existing rows (idempotent: only where ttl_seconds IS NULL)
+                // Set per-type TTL defaults for existing rows (idempotent).
+                // Pattern: no TTL (NULL)
+                conn.execute_batch(
+                    "UPDATE entities SET ttl_seconds = NULL WHERE LOWER(entity_type) IN ('pattern') AND ttl_seconds IS NOT NULL;",
+                )?;
+                // Experience: 14 days
+                conn.execute_batch(
+                    "UPDATE entities SET ttl_seconds = 1209600 WHERE LOWER(entity_type) IN ('experience') AND (ttl_seconds IS NULL OR ttl_seconds = 7776000);",
+                )?;
+                // Preference: 30 days
+                conn.execute_batch(
+                    "UPDATE entities SET ttl_seconds = 2592000 WHERE LOWER(entity_type) IN ('preference') AND (ttl_seconds IS NULL OR ttl_seconds = 7776000);",
+                )?;
+                // Fact/Decision/Unknown: 90 days (default)
                 conn.execute_batch(
                     "UPDATE entities SET ttl_seconds = 7776000 WHERE ttl_seconds IS NULL;
                      UPDATE edges SET ttl_seconds = 7776000 WHERE ttl_seconds IS NULL;",

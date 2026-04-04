@@ -70,6 +70,8 @@ freshness = base_confidence * decay_function(age, type)
 decay_function for facts:      exponential, half-life = TTL/2
 decay_function for patterns:   constant (never decays)
 decay_function for experiences: linear drop to 0 at TTL
+decay_function for preferences: exponential (same as facts)
+decay_function for decisions:   exponential (same as facts)
 ```
 
 A 3-day-old experience is more relevant than a 10-day-old one. A pattern from 6 months ago is equally relevant to one from yesterday.

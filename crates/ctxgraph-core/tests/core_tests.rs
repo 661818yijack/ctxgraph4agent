@@ -945,7 +945,7 @@ fn test_decay_scores_in_range() {
 }
 
 #[test]
-fn test_migration_003_idempotent() {
+fn test_migration_003_reopen_safe() {
     let tmp = tempfile::tempdir().unwrap();
     let db_path = tmp.path().join("test.db");
 
