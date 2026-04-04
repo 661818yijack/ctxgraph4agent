@@ -427,8 +427,8 @@ impl Storage {
                         continue;
                     }
 
-                    // Get entity_id if available
-                    let entity_id = source_entity.as_ref().map(|e| e.id.clone());
+                    // entity_id is the source entity's id (which is new_edge.source_id)
+                    let entity_id = Some(new_edge.source_id.clone());
 
                     contradictions.push(Contradiction {
                         old_edge_id: existing_edge.id,
@@ -465,7 +465,7 @@ impl Storage {
                     continue;
                 }
 
-                let entity_id = source_entity.as_ref().map(|e| e.id.clone());
+                let entity_id = Some(new_edge.source_id.clone());
                 let old_value = old_fact.unwrap_or(&existing_edge.target_id).to_string();
                 let new_value = new_fact.unwrap_or(&new_edge.target_id).to_string();
 

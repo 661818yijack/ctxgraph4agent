@@ -2662,6 +2662,7 @@ fn test_get_current_edges_returns_only_newer_after_contradiction() {
     let mut edge2 = Edge::new(&alice.id, &mysql.id, "chose");
     edge2.confidence = 0.9;
     edge2.fact = Some("Alice chose MySQL".to_string());
+    let edge2_id = edge2.id.clone();
     let edge2_for_check = edge2.clone();
     graph.add_edge(edge2).unwrap();
 
@@ -2686,7 +2687,7 @@ fn test_get_current_edges_returns_only_newer_after_contradiction() {
 
     // edge1 should be invalidated, edge2 should be current
     assert_eq!(current_edges.len(), 1, "Expected 1 current edge, got {}", current_edges.len());
-    assert_eq!(current_edges[0].id, edge2_for_check.id);
+    assert_eq!(current_edges[0].id, edge2_id);
     assert!(
         current_edges.iter().all(|e| e.id != edge1_id),
         "Old invalidated edge should not be in current edges"
@@ -2743,7 +2744,7 @@ fn test_low_confidence_edge_replaced_silently() {
 
     // Only edge2 should be current
     assert_eq!(current_edges.len(), 1);
-    assert_eq!(current_edges[0].id, edge2_for_check.id);
+    assert_eq!(current_edges[0].id, edge2_id);
 }
 
 #[test]
