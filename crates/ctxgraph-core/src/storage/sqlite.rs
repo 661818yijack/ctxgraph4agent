@@ -554,6 +554,7 @@ impl Storage {
     // ── FTS5 Search ──
 
     pub fn search_episodes(&self, query: &str, limit: usize) -> Result<Vec<(Episode, f64)>> {
+        let safe_query = escape_fts5_query(query);
         let mut stmt = self.conn.prepare(
             "SELECT e.id, e.content, e.source, e.recorded_at, e.metadata,
                     e.compression_id, e.memory_type,
@@ -566,7 +567,7 @@ impl Storage {
         )?;
 
         let results = stmt
-            .query_map(params![query, limit as i64], |row| {
+            .query_map(params![safe_query, limit as i64], |row| {
                 let episode = Episode {
                     id: row.get(0)?,
                     content: row.get(1)?,
@@ -587,6 +588,7 @@ impl Storage {
     }
 
     pub fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<(Entity, f64)>> {
+        let safe_query = escape_fts5_query(query);
         let mut stmt = self.conn.prepare(
             "SELECT e.id, e.name, e.entity_type, e.memory_type, e.ttl_seconds, e.summary, e.created_at, e.metadata, e.usage_count, e.last_recalled_at,
                     rank
@@ -598,7 +600,7 @@ impl Storage {
         )?;
 
         let results = stmt
-            .query_map(params![query, limit as i64], |row| {
+            .query_map(params![safe_query, limit as i64], |row| {
                 let entity = Entity {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -2441,6 +2443,37 @@ impl Storage {
 }
 
 // ── Helper functions ──
+
+/// Escape a user-provided query string for safe use in FTS5 MATCH clauses.
+///
+/// FTS5 treats certain characters as syntax operators (?, *, :, etc.). This function
+/// wraps tokens containing non-word characters in double-quotes so they're treated as
+/// literal text. Tokens that are purely alphanumeric (including FTS5 boolean keywords
+/// like AND, OR, NOT) are left unquoted so FTS5 boolean queries still work.
+///
+/// Embedded double-quotes within tokens are escaped by doubling ("").
+///
+/// Examples:
+/// - `"why JWT?"` → `"why" "JWT?"` (question mark is non-word)
+/// - `"billing OR discount"` → `billing OR discount` (boolean OR preserved)
+/// - `"Node.js"` → `"Node.js"` (dot is non-word)
+/// - `"(v4.17)"` → `"(v4.17)"` (parens are non-word)
+fn escape_fts5_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .map(|token| {
+            let has_non_word = token
+                .chars()
+                .any(|c| !c.is_alphanumeric() && c != '-' && c != '_');
+            if has_non_word {
+                format!("\"{}\"", token.replace('"', "\"\""))
+            } else {
+                token.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 fn parse_datetime(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s)
