@@ -637,7 +637,7 @@ When a memory is recalled via `retrieve_for_context` and its content is actually
 **Phase:** C
 **Priority:** P2
 **Effort:** M
-**Depends on:** A1, A2, A3
+**Depends on:** A1, A3
 
 ### Description
 Implement a `get_stale_memories` method that surfaces memories approaching TTL expiration for active re-verification. **Review fix:** the stale threshold is configurable per-agent via `stale_threshold` in `MemoryPolicyConfig` (default 0.3), not hardcoded. The agent (or user via CLI/MCP) can review these and choose to renew, update, or let them expire. Stale memories are returned with their current content and a suggested action based on memory_type. This is opt-in — only called explicitly, not automatically. Results are paginated for agents with many stale memories.
@@ -694,7 +694,7 @@ Finalize the re-verification CLI and MCP interface. This story wires up all the 
 5. MCP: `reverify` tool with `action: "list" | "renew" | "update" | "expire"` and `id` for targeted actions
 6. MCP: `reverify` with `action: "update"` accepts `{id: string, content?: string, memory_type?: string}` — at least one field required
 7. MCP: `forget` tool expires a memory by ID with `{"id": "..."}` input
-8. `ctxgraph stats` output includes re-verification stats: total stale, total renewed, total expired
+8. `ctxgraph stats` output includes re-verification stats: total stale, total renewed, total expired, total contradicted
 9. CLI: `ctxgraph reverify --format json` outputs machine-readable JSON
 
 ### Technical Requirements
@@ -1052,7 +1052,7 @@ B1 (compression pipeline) ── depends on A1, A3
 
 C1 (contradiction detection) ── depends on A1, A3
 C2 (implicit renewal, uses renewal_count) ── depends on A1, A3
-C3 (active re-verification, configurable threshold) ── depends on A1, A2, A3
+C3 (active re-verification, configurable threshold) ── depends on A1, A3
 C4 (reverify CLI/MCP) ── depends on C1, C2, C3
 
 D1a (co-occurrence counting) ── depends on B1, B2, A1
