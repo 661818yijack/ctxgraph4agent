@@ -193,6 +193,7 @@ impl Graph {
             episode_id: episode.id,
             entities_extracted: 0,
             edges_created: 0,
+            contradictions_found: 0,
         })
     }
 
@@ -209,6 +210,7 @@ impl Graph {
 
         let mut entities_extracted = 0;
         let mut edges_created = 0;
+        let mut contradictions_found = 0;
 
         // Map extracted entity text → entity ID for edge creation
         let mut entity_id_map: std::collections::HashMap<String, String> =
@@ -237,6 +239,7 @@ impl Graph {
         }
 
         // Step 2: Create edges from relations
+        let mut new_edges: Vec<Edge> = Vec::new();
         for rel in &result.relations {
             let source_id = match entity_id_map.get(&rel.head) {
                 Some(id) => id,
@@ -254,12 +257,35 @@ impl Graph {
 
             self.storage.insert_edge(&edge)?;
             edges_created += 1;
+            new_edges.push(edge);
         }
+
+        // Step 3: Check for contradictions with existing edges (C1)
+        // Use default contradiction threshold of 0.2
+        let contradiction_threshold = 0.2;
+        let contradictions =
+            self.storage
+                .check_contradictions(&new_edges, contradiction_threshold)?;
+
+        // Invalidate contradicted edges and count
+        for contradiction in &contradictions {
+            if let Err(e) = self
+                .storage
+                .invalidate_contradicted(&contradiction.old_edge_id, &contradiction.new_edge_id)
+            {
+                eprintln!(
+                    "ctxgraph: warning: failed to invalidate contradicted edge {}: {}",
+                    contradiction.old_edge_id, e
+                );
+            }
+        }
+        contradictions_found = contradictions.len();
 
         Ok(EpisodeResult {
             episode_id: episode.id.clone(),
             entities_extracted,
             edges_created,
+            contradictions_found,
         })
     }
 

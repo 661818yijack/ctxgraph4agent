@@ -359,6 +359,185 @@ impl Storage {
         Ok(())
     }
 
+    // ── Contradiction Detection (C1) ──────────────────────────────────────────
+
+    /// Check new edges against existing edges for contradictions.
+    ///
+    /// A contradiction occurs when a new edge has the same source entity
+    /// (by entity_id or normalized entity_name) and same relation type,
+    /// but a different target entity or fact value.
+    ///
+    /// Only contradictions where the existing edge has confidence >=
+    /// `contradiction_threshold` are returned. Lower-confidence edges
+    /// are silently replaced without being flagged.
+    ///
+    /// Returns a list of detected contradictions with old/new edge details.
+    pub fn check_contradictions(
+        &self,
+        new_edges: &[Edge],
+        contradiction_threshold: f64,
+    ) -> Result<Vec<Contradiction>> {
+        use crate::types::normalize_entity_name;
+
+        let mut contradictions = Vec::new();
+
+        for new_edge in new_edges {
+            // Get the source entity name for fallback matching
+            let source_entity_name = self
+                .get_entity(&new_edge.source_id)?
+                .map(|e| normalize_entity_name(&e.name))
+                .unwrap_or_default();
+
+            // Find existing current edges for this source entity by source_id
+            // (entity_name fallback handled below when source_id doesn't match)
+            let existing_edges = self.get_current_edges_for_entity(&new_edge.source_id)?;
+
+            for existing_edge in existing_edges {
+                // Only match edges where the existing edge has the same
+                // source as the new edge (same subject), not edges where the entity
+                // is the target.
+                if existing_edge.source_id != new_edge.source_id {
+                    continue;
+                }
+
+                // Skip if same relation type is not matched
+                if existing_edge.relation != new_edge.relation {
+                    continue;
+                }
+
+                // Skip if it's the same edge (shouldn't happen but safety check)
+                if existing_edge.id == new_edge.id {
+                    continue;
+                }
+
+                // Compare target_id first (entity identity),
+                // then fall back to fact string comparison only if target_ids
+                // are the same but fact content differs meaningfully.
+                //
+                // If both edges have the same target_id, they refer to the same
+                // entity and are not contradictory even if the fact string wording
+                // differs. Only if target_ids differ do we have a true contradiction.
+                if existing_edge.target_id != new_edge.target_id {
+                    // Different target entities — this is a contradiction
+                    // Check confidence threshold
+                    if existing_edge.confidence < contradiction_threshold {
+                        // Below threshold: silently invalidate without recording contradiction
+                        let now = Utc::now();
+                        let _ = self.invalidate_edge_internal(&existing_edge.id, now);
+                        continue;
+                    }
+
+                    // Get entity_id if available
+                    let entity_id = source_entity.as_ref().map(|e| e.id.clone());
+
+                    contradictions.push(Contradiction {
+                        old_edge_id: existing_edge.id,
+                        new_edge_id: new_edge.id.clone(),
+                        entity_id,
+                        entity_name: source_entity_name.clone(),
+                        relation: new_edge.relation.clone(),
+                        old_value: existing_edge.target_id.clone(),
+                        new_value: new_edge.target_id.clone(),
+                        existing_confidence: existing_edge.confidence,
+                    });
+                    continue;
+                }
+
+                // Same target_id — check if fact strings differ meaningfully
+                let old_fact = existing_edge.fact.as_deref();
+                let new_fact = new_edge.fact.as_deref();
+
+                // If both have no fact string, they're identical (no contradiction)
+                if old_fact.is_none() && new_fact.is_none() {
+                    continue;
+                }
+
+                // If one has fact and other doesn't, or they differ, check threshold
+                let fact_differs = old_fact != new_fact;
+                if !fact_differs {
+                    continue;
+                }
+
+                // Fact strings differ — treat as potential contradiction if above threshold
+                if existing_edge.confidence < contradiction_threshold {
+                    let now = Utc::now();
+                    let _ = self.invalidate_edge_internal(&existing_edge.id, now);
+                    continue;
+                }
+
+                let entity_id = source_entity.as_ref().map(|e| e.id.clone());
+                let old_value = old_fact.unwrap_or(&existing_edge.target_id).to_string();
+                let new_value = new_fact.unwrap_or(&new_edge.target_id).to_string();
+
+                contradictions.push(Contradiction {
+                    old_edge_id: existing_edge.id,
+                    new_edge_id: new_edge.id.clone(),
+                    entity_id,
+                    entity_name: source_entity_name.clone(),
+                    relation: new_edge.relation.clone(),
+                    old_value,
+                    new_value,
+                    existing_confidence: existing_edge.confidence,
+                });
+            }
+        }
+
+        Ok(contradictions)
+    }
+
+    /// Invalidate an edge by setting valid_until to now, without checking if already invalidated.
+    /// Used internally for silent invalidation (below threshold).
+    fn invalidate_edge_internal(&self, edge_id: &str, until: DateTime<Utc>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE edges SET valid_until = ?1 WHERE id = ?2 AND valid_until IS NULL",
+            params![until.to_rfc3339(), edge_id],
+        )?;
+        Ok(())
+    }
+
+    /// Invalidate an edge and update its metadata with the contradicting edge ID.
+    ///
+    /// Used when a contradiction is detected above the threshold.
+    /// Sets `valid_until = now` and adds `contradicted_by` to metadata.
+    pub fn invalidate_contradicted(&self, old_edge_id: &str, new_edge_id: &str) -> Result<()> {
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+
+        // First, get the existing metadata
+        let existing_metadata: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT metadata FROM edges WHERE id = ?1",
+                params![old_edge_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+
+        // Parse and update metadata
+        let mut metadata = existing_metadata
+            .and_then(|s| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&s).ok())
+            .unwrap_or(serde_json::Map::new());
+
+        metadata.insert(
+            "contradicted_by".to_string(),
+            serde_json::Value::String(new_edge_id.to_string()),
+        );
+        metadata.insert(
+            "contradicted_at".to_string(),
+            serde_json::Value::String(now_str.clone()),
+        );
+
+        let metadata_str = serde_json::to_string(&metadata).unwrap_or_default();
+
+        self.conn.execute(
+            "UPDATE edges SET valid_until = ?1, metadata = ?2 WHERE id = ?3 AND valid_until IS NULL",
+            params![now_str, metadata_str, old_edge_id],
+        )?;
+
+        Ok(())
+    }
+
     // ── Episode-Entity links ──
 
     pub fn link_episode_entity(

@@ -374,6 +374,37 @@ pub struct EpisodeResult {
     pub episode_id: String,
     pub entities_extracted: usize,
     pub edges_created: usize,
+    pub contradictions_found: usize,
+}
+
+/// A detected contradiction between a new edge and an existing edge.
+///
+/// Produced by `Storage::check_contradictions` during episode ingestion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Contradiction {
+    /// ID of the existing edge that was contradicted.
+    pub old_edge_id: String,
+    /// ID of the new edge that caused the contradiction.
+    pub new_edge_id: String,
+    /// Entity ID of the source entity (if available).
+    pub entity_id: Option<String>,
+    /// Normalized name of the source entity.
+    pub entity_name: String,
+    /// The relation type that conflicted.
+    pub relation: String,
+    /// The previous target value (target_id or fact string).
+    pub old_value: String,
+    /// The new target value (target_id or fact string).
+    pub new_value: String,
+    /// Confidence of the existing edge at time of contradiction.
+    pub existing_confidence: f64,
+}
+
+/// Normalize an entity name for comparison: lowercase + trim whitespace.
+///
+/// Used in contradiction detection to handle minor variations in entity naming.
+pub fn normalize_entity_name(name: &str) -> String {
+    name.to_lowercase().trim().to_string()
 }
 
 /// Unified search result combining episodes, entities, and edges.
@@ -578,6 +609,9 @@ pub struct AgentPolicy {
     pub agent_name: String,
     /// Maximum number of patterns to include in results (0 = no limit).
     pub max_patterns_included: usize,
+    /// Confidence threshold for contradiction detection.
+    /// Edges with confidence below this are replaced silently without flagging.
+    pub contradiction_threshold: f64,
 }
 
 impl Default for AgentPolicy {
@@ -586,6 +620,7 @@ impl Default for AgentPolicy {
             memory_budget_tokens: 20_000,
             agent_name: String::new(),
             max_patterns_included: 50,
+            contradiction_threshold: 0.2,
         }
     }
 }
@@ -1228,6 +1263,61 @@ mod tests {
         assert_eq!(policy.memory_budget_tokens, 20_000);
         assert_eq!(policy.max_patterns_included, 50);
         assert_eq!(policy.agent_name, "");
+        assert_eq!(policy.contradiction_threshold, 0.2);
+    }
+
+    // ── C1: Contradiction Detection Tests ─────────────────────────────────
+
+    #[test]
+    fn test_normalize_entity_name_lowercase_and_trim() {
+        assert_eq!(normalize_entity_name("  Alice  "), "alice");
+        assert_eq!(normalize_entity_name("ALICE"), "alice");
+        assert_eq!(normalize_entity_name("Alice Smith"), "alice smith");
+        assert_eq!(normalize_entity_name("  ALICE SMITH  "), "alice smith");
+        assert_eq!(normalize_entity_name("alice"), "alice"); // already lowercase
+    }
+
+    #[test]
+    fn test_normalize_entity_name_preserves_content() {
+        // Normalization should not change the content beyond case and whitespace
+        assert_eq!(normalize_entity_name("PostgreSQL"), "postgresql");
+        assert_eq!(normalize_entity_name("MySQL"), "mysql");
+        assert_eq!(normalize_entity_name("  hello world  "), "hello world");
+    }
+
+    #[test]
+    fn test_contradiction_struct_creation() {
+        let contradiction = Contradiction {
+            old_edge_id: "edge-1".to_string(),
+            new_edge_id: "edge-2".to_string(),
+            entity_id: Some("entity-123".to_string()),
+            entity_name: "alice".to_string(),
+            relation: "chose".to_string(),
+            old_value: "PostgreSQL".to_string(),
+            new_value: "MySQL".to_string(),
+            existing_confidence: 0.9,
+        };
+
+        assert_eq!(contradiction.old_edge_id, "edge-1");
+        assert_eq!(contradiction.new_edge_id, "edge-2");
+        assert_eq!(contradiction.entity_id, Some("entity-123".to_string()));
+        assert_eq!(contradiction.entity_name, "alice");
+        assert_eq!(contradiction.relation, "chose");
+        assert_eq!(contradiction.old_value, "PostgreSQL");
+        assert_eq!(contradiction.new_value, "MySQL");
+        assert_eq!(contradiction.existing_confidence, 0.9);
+    }
+
+    #[test]
+    fn test_episode_result_has_contradictions_field() {
+        let result = EpisodeResult {
+            episode_id: "ep-1".to_string(),
+            entities_extracted: 5,
+            edges_created: 3,
+            contradictions_found: 2,
+        };
+
+        assert_eq!(result.contradictions_found, 2);
     }
 
     #[test]

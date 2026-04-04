@@ -2507,3 +2507,283 @@ fn test_extract_pattern_candidates_with_duplicate_edges() {
         );
     }
 }
+
+// ── Contradiction Detection (C1) Tests ───────────────────────────────────────
+
+#[test]
+fn test_contradiction_detected_when_new_fact_conflicts() {
+    // Insert two conflicting edges, verify first is invalidated
+    let graph = test_graph();
+
+    // Create entities
+    let alice = Entity::new("Alice", "Person");
+    let postgres = Entity::new("PostgreSQL", "Database");
+    let mysql = Entity::new("MySQL", "Database");
+
+    graph.add_entity(alice.clone()).unwrap();
+    graph.add_entity(postgres.clone()).unwrap();
+    graph.add_entity(mysql.clone()).unwrap();
+
+    // First edge: Alice chose PostgreSQL
+    let mut edge1 = Edge::new(&alice.id, &postgres.id, "chose");
+    edge1.confidence = 0.9;
+    edge1.fact = Some("Alice chose PostgreSQL".to_string());
+    let edge1_id = edge1.id.clone();
+    graph.add_edge(edge1).unwrap();
+
+    // Second edge: Alice chose MySQL (conflicts with first)
+    let mut edge2 = Edge::new(&alice.id, &mysql.id, "chose");
+    edge2.confidence = 0.9;
+    edge2.fact = Some("Alice chose MySQL".to_string());
+    let edge2_for_check = edge2.clone();
+    graph.add_edge(edge2).unwrap();
+
+    // Check for contradictions
+    let contradictions = graph
+        .storage
+        .check_contradictions(&[edge2_for_check], 0.2)
+        .unwrap();
+
+    // Should detect exactly one contradiction
+    assert_eq!(contradictions.len(), 1, "Expected 1 contradiction, got {}", contradictions.len());
+    assert_eq!(contradictions[0].old_edge_id, edge1_id);
+    assert_eq!(contradictions[0].relation, "chose");
+}
+
+#[test]
+fn test_contradiction_invalidated_edge_has_metadata() {
+    // Verify contradicted_by and contradicted_at in metadata
+    let graph = test_graph();
+
+    let alice = Entity::new("Alice", "Person");
+    let postgres = Entity::new("PostgreSQL", "Database");
+    let mysql = Entity::new("MySQL", "Database");
+
+    graph.add_entity(alice.clone()).unwrap();
+    graph.add_entity(postgres.clone()).unwrap();
+    graph.add_entity(mysql.clone()).unwrap();
+
+    let mut edge1 = Edge::new(&alice.id, &postgres.id, "chose");
+    edge1.confidence = 0.9;
+    edge1.fact = Some("Alice chose PostgreSQL".to_string());
+    let edge1_id = edge1.id.clone();
+    graph.add_edge(edge1).unwrap();
+
+    let mut edge2 = Edge::new(&alice.id, &mysql.id, "chose");
+    edge2.confidence = 0.9;
+    edge2.fact = Some("Alice chose MySQL".to_string());
+    let edge2_for_check = edge2.clone();
+    graph.add_edge(edge2).unwrap();
+
+    // Check for contradictions and invalidate
+    let contradictions = graph
+        .storage
+        .check_contradictions(&[edge2_for_check], 0.2)
+        .unwrap();
+
+    for c in &contradictions {
+        graph
+            .storage
+            .invalidate_contradicted(&c.old_edge_id, &c.new_edge_id)
+            .unwrap();
+    }
+
+    // Get the invalidated edge
+    let all_edges = graph.storage.get_edges_for_entity(&alice.id).unwrap();
+    let invalidated = all_edges.iter().find(|e| e.id == edge1_id).unwrap();
+
+    // Check metadata has contradicted_by and contradicted_at
+    let metadata = invalidated.metadata.as_ref().unwrap();
+    assert!(
+        metadata.get("contradicted_by").is_some(),
+        "Expected contradicted_by in metadata"
+    );
+    assert!(
+        metadata.get("contradicted_at").is_some(),
+        "Expected contradicted_at in metadata"
+    );
+}
+
+#[test]
+fn test_no_contradiction_when_same_fact_inserted_twice() {
+    // Insert the same fact twice — no contradiction
+    let graph = test_graph();
+
+    let alice = Entity::new("Alice", "Person");
+    let postgres = Entity::new("PostgreSQL", "Database");
+
+    graph.add_entity(alice.clone()).unwrap();
+    graph.add_entity(postgres.clone()).unwrap();
+
+    let mut edge1 = Edge::new(&alice.id, &postgres.id, "chose");
+    edge1.confidence = 0.9;
+    edge1.fact = Some("Alice chose PostgreSQL".to_string());
+    graph.add_edge(edge1).unwrap();
+
+    // Same fact, same target
+    let mut edge2 = Edge::new(&alice.id, &postgres.id, "chose");
+    edge2.confidence = 0.9;
+    edge2.fact = Some("Alice chose PostgreSQL".to_string());
+    let edge2_for_check = edge2.clone();
+    graph.add_edge(edge2).unwrap();
+
+    // Check for contradictions — should be none since target_id is the same
+    let contradictions = graph
+        .storage
+        .check_contradictions(&[edge2_for_check], 0.2)
+        .unwrap();
+
+    assert!(
+        contradictions.is_empty(),
+        "Expected no contradiction for same target, got {}",
+        contradictions.len()
+    );
+}
+
+#[test]
+fn test_get_current_edges_returns_only_newer_after_contradiction() {
+    // Verify old edge is excluded from current edges after contradiction
+    let graph = test_graph();
+
+    let alice = Entity::new("Alice", "Person");
+    let postgres = Entity::new("PostgreSQL", "Database");
+    let mysql = Entity::new("MySQL", "Database");
+
+    graph.add_entity(alice.clone()).unwrap();
+    graph.add_entity(postgres.clone()).unwrap();
+    graph.add_entity(mysql.clone()).unwrap();
+
+    let mut edge1 = Edge::new(&alice.id, &postgres.id, "chose");
+    edge1.confidence = 0.9;
+    edge1.fact = Some("Alice chose PostgreSQL".to_string());
+    let edge1_id = edge1.id.clone();
+    graph.add_edge(edge1).unwrap();
+
+    let mut edge2 = Edge::new(&alice.id, &mysql.id, "chose");
+    edge2.confidence = 0.9;
+    edge2.fact = Some("Alice chose MySQL".to_string());
+    let edge2_for_check = edge2.clone();
+    graph.add_edge(edge2).unwrap();
+
+    // Check for contradictions and invalidate
+    let contradictions = graph
+        .storage
+        .check_contradictions(&[edge2_for_check], 0.2)
+        .unwrap();
+
+    for c in &contradictions {
+        graph
+            .storage
+            .invalidate_contradicted(&c.old_edge_id, &c.new_edge_id)
+            .unwrap();
+    }
+
+    // Get current edges for Alice — should only return edge2
+    let current_edges = graph
+        .storage
+        .get_current_edges_for_entity(&alice.id)
+        .unwrap();
+
+    // edge1 should be invalidated, edge2 should be current
+    assert_eq!(current_edges.len(), 1, "Expected 1 current edge, got {}", current_edges.len());
+    assert_eq!(current_edges[0].id, edge2_for_check.id);
+    assert!(
+        current_edges.iter().all(|e| e.id != edge1_id),
+        "Old invalidated edge should not be in current edges"
+    );
+}
+
+#[test]
+fn test_low_confidence_edge_replaced_silently() {
+    // confidence=0.1 edge replaced without contradiction
+    let graph = test_graph();
+
+    let alice = Entity::new("Alice", "Person");
+    let postgres = Entity::new("PostgreSQL", "Database");
+    let mysql = Entity::new("MySQL", "Database");
+
+    graph.add_entity(alice.clone()).unwrap();
+    graph.add_entity(postgres.clone()).unwrap();
+    graph.add_entity(mysql.clone()).unwrap();
+
+    // First edge with low confidence (below threshold)
+    let mut edge1 = Edge::new(&alice.id, &postgres.id, "chose");
+    edge1.confidence = 0.1; // Below 0.2 threshold
+    edge1.fact = Some("Alice chose PostgreSQL".to_string());
+    let edge1_id = edge1.id.clone();
+    graph.add_edge(edge1).unwrap();
+
+    // Second edge with higher confidence
+    let mut edge2 = Edge::new(&alice.id, &mysql.id, "chose");
+    edge2.confidence = 0.9;
+    edge2.fact = Some("Alice chose MySQL".to_string());
+    let edge2_id = edge2.id.clone();
+    let edge2_for_check = edge2.clone();
+    graph.add_edge(edge2).unwrap();
+
+    // Check for contradictions — edge1 should be silently invalidated
+    // not flagged as a contradiction (confidence below threshold)
+    let contradictions = graph
+        .storage
+        .check_contradictions(&[edge2_for_check], 0.2)
+        .unwrap();
+
+    // No contradiction recorded since edge1 confidence < threshold
+    assert!(
+        contradictions.is_empty(),
+        "Expected no contradiction for low-confidence edge, got {}",
+        contradictions.len()
+    );
+
+    // But edge1 should be invalidated internally
+    let current_edges = graph
+        .storage
+        .get_current_edges_for_entity(&alice.id)
+        .unwrap();
+
+    // Only edge2 should be current
+    assert_eq!(current_edges.len(), 1);
+    assert_eq!(current_edges[0].id, edge2_for_check.id);
+}
+
+#[test]
+fn test_contradiction_check_empty_graph_returns_empty() {
+    // Unit test for check_contradictions on empty graph
+    let graph = test_graph();
+
+    let alice = Entity::new("Alice", "Person");
+    let postgres = Entity::new("PostgreSQL", "Database");
+
+    graph.add_entity(alice.clone()).unwrap();
+    graph.add_entity(postgres.clone()).unwrap();
+
+    let edge = Edge::new(&alice.id, &postgres.id, "chose");
+    let edge_for_first_check = edge.clone();
+
+    // Check contradictions with single edge in empty graph
+    let contradictions = graph
+        .storage
+        .check_contradictions(&[edge_for_first_check], 0.2)
+        .unwrap();
+
+    assert!(
+        contradictions.is_empty(),
+        "Expected no contradiction in empty graph, got {}",
+        contradictions.len()
+    );
+
+    // Add edge and check again with same edge
+    graph.add_edge(edge.clone()).unwrap();
+
+    let contradictions = graph
+        .storage
+        .check_contradictions(&[edge], 0.2)
+        .unwrap();
+
+    // Should still be empty since they're the same (same target_id)
+    assert!(
+        contradictions.is_empty(),
+        "Expected no contradiction for identical edges, got {}",
+        contradictions.len()
+    );
+}
