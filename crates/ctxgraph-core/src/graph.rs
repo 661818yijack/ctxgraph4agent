@@ -486,6 +486,29 @@ impl Graph {
         self.storage.search_entities(query, limit)
     }
 
+    // ── Candidate Retrieval (A4a) ───────────────────────────────────────────
+
+    /// Retrieve deduplicated candidates via FTS5 search + 1-hop graph traversal.
+    ///
+    /// Combines:
+    /// 1. FTS5 BM25 search across entities(name), edges(relation), episodes(content)
+    /// 2. 1-hop graph traversal from FTS5-matched entities
+    ///
+    /// Deduplicates by (entity_id OR edge_id), keeping the higher BM25 score.
+    /// Patterns (LearnedPattern entities) are only included if they matched via FTS5,
+    /// subject to the `max_patterns_included` cap.
+    ///
+    /// Returns empty vec (not error) if query yields no results.
+    pub fn retrieve_candidates(
+        &self,
+        query: &str,
+        limit: usize,
+        max_patterns_included: usize,
+    ) -> Result<Vec<RetrievalCandidate>> {
+        self.storage
+            .retrieve_candidates(query, limit, max_patterns_included)
+    }
+
     // ── Scoring and Ranking (A4b) ───────────────────────────────────────────
 
     /// Score and rank retrieval candidates by composite score.
@@ -520,6 +543,33 @@ impl Graph {
         });
 
         scored
+    }
+
+    // ── Budget Enforcement (A4c) ───────────────────────────────────────────
+
+    /// Retrieve memories for context injection, honoring budget constraints.
+    ///
+    /// Orchestrates the full retrieval pipeline:
+    /// 1. A4a: retrieve_candidates — FTS5 + graph traversal
+    /// 2. A4b: rank_candidates — score and sort by composite score
+    /// 3. enforce_budget — greedy selection within token budget
+    ///
+    /// This is a convenience passthrough to Storage::retrieve_for_context.
+    ///
+    /// Returns `(ranked_memories, tokens_spent)` where:
+    /// - `ranked_memories`: selected memories within budget, sorted by score descending
+    /// - `tokens_spent`: total token estimate for returned memories
+    ///
+    /// Uses the provided `budget_tokens` directly rather than looking up
+    /// an agent policy (policy lookup is A5).
+    pub fn retrieve_for_context(
+        &self,
+        query: &str,
+        agent_name: &str,
+        budget_tokens: usize,
+    ) -> Result<(Vec<RankedMemory>, usize)> {
+        self.storage
+            .retrieve_for_context(query, agent_name, budget_tokens)
     }
 
     // ── Traversal ──

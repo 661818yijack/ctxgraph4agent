@@ -1079,6 +1079,389 @@ impl Storage {
         Ok(results)
     }
 
+    // ── Candidate Retrieval (A4a) ─────────────────────────────────────────────
+
+    /// Retrieve deduplicated candidates via FTS5 search + 1-hop graph traversal.
+    ///
+    /// Combines:
+    /// 1. FTS5 BM25 search across entities(name), edges(relation), episodes(content)
+    /// 2. 1-hop graph traversal from FTS5-matched entities
+    ///
+    /// Deduplicates by (entity_id OR edge_id), keeping the higher BM25 score.
+    /// Patterns (LearnedPattern entities) are only included if they matched via FTS5,
+    /// subject to the `max_patterns_included` cap.
+    ///
+    /// Returns empty vec (not error) if query yields no results.
+    pub fn retrieve_candidates(
+        &self,
+        query: &str,
+        limit: usize,
+        max_patterns_included: usize,
+    ) -> Result<Vec<RetrievalCandidate>> {
+        // Collect all candidates in a map: key = "entity:<id>" or "edge:<id>", value = candidate
+        // This enables deduplication by entity_id or edge_id while keeping the higher score.
+        use std::collections::HashMap;
+        let mut cand_map: HashMap<String, RetrievalCandidate> = HashMap::new();
+
+        // ── FTS5: Entity names ────────────────────────────────────────────────
+        let entity_results = self.fts_search_entities(query, 100)?;
+        for (entity, score) in entity_results {
+            let key = format!("entity:{}", entity.id);
+            let candidate = Self::entity_to_candidate(&entity, score);
+            cand_map.insert(key, candidate);
+        }
+
+        // Collect all FTS5-matched entity IDs for graph traversal
+        let fts_entity_ids: Vec<String> = cand_map
+            .values()
+            .filter(|c| c.entity_id.is_some())
+            .map(|c| c.entity_id.clone().unwrap())
+            .collect();
+
+        // ── FTS5: Edge relations ─────────────────────────────────────────────
+        let edge_results = self.fts_search_edges(query, 100)?;
+        for (edge, score) in edge_results {
+            let key = format!("edge:{}", edge.id);
+            // Only insert if not already present with a higher score
+            let entry = cand_map.entry(key.clone());
+            match entry {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(Self::edge_to_candidate(&edge, score));
+                }
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    if score > e.get().fts_score {
+                        e.insert(Self::edge_to_candidate(&edge, score));
+                    }
+                }
+            }
+        }
+
+        // ── FTS5: Episode content ─────────────────────────────────────────────
+        let episode_results = self.fts_search_episodes(query, 100)?;
+        for (episode, score) in episode_results {
+            // Episodes don't have entity_id or edge_id, so they can't be deduplicated
+            // against entities/edges. We include them as-is.
+            let candidate = Self::episode_to_candidate(&episode, score);
+            let key = format!("episode:{}", episode.id);
+            cand_map.insert(key, candidate);
+        }
+
+        // ── Graph traversal: 1-hop neighbors from FTS5-matched entities ────────
+        const DEFAULT_GRAPH_SCORE: f64 = 0.3;
+        for entity_id in &fts_entity_ids {
+            // Get 1-hop neighbors (entities and edges) for this entity
+            let neighbors = self.get_1hop_candidates(entity_id, DEFAULT_GRAPH_SCORE)?;
+            for neighbor in neighbors {
+                let key = if neighbor.entity_id.is_some() {
+                    format!("entity:{}", neighbor.entity_id.as_ref().unwrap())
+                } else {
+                    format!("edge:{}", neighbor.edge_id.as_ref().unwrap())
+                };
+                let entry = cand_map.entry(key);
+                match entry {
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(neighbor);
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut e) => {
+                        // Keep the one with higher score
+                        if neighbor.fts_score > e.get().fts_score {
+                            e.insert(neighbor);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Apply max_patterns_included cap ───────────────────────────────────
+        let candidates: Vec<RetrievalCandidate> = cand_map.into_values().collect();
+
+        // Separate patterns from other candidates using into_iter so we own the values
+        let (patterns, non_patterns): (Vec<RetrievalCandidate>, Vec<RetrievalCandidate>) =
+            candidates.into_iter().partition(|c| c.memory_type == MemoryType::Pattern);
+
+        let limited_patterns: Vec<RetrievalCandidate> = if max_patterns_included == 0 {
+            Vec::new()
+        } else {
+            // Take up to max_patterns_included patterns, sorted by score descending
+            let mut patterns_sorted = patterns;
+            patterns_sorted.sort_by(|a, b| {
+                b.fts_score
+                    .partial_cmp(&a.fts_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            patterns_sorted
+                .into_iter()
+                .take(max_patterns_included)
+                .collect()
+        };
+
+        // Combine: non-patterns + limited patterns
+        let mut result: Vec<RetrievalCandidate> = non_patterns;
+        result.extend(limited_patterns);
+
+        // Sort by fts_score descending
+        result.sort_by(|a, b| {
+            b.fts_score
+                .partial_cmp(&a.fts_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Apply overall limit
+        result.truncate(limit);
+        Ok(result)
+    }
+
+    // ── Budget Enforcement (A4c) ─────────────────────────────────────────────
+
+    /// Retrieve memories for context injection, honoring budget constraints.
+    ///
+    /// Orchestrates the full retrieval pipeline:
+    /// 1. A4a: retrieve_candidates — FTS5 + graph traversal
+    /// 2. A4b: score and rank candidates (via Graph::rank_candidates logic)
+    /// 3. A4c: enforce_budget — greedy selection within token budget
+    ///
+    /// Uses the provided `budget_tokens` directly rather than looking up
+    /// an agent policy (policy lookup is A5).
+    ///
+    /// Returns `(ranked_memories, tokens_spent)` where:
+    /// - `ranked_memories`: selected memories within budget, sorted by score descending
+    /// - `tokens_spent`: total token estimate for returned memories
+    ///
+    /// If `budget_tokens` is 0, returns empty vec.
+    pub fn retrieve_for_context(
+        &self,
+        query: &str,
+        agent_name: &str,
+        budget_tokens: usize,
+    ) -> crate::error::Result<(Vec<crate::types::RankedMemory>, usize)> {
+        // A4a: Retrieve candidates (use default limit of 100, max_patterns 50)
+        let candidates = self.retrieve_candidates(query, 100, 50)?;
+
+        if candidates.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+
+        // A4b: Score and rank candidates
+        // Inline the ranking logic since rank_candidates is on Graph,
+        // but we don't have a Graph reference here. This is the same logic
+        // as Graph::rank_candidates but without the Graph dependency.
+        use crate::types::{score_candidate, ScoredCandidate};
+
+        let mut scored: Vec<ScoredCandidate> = candidates
+            .into_iter()
+            .map(|c| {
+                let composite_score = score_candidate(&c);
+                ScoredCandidate {
+                    candidate: c,
+                    composite_score,
+                }
+            })
+            .filter(|sc| sc.composite_score > 0.0)
+            .collect();
+
+        scored.sort_by(|a, b| {
+            b.composite_score
+                .partial_cmp(&a.composite_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // A4c: Enforce budget
+        let (ranked, tokens_spent) = crate::types::enforce_budget(scored, budget_tokens);
+
+        Ok((ranked, tokens_spent))
+    }
+
+    /// FTS5 search over entities_fts (name, entity_type, summary).
+    fn fts_search_entities(&self, query: &str, limit: usize) -> Result<Vec<(Entity, f64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.id, e.name, e.entity_type, e.memory_type, e.ttl_seconds, e.summary,
+                    e.created_at, e.metadata, e.usage_count, e.last_recalled_at,
+                    rank
+             FROM entities_fts fts
+             JOIN entities e ON e.rowid = fts.rowid
+             WHERE entities_fts MATCH ?1
+             ORDER BY rank
+             LIMIT ?2",
+        )?;
+
+        let results = stmt
+            .query_map(params![query, limit as i64], |row| {
+                let entity = Entity {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    entity_type: row.get(2)?,
+                    memory_type: MemoryType::from_db(&row.get::<_, String>(3)?),
+                    ttl: row.get::<_, Option<i64>>(4)?.and_then(parse_ttl_seconds),
+                    summary: row.get(5)?,
+                    created_at: parse_datetime(&row.get::<_, String>(6)?),
+                    metadata: row
+                        .get::<_, Option<String>>(7)?
+                        .and_then(|s| parse_metadata(&s)),
+                    usage_count: row.get(8)?,
+                    last_recalled_at: row.get::<_, Option<String>>(9)?.map(|s| parse_datetime(&s)),
+                };
+                let rank: f64 = row.get(10)?;
+                Ok((entity, -rank))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(results)
+    }
+
+    /// FTS5 search over edges_fts (fact, relation).
+    fn fts_search_edges(&self, query: &str, limit: usize) -> Result<Vec<(Edge, f64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.id, e.source_id, e.target_id, e.relation, e.memory_type, e.ttl_seconds,
+                    e.fact, e.valid_from, e.valid_until, e.recorded_at, e.confidence,
+                    e.episode_id, e.metadata, e.usage_count, e.last_recalled_at,
+                    rank
+             FROM edges_fts fts
+             JOIN edges e ON e.rowid = fts.rowid
+             WHERE edges_fts MATCH ?1
+             ORDER BY rank
+             LIMIT ?2",
+        )?;
+
+        let results = stmt
+            .query_map(params![query, limit as i64], |row| {
+                let edge = Edge {
+                    id: row.get(0)?,
+                    source_id: row.get(1)?,
+                    target_id: row.get(2)?,
+                    relation: row.get(3)?,
+                    memory_type: MemoryType::from_db(&row.get::<_, String>(4)?),
+                    ttl: row.get::<_, Option<i64>>(5)?.and_then(parse_ttl_seconds),
+                    fact: row.get(6)?,
+                    valid_from: row.get::<_, Option<String>>(7)?.map(|s| parse_datetime(&s)),
+                    valid_until: row.get::<_, Option<String>>(8)?.map(|s| parse_datetime(&s)),
+                    recorded_at: parse_datetime(&row.get::<_, String>(9)?),
+                    confidence: row.get(10)?,
+                    episode_id: row.get(11)?,
+                    metadata: row
+                        .get::<_, Option<String>>(12)?
+                        .and_then(|s| parse_metadata(&s)),
+                    usage_count: row.get(13)?,
+                    last_recalled_at: row.get::<_, Option<String>>(14)?.map(|s| parse_datetime(&s)),
+                };
+                let rank: f64 = row.get(15)?;
+                Ok((edge, -rank))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(results)
+    }
+
+    /// FTS5 search over episodes_fts (content, source, metadata).
+    fn fts_search_episodes(&self, query: &str, limit: usize) -> Result<Vec<(Episode, f64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.id, e.content, e.source, e.recorded_at, e.metadata,
+                    e.compression_id, e.memory_type,
+                    rank
+             FROM episodes_fts fts
+             JOIN episodes e ON e.rowid = fts.rowid
+             WHERE episodes_fts MATCH ?1
+             ORDER BY rank
+             LIMIT ?2",
+        )?;
+
+        let results = stmt
+            .query_map(params![query, limit as i64], |row| {
+                let episode = Episode {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    source: row.get(2)?,
+                    recorded_at: parse_datetime(&row.get::<_, String>(3)?),
+                    metadata: row
+                        .get::<_, Option<String>>(4)?
+                        .and_then(|s| parse_metadata(&s)),
+                    compression_id: row.get(5)?,
+                    memory_type: MemoryType::from_db(&row.get::<_, String>(6)?),
+                };
+                let rank: f64 = row.get(7)?;
+                Ok((episode, -rank))
+            })?
+            .collect::<std::result::Result<Vec<_>, _> >()?;
+
+        Ok(results)
+    }
+
+    /// Get 1-hop neighbors (entities and edges) for a given entity.
+    /// Used by retrieve_candidates for graph traversal.
+    fn get_1hop_candidates(
+        &self,
+        entity_id: &str,
+        default_score: f64,
+    ) -> Result<Vec<RetrievalCandidate>> {
+        let mut candidates = Vec::new();
+
+        // Get 1-hop edges
+        let edges = self.get_current_edges_for_entity(entity_id)?;
+
+        // Collect neighbor entity IDs while building edge candidates
+        let mut neighbor_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for edge in &edges {
+            candidates.push(Self::edge_to_candidate(edge, default_score));
+            if edge.source_id == entity_id {
+                neighbor_ids.insert(edge.target_id.clone());
+            } else {
+                neighbor_ids.insert(edge.source_id.clone());
+            }
+        }
+
+        for nid in neighbor_ids {
+            if let Some(entity) = self.get_entity(&nid)? {
+                candidates.push(Self::entity_to_candidate(&entity, default_score));
+            }
+        }
+
+        Ok(candidates)
+    }
+
+    /// Convert an Entity to a RetrievalCandidate.
+    fn entity_to_candidate(entity: &Entity, fts_score: f64) -> RetrievalCandidate {
+        RetrievalCandidate {
+            entity_id: Some(entity.id.clone()),
+            edge_id: None,
+            content: entity.summary.clone().unwrap_or_else(|| entity.name.clone()),
+            fts_score,
+            memory_type: entity.memory_type,
+            created_at: entity.created_at,
+            ttl: entity.ttl,
+            base_confidence: 1.0,
+            usage_count: entity.usage_count,
+        }
+    }
+
+    /// Convert an Edge to a RetrievalCandidate.
+    fn edge_to_candidate(edge: &Edge, fts_score: f64) -> RetrievalCandidate {
+        RetrievalCandidate {
+            entity_id: None,
+            edge_id: Some(edge.id.clone()),
+            content: edge.fact.clone().unwrap_or_else(|| edge.relation.clone()),
+            fts_score,
+            memory_type: edge.memory_type,
+            created_at: edge.recorded_at,
+            ttl: edge.ttl,
+            base_confidence: edge.confidence,
+            usage_count: edge.usage_count,
+        }
+    }
+
+    /// Convert an Episode to a RetrievalCandidate.
+    fn episode_to_candidate(episode: &Episode, fts_score: f64) -> RetrievalCandidate {
+        RetrievalCandidate {
+            entity_id: None,
+            edge_id: None,
+            content: episode.content.clone(),
+            fts_score,
+            memory_type: episode.memory_type,
+            created_at: episode.recorded_at,
+            ttl: episode.memory_type.default_ttl(),
+            base_confidence: 1.0,
+            usage_count: 0,
+        }
+    }
+
     /// Get all stored patterns (LearnedPattern entities).
     ///
     /// Returns `PatternCandidate` objects with descriptions populated from the

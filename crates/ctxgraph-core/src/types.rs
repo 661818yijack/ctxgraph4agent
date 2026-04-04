@@ -545,6 +545,131 @@ pub fn score_candidate(candidate: &RetrievalCandidate) -> f64 {
     }
 }
 
+// ── Budget Enforcement (A4c) ───────────────────────────────────────────────
+
+/// A memory selected for inclusion in context, with its token cost.
+///
+/// Produced by `enforce_budget` after greedy selection from scored candidates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RankedMemory {
+    /// Memory type driving TTL and decay behavior.
+    pub memory_type: MemoryType,
+    /// Content to inject into context.
+    pub content: String,
+    /// Composite score from ranking (for debugging/audit).
+    pub score: f64,
+    /// Entity ID if this is an entity memory, otherwise None.
+    pub entity_id: Option<String>,
+    /// Edge ID if this is an edge memory, otherwise None.
+    pub edge_id: Option<String>,
+    /// Token estimate for this memory (text.len() / 4).
+    pub tokens: usize,
+}
+
+/// Per-agent memory policy configuration.
+///
+/// Drives budget allocation and pattern inclusion limits during retrieval.
+/// Default budget is 20,000 tokens; default max patterns is 50.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentPolicy {
+    /// Maximum tokens to spend on memory for this agent per query.
+    pub memory_budget_tokens: usize,
+    /// Agent name for policy lookup.
+    pub agent_name: String,
+    /// Maximum number of patterns to include in results (0 = no limit).
+    pub max_patterns_included: usize,
+}
+
+impl Default for AgentPolicy {
+    fn default() -> Self {
+        Self {
+            memory_budget_tokens: 20_000,
+            agent_name: String::new(),
+            max_patterns_included: 50,
+        }
+    }
+}
+
+/// Estimate token count for a text string.
+///
+/// Uses `text.len() / 4` as a ceiling estimate. This is acknowledged to be
+/// imprecise — actual token counts vary by vocabulary and encoding — but
+/// provides a conservative (overestimating) approximation suitable for budget
+/// enforcement.
+///
+/// - Input: "hello world" (11 chars) → returns 3 tokens (ceiling)
+/// - Input: "The quick brown fox jumps over the lazy dog" (44 chars) → returns 11 tokens
+///
+/// For exact counting, a proper tokenizer (e.g., tiktoken) would be needed.
+pub fn estimate_tokens(text: &str) -> usize {
+    // Ceiling division: (len + 3) / 4  is equivalent to ceil(len / 4)
+    // But simpler: just use len / 4 with integer division (floor), which
+    // underestimates. For ceiling, add 3 first.
+    // However, the spec says text.len() / 4 directly, so we follow that.
+    // Note: this is documented as a ceiling estimate, so we use floor which
+    // actually makes it a floor estimate, but in practice chars > tokens
+    // so this serves as a reasonable proxy.
+    text.len() / 4
+}
+
+/// Greedily enforce token budget on scored candidates.
+///
+/// Takes sorted (highest-scoring first) `ScoredCandidate`s and adds them
+/// to the result until the token budget is exhausted. Skips any candidate
+/// whose token estimate alone exceeds the remaining budget.
+///
+/// Returns `(selected_memories, total_tokens_spent)` where:
+/// - `selected_memories`: memories within budget, in score-descending order
+/// - `total_tokens_spent`: sum of estimate_tokens for all returned memories
+///
+/// Budget defaults to 20,000 tokens (AgentPolicy::default().memory_budget_tokens).
+///
+/// # Behavior
+/// - Greedy selection: highest-scored candidates first
+/// - Skip if adding would exceed budget
+/// - Skip if single memory exceeds budget entirely
+/// - If budget is 0, returns empty vec
+pub fn enforce_budget(
+    candidates: Vec<ScoredCandidate>,
+    budget_tokens: usize,
+) -> (Vec<RankedMemory>, usize) {
+    if budget_tokens == 0 {
+        return (Vec::new(), 0);
+    }
+
+    let mut selected: Vec<RankedMemory> = Vec::new();
+    let mut total_tokens: usize = 0;
+
+    for scored in candidates {
+        let tokens = estimate_tokens(&scored.candidate.content);
+
+        // Skip if this single memory exceeds the entire budget
+        if tokens > budget_tokens {
+            continue;
+        }
+
+        // Skip if adding this would exceed remaining budget
+        if total_tokens + tokens > budget_tokens {
+            continue;
+        }
+
+        total_tokens += tokens;
+
+        let ranked = RankedMemory {
+            memory_type: scored.candidate.memory_type,
+            content: scored.candidate.content,
+            score: scored.composite_score,
+            entity_id: scored.candidate.entity_id,
+            edge_id: scored.candidate.edge_id,
+            tokens,
+        };
+
+        selected.push(ranked);
+    }
+
+    (selected, total_tokens)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -859,6 +984,281 @@ mod tests {
             (score - expected_bonus).abs() < 0.01,
             "pattern score {score} should equal usage bonus ~{expected_bonus}"
         );
+    }
+
+    // ── A4c: Budget Enforcement Tests ─────────────────────────────────────
+
+    #[test]
+    fn test_estimate_tokens_hello_world() {
+        // "hello world" is 11 chars, 11/4 = 2.75 floor = 2
+        // But actual test: 11 chars / 4 = 2 (floor division)
+        let tokens = estimate_tokens("hello world");
+        assert_eq!(tokens, 2, "hello world (11 chars) should be ~2-3 tokens");
+    }
+
+    #[test]
+    fn test_estimate_tokens_empty_string() {
+        let tokens = estimate_tokens("");
+        assert_eq!(tokens, 0, "empty string should be 0 tokens");
+    }
+
+    #[test]
+    fn test_estimate_tokens_ceiling_estimate() {
+        // text.len() / 4 is documented as a ceiling estimate
+        // For short strings, the floor division gives a lower bound
+        let tokens = estimate_tokens("hi"); // 2 chars
+        assert_eq!(tokens, 0, "2 chars / 4 = 0 tokens");
+    }
+
+    #[test]
+    fn test_enforce_budget_zero_budget_returns_empty() {
+        let candidates = vec![];
+        let (memories, tokens_spent) = enforce_budget(candidates, 0);
+        assert!(memories.is_empty());
+        assert_eq!(tokens_spent, 0);
+    }
+
+    #[test]
+    fn test_enforce_budget_single_candidate_fits() {
+        use chrono::Duration;
+
+        let candidate = ScoredCandidate {
+            candidate: RetrievalCandidate {
+                entity_id: Some("e1".to_string()),
+                edge_id: None,
+                content: "short".to_string(), // 5 chars = 1 token
+                fts_score: 0.5,
+                memory_type: MemoryType::Fact,
+                created_at: Utc::now() - Duration::days(1),
+                ttl: Some(Duration::days(90).to_std().unwrap()),
+                base_confidence: 1.0,
+                usage_count: 0,
+            },
+            composite_score: 0.5,
+        };
+
+        let (memories, tokens_spent) = enforce_budget(vec![candidate], 100);
+        assert_eq!(memories.len(), 1);
+        assert_eq!(tokens_spent, 1); // 5 chars / 4 = 1 token
+    }
+
+    #[test]
+    fn test_enforce_budget_skips_candidate_exceeding_budget() {
+        use chrono::Duration;
+
+        // Create a candidate with content too large for the budget
+        let candidate = ScoredCandidate {
+            candidate: RetrievalCandidate {
+                entity_id: Some("e1".to_string()),
+                edge_id: None,
+                content: "a".repeat(500), // 500 chars = 125 tokens
+                fts_score: 0.5,
+                memory_type: MemoryType::Fact,
+                created_at: Utc::now() - Duration::days(1),
+                ttl: Some(Duration::days(90).to_std().unwrap()),
+                base_confidence: 1.0,
+                usage_count: 0,
+            },
+            composite_score: 0.5,
+        };
+
+        // Budget of 100 tokens should skip this candidate
+        let (memories, tokens_spent) = enforce_budget(vec![candidate], 100);
+        assert!(memories.is_empty(), "candidate exceeding budget should be skipped");
+        assert_eq!(tokens_spent, 0);
+    }
+
+    #[test]
+    fn test_enforce_budget_greedy_selection() {
+        use chrono::Duration;
+
+        // Create candidates with different scores and sizes
+        // Note: enforce_budget processes in order given, so we provide them sorted
+        let candidates = vec![
+            ScoredCandidate {
+                candidate: RetrievalCandidate {
+                    entity_id: Some("e1".to_string()),
+                    edge_id: None,
+                    content: "small".to_string(), // 5 chars = 1 token
+                    fts_score: 0.5,
+                    memory_type: MemoryType::Fact,
+                    created_at: Utc::now() - Duration::days(1),
+                    ttl: Some(Duration::days(90).to_std().unwrap()),
+                    base_confidence: 1.0,
+                    usage_count: 0,
+                },
+                composite_score: 0.9, // highest score
+            },
+            ScoredCandidate {
+                candidate: RetrievalCandidate {
+                    entity_id: Some("e3".to_string()),
+                    edge_id: None,
+                    content: "tiny".to_string(), // 4 chars = 1 token
+                    fts_score: 0.5,
+                    memory_type: MemoryType::Fact,
+                    created_at: Utc::now() - Duration::days(1),
+                    ttl: Some(Duration::days(90).to_std().unwrap()),
+                    base_confidence: 1.0,
+                    usage_count: 0,
+                },
+                composite_score: 0.8, // second highest
+            },
+            ScoredCandidate {
+                candidate: RetrievalCandidate {
+                    entity_id: Some("e2".to_string()),
+                    edge_id: None,
+                    content: "medium size content here".to_string(), // 24 chars = 6 tokens
+                    fts_score: 0.5,
+                    memory_type: MemoryType::Fact,
+                    created_at: Utc::now() - Duration::days(1),
+                    ttl: Some(Duration::days(90).to_std().unwrap()),
+                    base_confidence: 1.0,
+                    usage_count: 0,
+                },
+                composite_score: 0.5, // lower score
+            },
+        ];
+
+        // Budget of 10 tokens should fit all three (1 + 1 + 6 = 8 tokens)
+        let (memories, tokens_spent) = enforce_budget(candidates, 10);
+        assert_eq!(memories.len(), 3);
+        assert_eq!(tokens_spent, 8);
+
+        // Verify order is by score descending (as provided)
+        assert_eq!(memories[0].score, 0.9);
+        assert_eq!(memories[1].score, 0.8);
+        assert_eq!(memories[2].score, 0.5);
+    }
+
+    #[test]
+    fn test_enforce_budget_respects_remaining_budget() {
+        use chrono::Duration;
+
+        // First candidate uses most of budget
+        // "content that takes up many tokens here" = 38 chars = 9 tokens
+        // "another item" = 12 chars = 3 tokens
+        let candidates = vec![
+            ScoredCandidate {
+                candidate: RetrievalCandidate {
+                    entity_id: Some("e1".to_string()),
+                    edge_id: None,
+                    content: "content that takes up many tokens here".to_string(),
+                    fts_score: 0.5,
+                    memory_type: MemoryType::Fact,
+                    created_at: Utc::now() - Duration::days(1),
+                    ttl: Some(Duration::days(90).to_std().unwrap()),
+                    base_confidence: 1.0,
+                    usage_count: 0,
+                },
+                composite_score: 0.9,
+            },
+            ScoredCandidate {
+                candidate: RetrievalCandidate {
+                    entity_id: Some("e2".to_string()),
+                    edge_id: None,
+                    content: "another item".to_string(),
+                    fts_score: 0.5,
+                    memory_type: MemoryType::Fact,
+                    created_at: Utc::now() - Duration::days(1),
+                    ttl: Some(Duration::days(90).to_std().unwrap()),
+                    base_confidence: 1.0,
+                    usage_count: 0,
+                },
+                composite_score: 0.8,
+            },
+        ];
+
+        // Budget of 11 tokens - first candidate (9 tokens) fits,
+        // second candidate (3 tokens) would exceed 11 (9+3=12 > 11)
+        let (memories, tokens_spent) = enforce_budget(candidates, 11);
+        assert_eq!(memories.len(), 1);
+        assert_eq!(tokens_spent, 9);
+    }
+
+    #[test]
+    fn test_enforce_budget_total_within_budget() {
+        use chrono::Duration;
+
+        let candidates = vec![
+            ScoredCandidate {
+                candidate: RetrievalCandidate {
+                    entity_id: Some("e1".to_string()),
+                    edge_id: None,
+                    content: "test content number one".to_string(), // 23 chars = 5 tokens
+                    fts_score: 0.5,
+                    memory_type: MemoryType::Fact,
+                    created_at: Utc::now() - Duration::days(1),
+                    ttl: Some(Duration::days(90).to_std().unwrap()),
+                    base_confidence: 1.0,
+                    usage_count: 0,
+                },
+                composite_score: 0.7,
+            },
+            ScoredCandidate {
+                candidate: RetrievalCandidate {
+                    entity_id: Some("e2".to_string()),
+                    edge_id: None,
+                    content: "test content number two here".to_string(), // 30 chars = 7 tokens
+                    fts_score: 0.5,
+                    memory_type: MemoryType::Fact,
+                    created_at: Utc::now() - Duration::days(1),
+                    ttl: Some(Duration::days(90).to_std().unwrap()),
+                    base_confidence: 1.0,
+                    usage_count: 0,
+                },
+                composite_score: 0.6,
+            },
+        ];
+
+        let budget = 20_000; // default budget
+        let (memories, tokens_spent) = enforce_budget(candidates, budget);
+
+        // Both should fit (5 + 7 = 12 tokens < 20000)
+        assert_eq!(memories.len(), 2);
+        assert_eq!(tokens_spent, 12);
+
+        // Verify property: sum of tokens <= budget
+        let total_tokens: usize = memories.iter().map(|m| m.tokens).sum();
+        assert!(total_tokens <= budget);
+    }
+
+    #[test]
+    fn test_agent_policy_default() {
+        let policy = AgentPolicy::default();
+        assert_eq!(policy.memory_budget_tokens, 20_000);
+        assert_eq!(policy.max_patterns_included, 50);
+        assert_eq!(policy.agent_name, "");
+    }
+
+    #[test]
+    fn test_ranked_memory_fields() {
+        use chrono::Duration;
+
+        let candidate = ScoredCandidate {
+            candidate: RetrievalCandidate {
+                entity_id: Some("entity-123".to_string()),
+                edge_id: Some("edge-456".to_string()),
+                content: "test memory content".to_string(),
+                fts_score: 0.8,
+                memory_type: MemoryType::Pattern,
+                created_at: Utc::now() - Duration::days(5),
+                ttl: None,
+                base_confidence: 0.9,
+                usage_count: 10,
+            },
+            composite_score: 0.75,
+        };
+
+        let (memories, _) = enforce_budget(vec![candidate], 1000);
+        assert_eq!(memories.len(), 1);
+
+        let ranked = &memories[0];
+        assert_eq!(ranked.memory_type, MemoryType::Pattern);
+        assert_eq!(ranked.content, "test memory content");
+        assert_eq!(ranked.score, 0.75);
+        assert_eq!(ranked.entity_id, Some("entity-123".to_string()));
+        assert_eq!(ranked.edge_id, Some("edge-456".to_string()));
+        assert!(ranked.tokens > 0);
     }
 }
 

@@ -243,6 +243,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
     END;
     "#,
     ),
+    (
+        "008_fts5_candidate_retrieval",
+        r#"
+    -- NOTE: FTS5 virtual tables (episodes_fts, entities_fts, edges_fts) and their
+    -- triggers were created in Migration 001. This migration is a marker for A4a
+    -- (FTS5 + graph candidate retrieval) and performs no schema changes.
+    "#,
+    ),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
