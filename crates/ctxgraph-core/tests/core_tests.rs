@@ -1454,9 +1454,8 @@ fn test_compress_empty_list_returns_error() {
 
 #[test]
 fn test_generate_compression_summary_empty_returns_error() {
-    let _graph = test_graph();
-    let storage = ctxgraph::storage::Storage::open_in_memory().unwrap();
-    let result = storage.generate_compression_summary(&[]);
+    let graph = test_graph();
+    let result = graph.generate_compression_summary(&[]);
     assert!(result.is_err());
 }
 
@@ -1464,43 +1463,35 @@ fn test_generate_compression_summary_empty_returns_error() {
 fn test_generate_compression_summary_produces_text() {
     let graph = test_graph();
 
-    // Insert 3 episodes
+    // Create episode objects directly (no need to insert for summary generation)
     let ep1 = Episode::builder("Debugged Docker networking issue with bridge driver").build();
     let ep2 = Episode::builder("Fixed Docker DNS resolution by configuring resolv.conf").build();
     let ep3 = Episode::builder("Resolved Docker container restart loop caused by OOM").build();
-    let id1 = ep1.id.clone();
-    let id2 = ep2.id.clone();
-    let id3 = ep3.id.clone();
-    graph.add_episode(ep1).unwrap();
-    graph.add_episode(ep2).unwrap();
-    graph.add_episode(ep3).unwrap();
 
-    let summary_id = graph.compress_episodes(&[id1, id2, id3]).unwrap();
+    let summary = graph
+        .generate_compression_summary(&[ep1, ep2, ep3])
+        .unwrap();
 
-    let summary_episode = graph.get_episode(&summary_id).unwrap().unwrap();
     // Summary should not be empty
-    assert!(
-        !summary_episode.content.is_empty(),
-        "summary should not be empty"
-    );
+    assert!(!summary.is_empty(), "summary should not be empty");
 
     // Summary should mention Docker (key topic from source episodes)
     assert!(
-        summary_episode.content.contains("Docker"),
+        summary.contains("Docker"),
         "summary should mention Docker: {}",
-        summary_episode.content
+        summary
     );
 
     // Summary should mention the count
     assert!(
-        summary_episode.content.contains("3 episodes"),
+        summary.contains("3 episodes"),
         "summary should mention count: {}",
-        summary_episode.content
+        summary
     );
 }
 
 #[test]
-fn test_compress_episodes_creates_summary_with_pattern_type() {
+fn test_compress_episodes_creates_summary_with_fact_type() {
     let graph = test_graph();
 
     // Insert episodes about Docker debugging
@@ -1518,9 +1509,9 @@ fn test_compress_episodes_creates_summary_with_pattern_type() {
         .compress_episodes(&[id1.clone(), id2.clone(), id3.clone()])
         .unwrap();
 
-    // Verify compressed episode exists with Pattern type
+    // Verify compressed episode exists with Fact type
     let compressed = graph.get_episode(&compressed_id).unwrap().unwrap();
-    assert_eq!(compressed.memory_type, MemoryType::Pattern);
+    assert_eq!(compressed.memory_type, MemoryType::Fact);
     assert_eq!(compressed.source.as_deref(), Some("compression"));
     assert!(!compressed.content.is_empty());
 
@@ -1684,9 +1675,9 @@ fn test_list_uncompressed_excludes_already_compressed() {
     assert_eq!(uncompressed.len(), 1);
     assert_eq!(uncompressed[0].id, id2);
 
-    // Verify compressed episode exists and has Pattern type
+    // Verify compressed episode exists and has Fact type
     let compressed = graph.get_episode(&compressed_id).unwrap().unwrap();
-    assert_eq!(compressed.memory_type, MemoryType::Pattern);
+    assert_eq!(compressed.memory_type, MemoryType::Fact);
 }
 
 #[test]
@@ -1731,7 +1722,7 @@ fn test_compress_single_episode() {
     );
 
     let compressed = graph.get_episode(&compressed_id).unwrap().unwrap();
-    assert_eq!(compressed.memory_type, MemoryType::Pattern);
+    assert_eq!(compressed.memory_type, MemoryType::Fact);
     assert!(compressed.content.contains("Single episode"));
 }
 

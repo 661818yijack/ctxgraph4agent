@@ -485,76 +485,34 @@ impl Storage {
 
     // ── Episode Compression ──
 
-    /// Generate a compression summary from source episodes.
-    ///
-    /// Reads episode contents, concatenates them (truncated to budget), and produces
-    /// a concise summary. Uses template-based summarization (no LLM dependency in core).
-    /// Returns an error if any episode_id is not found or if the list is empty.
-    pub fn generate_compression_summary(&self, episode_ids: &[String]) -> Result<String> {
-        if episode_ids.is_empty() {
-            return Err(CtxGraphError::InvalidInput(
-                "cannot compress empty episode list".to_string(),
-            ));
-        }
-
-        // Fetch all source episodes
-        let mut contents: Vec<String> = Vec::new();
-        for id in episode_ids {
-            let episode = self
-                .get_episode(id)?
-                .ok_or_else(|| CtxGraphError::NotFound(format!("episode {id} not found")))?;
-            contents.push(episode.content);
-        }
-
-        // Truncate each content to ~200 chars for the budget (~2000 chars total for 10 episodes)
-        let budget_per_episode = 200;
-        let truncated: Vec<&str> = contents
-            .iter()
-            .map(|c| {
-                if c.len() > budget_per_episode {
-                    &c[..budget_per_episode]
-                } else {
-                    c.as_str()
-                }
-            })
-            .collect();
-
-        // Build a template-based summary
-        Ok(format!(
-            "Summary of {} episodes: {}",
-            episode_ids.len(),
-            truncated.join(" | ")
-        ))
-    }
-
     /// Compress a set of episodes into a single summary episode.
     ///
-    /// Creates a new episode with memory_type Pattern containing a generated summary,
+    /// Creates a new episode with memory_type Fact containing the provided summary,
     /// links all source episodes to the summary via compression_id, and merges
     /// entity links from source episodes to the compressed episode.
     ///
+    /// This is a pure persistence method — summary generation is the caller's responsibility
+    /// (typically the Graph layer which can call an LLM).
+    ///
     /// Returns the ID of the new compressed summary episode.
-    pub fn compress_episodes(&self, episode_ids: &[String]) -> Result<String> {
+    pub fn compress_episodes(&self, episode_ids: &[String], summary: &str) -> Result<String> {
         if episode_ids.is_empty() {
             return Err(CtxGraphError::InvalidInput(
                 "cannot compress empty episode list".to_string(),
             ));
         }
 
-        // Generate summary from source episodes
-        let summary = self.generate_compression_summary(episode_ids)?;
-
-        // Create the compressed episode with Pattern memory_type
+        // Create the compressed episode with Fact memory_type
         let compressed_episode = Episode {
             id: uuid::Uuid::now_v7().to_string(),
-            content: summary,
+            content: summary.to_string(),
             source: Some("compression".to_string()),
             recorded_at: Utc::now(),
             metadata: Some(serde_json::json!({
                 "compressed_count": episode_ids.len(),
             })),
             compression_id: None,
-            memory_type: MemoryType::Pattern,
+            memory_type: MemoryType::Fact,
         };
 
         let compressed_id = compressed_episode.id.clone();
@@ -597,13 +555,13 @@ impl Storage {
 
     /// List episodes that have not been compressed, recorded before the given date.
     ///
-    /// Used to find candidates for compression — old episodes without a compression_id.
-    /// Excludes Pattern-type episodes (compressed summaries never need further compression).
+    /// Used to find candidates for compression — old episodes without a compression_id
+    /// that are not themselves compressed summaries (source = 'compression').
     pub fn list_uncompressed_episodes(&self, before: DateTime<Utc>) -> Result<Vec<Episode>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, content, source, recorded_at, metadata, compression_id, memory_type
              FROM episodes
-             WHERE compression_id IS NULL AND memory_type != 'pattern' AND recorded_at < ?1
+             WHERE compression_id IS NULL AND source IS NOT 'compression' AND recorded_at < ?1
              ORDER BY recorded_at ASC",
         )?;
 

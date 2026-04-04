@@ -534,13 +534,66 @@ impl Graph {
 
     // ── Episode Compression ──
 
-    /// Compress a set of episodes into a single summary episode with Pattern memory_type.
+    /// Generate a compression summary from source episodes.
     ///
+    /// Concatenates episode contents (truncated to budget) and returns a placeholder summary.
+    /// TODO: Replace with actual LLM call when LLM client is available in Graph layer.
+    pub fn generate_compression_summary(&self, episodes: &[Episode]) -> Result<String> {
+        if episodes.is_empty() {
+            return Err(CtxGraphError::InvalidInput(
+                "cannot compress empty episode list".to_string(),
+            ));
+        }
+
+        // Truncate each content to ~200 chars for the budget (~2000 chars total for 10 episodes)
+        let budget_per_episode = 200;
+        let truncated: Vec<&str> = episodes
+            .iter()
+            .map(|ep| {
+                if ep.content.len() > budget_per_episode {
+                    &ep.content[..budget_per_episode]
+                } else {
+                    ep.content.as_str()
+                }
+            })
+            .collect();
+
+        // TODO: Replace with actual LLM call when LLM client is available in Graph layer
+        Ok(format!(
+            "Summary of {} episodes: {}",
+            episodes.len(),
+            truncated.join(" | ")
+        ))
+    }
+
+    /// Compress a set of episodes into a single summary episode with Fact memory_type.
+    ///
+    /// Orchestrates: load episodes -> generate summary -> persist via Storage.
     /// Source episodes get their compression_id set to the new summary episode's ID.
     /// Entity links from all source episodes are merged into the compressed episode.
     /// Returns the ID of the new compressed summary episode.
     pub fn compress_episodes(&self, episode_ids: &[String]) -> Result<String> {
-        self.storage.compress_episodes(episode_ids)
+        if episode_ids.is_empty() {
+            return Err(CtxGraphError::InvalidInput(
+                "cannot compress empty episode list".to_string(),
+            ));
+        }
+
+        // Load all source episodes
+        let mut episodes: Vec<Episode> = Vec::new();
+        for id in episode_ids {
+            let episode = self
+                .storage
+                .get_episode(id)?
+                .ok_or_else(|| CtxGraphError::NotFound(format!("episode {id} not found")))?;
+            episodes.push(episode);
+        }
+
+        // Generate summary (placeholder — will be LLM call in future)
+        let summary = self.generate_compression_summary(&episodes)?;
+
+        // Persist via Storage (pure SQLite)
+        self.storage.compress_episodes(episode_ids, &summary)
     }
 
     /// List episodes that have not been compressed, recorded before the given date.

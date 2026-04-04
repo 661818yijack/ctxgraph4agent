@@ -157,7 +157,7 @@ pub struct Episode {
     /// Links this episode to a compressed summary episode (set when this episode is compressed).
     pub compression_id: Option<String>,
     /// Memory type for this episode, driving TTL and decay behavior.
-    /// Defaults to Experience for regular episodes, Pattern for compressed summaries.
+    /// Defaults to Experience for regular episodes, Fact for compressed summaries.
     pub memory_type: MemoryType,
 }
 
