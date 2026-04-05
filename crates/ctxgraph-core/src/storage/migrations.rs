@@ -1,4 +1,4 @@
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 use crate::error::Result;
 
@@ -251,6 +251,13 @@ const MIGRATIONS: &[(&str, &str)] = &[
     -- (FTS5 + graph candidate retrieval) and performs no schema changes.
     "#,
     ),
+    (
+        "009_system_metadata",
+        r#"
+    -- NOTE: system_metadata table for last_cleanup_at and cleanup_in_progress flag.
+    -- Implemented via Rust-side idempotent path (below) for safe partial-migration recovery.
+    "#,
+    ),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
@@ -392,6 +399,14 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
                 conn.execute_batch(
                     "CREATE INDEX IF NOT EXISTS idx_episodes_compression_id ON episodes(compression_id);
                      CREATE INDEX IF NOT EXISTS idx_episodes_memory_type ON episodes(memory_type);",
+                )?;
+            } else if *version == "009_system_metadata" {
+                // Create system_metadata table if not exists (idempotent)
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS system_metadata (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );",
                 )?;
             } else {
                 conn.execute_batch(sql)?;

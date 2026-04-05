@@ -1,8 +1,9 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 use crate::error::{CtxGraphError, Result};
 use crate::pattern::PatternExtractor;
@@ -11,6 +12,8 @@ use crate::types::*;
 
 pub struct Storage {
     pub(crate) conn: Connection,
+    /// Counter for public query methods (used by lazy cleanup trigger).
+    query_count: AtomicUsize,
 }
 
 impl Storage {
@@ -22,14 +25,20 @@ impl Storage {
              PRAGMA foreign_keys = ON;",
         )?;
         run_migrations(&conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            query_count: AtomicUsize::new(0),
+        })
     }
 
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         run_migrations(&conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            query_count: AtomicUsize::new(0),
+        })
     }
 
     // ── Episodes ──
@@ -656,6 +665,10 @@ impl Storage {
     /// (typically the Graph layer which can call an LLM).
     ///
     /// Returns the ID of the new compressed summary episode.
+    ///
+    /// **Idempotency:** if all source episodes already share the same `compression_id`
+    /// (i.e., this exact group was compressed before), returns that ID without creating
+    /// duplicate inherited edges.
     pub fn compress_episodes(&self, episode_ids: &[String], summary: &str) -> Result<String> {
         if episode_ids.is_empty() {
             return Err(CtxGraphError::InvalidInput(
@@ -663,7 +676,36 @@ impl Storage {
             ));
         }
 
-        // Create the compressed episode with Fact memory_type
+        // ── Idempotency check ──────────────────────────────────────────────────
+        // If all source episodes already share the same compression_id, return it
+        // without creating duplicate inherited edges.
+        let existing_compression_ids: Vec<Option<String>> = {
+            let placeholders: Vec<String> =
+                (1..=episode_ids.len()).map(|i| format!("?{i}")).collect();
+            let in_clause = placeholders.join(", ");
+            let sql = format!(
+                "SELECT compression_id FROM episodes WHERE id IN ({in_clause})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            stmt.query_map(rusqlite::params_from_iter(episode_ids.iter()), |row| {
+                row.get::<_, Option<String>>(0)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        let unique_existing: Vec<&String> = existing_compression_ids
+            .iter()
+            .flatten()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        if unique_existing.len() == 1 {
+            // All episodes already compressed as a group — return existing compressed_id
+            return Ok(unique_existing[0].clone());
+        }
+
+        // ── Create compressed episode ─────────────────────────────────────────
         let compressed_episode = Episode {
             id: uuid::Uuid::now_v7().to_string(),
             content: summary.to_string(),
@@ -687,28 +729,92 @@ impl Storage {
             )?;
         }
 
-        // Merge entity links from source episodes to compressed episode
-        // Collect all unique entity_ids linked to source episodes
-        let placeholders: Vec<String> = (1..=episode_ids.len()).map(|i| format!("?{i}")).collect();
+        // ── Merge entity links ───────────────────────────────────────────────
+        let placeholders: Vec<String> =
+            (1..=episode_ids.len()).map(|i| format!("?{i}")).collect();
         let in_clause = placeholders.join(", ");
 
-        let sql = format!(
+        let entity_sql = format!(
             "SELECT DISTINCT entity_id FROM episode_entities WHERE episode_id IN ({in_clause})"
         );
-
-        let mut stmt = self.conn.prepare(&sql)?;
-        let entity_ids: Vec<String> = stmt
+        let mut entity_stmt = self.conn.prepare(&entity_sql)?;
+        let entity_ids: Vec<String> = entity_stmt
             .query_map(rusqlite::params_from_iter(episode_ids.iter()), |row| {
                 row.get::<_, String>(0)
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        // Link compressed episode to all merged entities
         for entity_id in &entity_ids {
             self.conn.execute(
                 "INSERT OR IGNORE INTO episode_entities (episode_id, entity_id) VALUES (?1, ?2)",
                 params![compressed_id, entity_id],
             )?;
+        }
+
+        // ── Inherit and merge edges from source episodes ──────────────────────
+        // Collect all edges from source episodes (edges whose episode_id is in source episodes)
+        let edge_sql = format!(
+            "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact,
+                    valid_from, valid_until, recorded_at, confidence, episode_id, metadata,
+                    usage_count, last_recalled_at
+             FROM edges WHERE episode_id IN ({in_clause}) AND valid_until IS NULL"
+        );
+        let mut edge_stmt = self.conn.prepare(&edge_sql)?;
+        let source_edges: Vec<Edge> = edge_stmt
+            .query_map(rusqlite::params_from_iter(episode_ids.iter()), map_edge_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // Group by (source_id, target_id, relation) and merge
+        use std::collections::HashMap;
+        let mut merged: HashMap<(String, String, String), (Edge, Vec<String>)> = HashMap::new();
+
+        for edge in source_edges {
+            let key = (edge.source_id.clone(), edge.target_id.clone(), edge.relation.clone());
+            let source_edge_id = edge.id.clone();
+
+            let entry = merged.entry(key).or_insert_with(|| (edge.clone(), Vec::new()));
+            entry.1.push(source_edge_id);
+            // Keep the edge with highest confidence
+            if edge.confidence > entry.0.confidence {
+                entry.0 = edge;
+            }
+        }
+
+        // Insert inherited edges (one per unique triplet)
+        // and invalidate the source edges to prevent duplicate inherited edges
+        // when episodes are re-compressed in different groups.
+        for ((source_id, target_id, relation), (base_edge, source_edge_ids)) in merged {
+            let inherited_edge = Edge {
+                id: uuid::Uuid::now_v7().to_string(),
+                source_id,
+                target_id,
+                relation: relation.clone(),
+                memory_type: base_edge.memory_type,
+                ttl: base_edge.ttl,
+                fact: base_edge.fact.clone(),
+                valid_from: base_edge.valid_from,
+                valid_until: base_edge.valid_until,
+                recorded_at: base_edge.recorded_at,
+                confidence: base_edge.confidence,
+                episode_id: Some(compressed_id.clone()),
+                metadata: Some(serde_json::json!({
+                    "inherited_from": compressed_id,
+                    "source_edges": source_edge_ids,
+                })),
+                usage_count: 0,
+                last_recalled_at: None,
+            };
+            self.insert_edge(&inherited_edge)?;
+
+            // Invalidate source edges so they don't appear in future edge queries.
+            // This ensures that if the same episode is later compressed as part of
+            // a different group, the original edges won't be double-counted.
+            for source_edge_id in &source_edge_ids {
+                self.conn.execute(
+                    "UPDATE edges SET valid_until = ?1 WHERE id = ?2 AND valid_until IS NULL",
+                    params![Utc::now().to_rfc3339(), source_edge_id],
+                )?;
+            }
         }
 
         Ok(compressed_id)
@@ -774,12 +880,46 @@ impl Storage {
             |row| row.get(0),
         )?;
 
+        // Count entities with decay_score=0 AND past grace_period.
+        // An entity has decay_score=0 if age > ttl_seconds (or ttl_seconds IS NULL for Pattern, but Patterns never cleaned).
+        // Past grace_period means (now - created_at) > (grace_period_secs + ttl_seconds).
+        // We use a large grace_period (7 days = 604800s) for counting since we don't have per-entity grace from policy.
+        // For stats, we count all eligible regardless of policy grace_period since it's approximate.
+        let grace_period_for_stats: i64 = 604800; // 7 days default
+
+        let decayed_entities: usize = self.conn.query_row(
+            "SELECT COUNT(*) FROM entities
+             WHERE memory_type IN ('fact', 'experience', 'preference', 'decision')
+               AND ttl_seconds IS NOT NULL
+               AND ttl_seconds > 0
+               AND (
+                   -- age > grace_period + ttl_seconds
+                   (strftime('%s', 'now') - strftime('%s', created_at)) > (?1 + ttl_seconds)
+               )",
+            [grace_period_for_stats],
+            |row| row.get(0),
+        )?;
+
+        let decayed_edges: usize = self.conn.query_row(
+            "SELECT COUNT(*) FROM edges
+             WHERE memory_type IN ('fact', 'experience', 'preference', 'decision')
+               AND ttl_seconds IS NOT NULL
+               AND ttl_seconds > 0
+               AND (
+                   (strftime('%s', 'now') - strftime('%s', recorded_at)) > (?1 + ttl_seconds)
+               )",
+            [grace_period_for_stats],
+            |row| row.get(0),
+        )?;
+
         Ok(GraphStats {
             episode_count,
             entity_count,
             edge_count,
             sources,
             db_size_bytes,
+            decayed_entities,
+            decayed_edges,
         })
     }
 
@@ -787,6 +927,7 @@ impl Storage {
 
     /// Increment usage_count and set last_recalled_at for an entity.
     pub fn touch_entity(&self, id: &str) -> Result<()> {
+        self.query_count.fetch_add(1, Ordering::Relaxed);
         let changed = self.conn.execute(
             "UPDATE entities SET usage_count = usage_count + 1, last_recalled_at = ?1 WHERE id = ?2",
             params![Utc::now().to_rfc3339(), id],
@@ -800,6 +941,7 @@ impl Storage {
 
     /// Increment usage_count and set last_recalled_at for an edge.
     pub fn touch_edge(&self, id: &str) -> Result<()> {
+        self.query_count.fetch_add(1, Ordering::Relaxed);
         let changed = self.conn.execute(
             "UPDATE edges SET usage_count = usage_count + 1, last_recalled_at = ?1 WHERE id = ?2",
             params![Utc::now().to_rfc3339(), id],
@@ -809,6 +951,499 @@ impl Storage {
             return Err(CtxGraphError::NotFound(format!("edge {id} not found")));
         }
         Ok(())
+    }
+
+    // ── System Metadata (A6) ──────────────────────────────────────────────────
+
+    /// Get a system metadata value by key.
+    pub fn get_system_metadata(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM system_metadata WHERE key = ?1")?;
+        let result = stmt
+            .query_row(params![key], |row| row.get::<_, String>(0))
+            .optional()?;
+        Ok(result)
+    }
+
+    /// Set a system metadata value (insert or replace).
+    pub fn set_system_metadata(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO system_metadata (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Get the current query count (used by lazy cleanup trigger).
+    pub fn query_count(&self) -> usize {
+        self.query_count.load(Ordering::Relaxed)
+    }
+
+    // ── Stale Memory Management (A6) ──────────────────────────────────────────
+
+    /// Get stale memories with decay_score below threshold.
+    ///
+    /// Queries both entities and edges, computes decay_score in Rust,
+    /// and returns `StaleMemory` structs with suggested actions based on decay_score.
+    /// - decay_score > 0.7 → Keep
+    /// - decay_score 0.3-0.7 → Update
+    /// - decay_score < 0.3 → Expire
+    pub fn get_stale_memories(
+        &self,
+        threshold: f64,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<StaleMemory>> {
+        self.query_count.fetch_add(1, Ordering::Relaxed);
+        let mut memories = Vec::new();
+
+        // Query entities with TTL (Patterns never stale since they never decay)
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, memory_type, ttl_seconds, summary, created_at, metadata
+             FROM entities
+             WHERE ttl_seconds IS NOT NULL AND ttl_seconds > 0
+             ORDER BY created_at DESC
+             LIMIT ?1 OFFSET ?2",
+        )?;
+
+        let entities: Vec<(String, String, String, Option<i64>, Option<String>, String, Option<String>)> = stmt
+            .query_map(params![limit as i64, offset as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        for (id, name, memory_type_str, ttl_seconds, summary, created_at_str, _metadata) in entities {
+            let memory_type = MemoryType::from_db(&memory_type_str);
+            // Skip patterns (they never decay or become stale)
+            if memory_type == MemoryType::Pattern {
+                continue;
+            }
+
+            let created_at = parse_datetime(&created_at_str);
+            let ttl = ttl_seconds.and_then(parse_ttl_seconds);
+            let decay_score = memory_type.decay_score(1.0, created_at, ttl);
+
+            if decay_score < threshold {
+                let age_days = (Utc::now() - created_at).num_days() as f64;
+                let content = summary.clone().unwrap_or_else(|| name.clone());
+                let suggested_action = if decay_score > 0.7 {
+                    StaleAction::Keep
+                } else if decay_score > 0.3 {
+                    StaleAction::Update
+                } else {
+                    StaleAction::Expire
+                };
+
+                memories.push(StaleMemory {
+                    id,
+                    memory_type,
+                    content,
+                    age_days,
+                    decay_score,
+                    suggested_action,
+                });
+            }
+        }
+
+        // Query edges with TTL
+        let mut stmt = self.conn.prepare(
+            "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact, recorded_at, metadata
+             FROM edges
+             WHERE ttl_seconds IS NOT NULL AND ttl_seconds > 0
+             ORDER BY recorded_at DESC
+             LIMIT ?1 OFFSET ?2",
+        )?;
+
+        let edges: Vec<(String, String, String, String, String, Option<i64>, Option<String>, String, Option<String>)> = stmt
+            .query_map(params![limit as i64, offset as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        for (id, source_id, target_id, relation, memory_type_str, ttl_seconds, fact, recorded_at_str, _metadata) in edges {
+            let memory_type = MemoryType::from_db(&memory_type_str);
+            // Skip patterns
+            if memory_type == MemoryType::Pattern {
+                continue;
+            }
+
+            let recorded_at = parse_datetime(&recorded_at_str);
+            let ttl = ttl_seconds.and_then(parse_ttl_seconds);
+            let decay_score = memory_type.decay_score(1.0, recorded_at, ttl);
+
+            if decay_score < threshold {
+                let age_days = (Utc::now() - recorded_at).num_days() as f64;
+                let content = fact.clone().unwrap_or_else(|| format!("{} -> {}", source_id, relation));
+                let suggested_action = if decay_score > 0.7 {
+                    StaleAction::Keep
+                } else if decay_score > 0.3 {
+                    StaleAction::Update
+                } else {
+                    StaleAction::Expire
+                };
+
+                memories.push(StaleMemory {
+                    id,
+                    memory_type,
+                    content,
+                    age_days,
+                    decay_score,
+                    suggested_action,
+                });
+            }
+        }
+
+        Ok(memories)
+    }
+
+    /// Renew a memory by resetting its TTL to the default for its memory_type.
+    ///
+    /// Used by the reverify CLI to extend a memory's life without requiring re-verification.
+    /// Returns true if found and updated, false if not found.
+    pub fn renew_memory_bypass(&self, id: &str, memory_type: MemoryType) -> Result<bool> {
+        self.query_count.fetch_add(1, Ordering::Relaxed);
+        let new_ttl = memory_type.default_ttl_seconds();
+
+        // Try entity first
+        let entity_updated = self.conn.execute(
+            "UPDATE entities SET ttl_seconds = ?1 WHERE id = ?2",
+            params![new_ttl, id],
+        )?;
+
+        if entity_updated > 0 {
+            return Ok(true);
+        }
+
+        // Try edge
+        let edge_updated = self.conn.execute(
+            "UPDATE edges SET ttl_seconds = ?1 WHERE id = ?2",
+            params![new_ttl, id],
+        )?;
+
+        Ok(edge_updated > 0)
+    }
+
+    /// Update a memory's content and/or memory_type.
+    ///
+    /// If memory_type is changed, the TTL is reset to the new type's default.
+    /// Updates entity name/summary or edge fact/relation.
+    pub fn update_memory(
+        &self,
+        id: &str,
+        content: Option<&str>,
+        memory_type: Option<MemoryType>,
+    ) -> Result<()> {
+        self.query_count.fetch_add(1, Ordering::Relaxed);
+
+        // Try entity first
+        if let Some(c) = content {
+            let entity_updated = self.conn.execute(
+                "UPDATE entities SET summary = ?1 WHERE id = ?2",
+                params![c, id],
+            )?;
+            if entity_updated > 0 {
+                if let Some(mt) = memory_type {
+                    let new_ttl = mt.default_ttl_seconds();
+                    self.conn.execute(
+                        "UPDATE entities SET memory_type = ?1, ttl_seconds = ?2 WHERE id = ?3",
+                        params![mt.to_string(), new_ttl, id],
+                    )?;
+                }
+                return Ok(());
+            }
+        }
+
+        // Try edge - update fact if content provided
+        if let Some(c) = content {
+            let edge_updated = self.conn.execute(
+                "UPDATE edges SET fact = ?1 WHERE id = ?2",
+                params![c, id],
+            )?;
+            if edge_updated > 0 {
+                if let Some(mt) = memory_type {
+                    let new_ttl = mt.default_ttl_seconds();
+                    self.conn.execute(
+                        "UPDATE edges SET memory_type = ?1, ttl_seconds = ?2 WHERE id = ?3",
+                        params![mt.to_string(), new_ttl, id],
+                    )?;
+                }
+                return Ok(());
+            }
+        }
+
+        // If content was not provided but memory_type was, update just the type
+        if memory_type.is_some() {
+            let new_ttl = memory_type.and_then(|mt| mt.default_ttl_seconds());
+            let entity_updated = self.conn.execute(
+                "UPDATE entities SET memory_type = ?1, ttl_seconds = ?2 WHERE id = ?3",
+                params![memory_type.unwrap().to_string(), new_ttl, id],
+            )?;
+            if entity_updated > 0 {
+                return Ok(());
+            }
+            let edge_updated = self.conn.execute(
+                "UPDATE edges SET memory_type = ?1, ttl_seconds = ?2 WHERE id = ?3",
+                params![memory_type.unwrap().to_string(), new_ttl, id],
+            )?;
+            if edge_updated > 0 {
+                return Ok(());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Immediately expire (delete) a memory by ID.
+    ///
+    /// Tries to delete from entities first, then edges.
+    /// "not found" is handled gracefully (no error returned).
+    pub fn expire_memory(&self, id: &str) -> Result<()> {
+        self.query_count.fetch_add(1, Ordering::Relaxed);
+
+        // Try entity first
+        self.conn.execute("DELETE FROM entities WHERE id = ?1", params![id])?;
+
+        // Then try edge
+        self.conn.execute("DELETE FROM edges WHERE id = ?1", params![id])?;
+
+        Ok(())
+    }
+
+    // ── Cleanup Expired (A6) ──────────────────────────────────────────────────
+
+    /// Clean up expired memories based on grace_period.
+    ///
+    /// Logic:
+    /// 1. Acquire cleanup_in_progress lock (check/set system_metadata)
+    /// 2. Query all entities/edges with memory_type IN (Fact, Experience)
+    ///    AND created_at < (now - grace_period)
+    /// 3. For each, compute decay_score. If decay_score == 0.0: DELETE
+    /// 4. For Preferences/Decisions past grace_period with decay_score == 0: ARCHIVE
+    /// 5. Patterns: NEVER clean (skip even if decay_score == 0)
+    /// 6. Update last_cleanup_at in system_metadata
+    /// 7. Release lock
+    /// 8. Return CleanupResult
+    ///
+    /// The grace_period is additional time AFTER TTL expiration before cleanup.
+    /// Facts/Experiences: delete when decay_score=0 AND age > grace_period
+    /// Preferences/Decisions: archive (soft-delete via metadata)
+    /// Patterns: never cleaned
+    pub fn cleanup_expired(&self, grace_period_secs: u64) -> Result<CleanupResult> {
+        self.query_count.fetch_add(1, Ordering::Relaxed);
+
+        // Step 1: Acquire cleanup_in_progress lock
+        let existing = self.get_system_metadata("cleanup_in_progress")?;
+        if existing.as_deref() == Some("true") {
+            return Ok(CleanupResult {
+                errors: vec!["cleanup already in progress".to_string()],
+                ..Default::default()
+            });
+        }
+        self.set_system_metadata("cleanup_in_progress", "true")?;
+
+        let mut result = CleanupResult::default();
+
+        // Step 2 & 3: Process entities
+        // Query entities with memory_type IN (Fact, Experience) that are past grace_period
+        let grace_ts = Utc::now()
+            .checked_sub_signed(chrono::Duration::seconds(grace_period_secs as i64))
+            .unwrap_or(Utc::now());
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, memory_type, ttl_seconds, summary, created_at, metadata
+             FROM entities
+             WHERE memory_type IN ('fact', 'experience')
+             AND created_at < ?1",
+        )?;
+
+        let entities: Vec<(String, String, String, Option<i64>, Option<String>, String, Option<String>)> = stmt
+            .query_map(params![grace_ts.to_rfc3339()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        for (id, _name, memory_type_str, ttl_seconds, _summary, created_at_str, _metadata) in entities {
+            let memory_type = MemoryType::from_db(&memory_type_str);
+            let created_at = parse_datetime(&created_at_str);
+            let ttl = ttl_seconds.and_then(parse_ttl_seconds);
+            let decay_score = memory_type.decay_score(1.0, created_at, ttl);
+
+            if decay_score == 0.0 {
+                // Delete Fact/Experience with decay_score=0
+                match self.conn.execute("DELETE FROM entities WHERE id = ?1", params![id]) {
+                    Ok(_) => result.entities_deleted += 1,
+                    Err(e) => result.errors.push(format!("failed to delete entity {}: {}", id, e)),
+                }
+            }
+        }
+
+        // Step 4: Process Preferences/Decisions - archive (soft-delete)
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, memory_type, ttl_seconds, summary, created_at, metadata
+             FROM entities
+             WHERE memory_type IN ('preference', 'decision')
+             AND created_at < ?1",
+        )?;
+
+        let pref_entities: Vec<(String, String, String, Option<i64>, Option<String>, String, Option<String>)> = stmt
+            .query_map(params![grace_ts.to_rfc3339()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        for (id, _name, memory_type_str, ttl_seconds, _summary, created_at_str, metadata) in pref_entities {
+            let memory_type = MemoryType::from_db(&memory_type_str);
+            let created_at = parse_datetime(&created_at_str);
+            let ttl = ttl_seconds.and_then(parse_ttl_seconds);
+            let decay_score = memory_type.decay_score(1.0, created_at, ttl);
+
+            if decay_score == 0.0 {
+                // Archive: set archived=true in metadata
+                let mut meta_map = metadata
+                    .and_then(|s| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&s).ok())
+                    .unwrap_or(serde_json::Map::new());
+                meta_map.insert("archived".to_string(), serde_json::Value::Bool(true));
+                meta_map.insert("archived_at".to_string(), serde_json::Value::String(Utc::now().to_rfc3339()));
+
+                let new_meta = serde_json::to_string(&meta_map).unwrap_or_default();
+                match self.conn.execute(
+                    "UPDATE entities SET metadata = ?1 WHERE id = ?2",
+                    params![new_meta, id],
+                ) {
+                    Ok(_) => result.entities_archived += 1,
+                    Err(e) => result.errors.push(format!("failed to archive entity {}: {}", id, e)),
+                }
+            }
+        }
+
+        // Step 3 (edges): Process edges with memory_type IN (Fact, Experience)
+        let mut stmt = self.conn.prepare(
+            "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact, recorded_at, metadata
+             FROM edges
+             WHERE memory_type IN ('fact', 'experience')
+             AND recorded_at < ?1",
+        )?;
+
+        let edges: Vec<(String, String, String, String, String, Option<i64>, Option<String>, String, Option<String>)> = stmt
+            .query_map(params![grace_ts.to_rfc3339()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        for (id, _source_id, _target_id, _relation, memory_type_str, ttl_seconds, _fact, recorded_at_str, _metadata) in edges {
+            let memory_type = MemoryType::from_db(&memory_type_str);
+            let recorded_at = parse_datetime(&recorded_at_str);
+            let ttl = ttl_seconds.and_then(parse_ttl_seconds);
+            let decay_score = memory_type.decay_score(1.0, recorded_at, ttl);
+
+            if decay_score == 0.0 {
+                match self.conn.execute("DELETE FROM edges WHERE id = ?1", params![id]) {
+                    Ok(_) => result.edges_deleted += 1,
+                    Err(e) => result.errors.push(format!("failed to delete edge {}: {}", id, e)),
+                }
+            }
+        }
+
+        // Step 4 (edges): Archive Preferences/Decisions edges
+        let mut stmt = self.conn.prepare(
+            "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact, recorded_at, metadata
+             FROM edges
+             WHERE memory_type IN ('preference', 'decision')
+             AND recorded_at < ?1",
+        )?;
+
+        let pref_edges: Vec<(String, String, String, String, String, Option<i64>, Option<String>, String, Option<String>)> = stmt
+            .query_map(params![grace_ts.to_rfc3339()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        for (id, _source_id, _target_id, _relation, memory_type_str, ttl_seconds, _fact, recorded_at_str, metadata) in pref_edges {
+            let memory_type = MemoryType::from_db(&memory_type_str);
+            let recorded_at = parse_datetime(&recorded_at_str);
+            let ttl = ttl_seconds.and_then(parse_ttl_seconds);
+            let decay_score = memory_type.decay_score(1.0, recorded_at, ttl);
+
+            if decay_score == 0.0 {
+                let mut meta_map = metadata
+                    .and_then(|s| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&s).ok())
+                    .unwrap_or(serde_json::Map::new());
+                meta_map.insert("archived".to_string(), serde_json::Value::Bool(true));
+                meta_map.insert("archived_at".to_string(), serde_json::Value::String(Utc::now().to_rfc3339()));
+
+                let new_meta = serde_json::to_string(&meta_map).unwrap_or_default();
+                match self.conn.execute(
+                    "UPDATE edges SET metadata = ?1 WHERE id = ?2",
+                    params![new_meta, id],
+                ) {
+                    Ok(_) => result.edges_archived += 1,
+                    Err(e) => result.errors.push(format!("failed to archive edge {}: {}", id, e)),
+                }
+            }
+        }
+
+        // Step 6: Update last_cleanup_at
+        self.set_system_metadata("last_cleanup_at", &Utc::now().to_rfc3339())?;
+
+        // Step 7: Release lock
+        self.set_system_metadata("cleanup_in_progress", "false")?;
+
+        Ok(result)
     }
 
     // ── Graph Traversal ──

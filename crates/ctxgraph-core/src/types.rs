@@ -431,6 +431,68 @@ pub struct GraphStats {
     pub edge_count: usize,
     pub sources: Vec<(String, usize)>,
     pub db_size_bytes: u64,
+    /// Entities past grace_period with decay_score=0 (eligible for cleanup).
+    pub decayed_entities: usize,
+    /// Edges past grace_period with decay_score=0 (eligible for cleanup).
+    pub decayed_edges: usize,
+}
+
+/// Result from a cleanup_expired operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CleanupResult {
+    /// Entities deleted (Facts/Experiences with decay_score=0 past grace_period).
+    pub entities_deleted: usize,
+    /// Edges deleted.
+    pub edges_deleted: usize,
+    /// Preferences/Decisions archived (soft-deleted).
+    pub entities_archived: usize,
+    /// Edges archived.
+    pub edges_archived: usize,
+    /// Errors encountered during cleanup.
+    pub errors: Vec<String>,
+}
+
+impl Default for CleanupResult {
+    fn default() -> Self {
+        Self {
+            entities_deleted: 0,
+            edges_deleted: 0,
+            entities_archived: 0,
+            edges_archived: 0,
+            errors: Vec::new(),
+        }
+    }
+}
+
+/// A memory that has become stale (decay_score below threshold).
+///
+/// Used by the reverify CLI to list memories needing attention.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaleMemory {
+    /// Memory ID (entity or edge ID).
+    pub id: String,
+    /// Type of this memory.
+    pub memory_type: MemoryType,
+    /// Content preview (entity name/summary or edge fact/relation).
+    pub content: String,
+    /// Age in days since creation.
+    pub age_days: f64,
+    /// Current decay score (0.0 = expired).
+    pub decay_score: f64,
+    /// Suggested action based on decay_score.
+    pub suggested_action: StaleAction,
+}
+
+/// Suggested action for a stale memory based on its decay_score.
+/// - decay_score > 0.7 → Keep
+/// - decay_score 0.3-0.7 → Update
+/// - decay_score < 0.3 → Expire
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StaleAction {
+    Renew,
+    Update,
+    Expire,
+    Keep,
 }
 
 /// Context around an entity — its immediate neighbors and edges.
@@ -612,6 +674,11 @@ pub struct AgentPolicy {
     /// Confidence threshold for contradiction detection.
     /// Edges with confidence below this are replaced silently without flagging.
     pub contradiction_threshold: f64,
+    /// Grace period (seconds) after TTL expiration before cleanup deletes memories.
+    /// Facts and Experiences are deleted when decay_score=0 AND age > grace_period.
+    /// Preferences and Decisions are archived (soft-deleted). Patterns are never cleaned.
+    /// Default: 7 days (604800 seconds).
+    pub grace_period_secs: u64,
 }
 
 impl Default for AgentPolicy {
@@ -621,6 +688,7 @@ impl Default for AgentPolicy {
             agent_name: String::new(),
             max_patterns_included: 50,
             contradiction_threshold: 0.2,
+            grace_period_secs: 604_800, // 7 days
         }
     }
 }

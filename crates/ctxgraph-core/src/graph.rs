@@ -649,6 +649,97 @@ impl Graph {
         self.storage.stats()
     }
 
+    // ── Cleanup (A6) ─────────────────────────────────────────────────────────
+
+    /// Clean up expired memories based on the agent policy's grace_period.
+    ///
+    /// Runs the cleanup logic defined in `Storage::cleanup_expired` using
+    /// the default grace_period (7 days = 604800 seconds) from `AgentPolicy`.
+    ///
+    /// This is a direct cleanup call. The lazy trigger in `retrieve_for_context`
+    /// automatically runs cleanup every 100 queries if last_cleanup_at > 24h ago.
+    pub fn cleanup(&self) -> Result<CleanupResult> {
+        let grace_period = AgentPolicy::default().grace_period_secs;
+        self.storage.cleanup_expired(grace_period)
+    }
+
+    /// Clean up expired memories with a custom grace_period.
+    ///
+    /// Use this to override the default grace period from AgentPolicy.
+    pub fn cleanup_with_grace_period(&self, grace_period_secs: u64) -> Result<CleanupResult> {
+        self.storage.cleanup_expired(grace_period_secs)
+    }
+
+    /// Get stale memories with decay_score below the given threshold.
+    ///
+    /// Used by the reverify CLI to list memories needing attention.
+    /// - decay_score > 0.7 → Keep
+    /// - decay_score 0.3-0.7 → Update
+    /// - decay_score < 0.3 → Expire
+    pub fn get_stale_memories(
+        &self,
+        threshold: f64,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<StaleMemory>> {
+        self.storage
+            .get_stale_memories(threshold, limit, offset)
+    }
+
+    /// Renew a memory by resetting its TTL to the default for its memory_type.
+    ///
+    /// Used by the reverify CLI to extend a memory's life without re-verification.
+    /// Returns true if found and updated, false if not found.
+    pub fn renew_memory(&self, id: &str, memory_type: MemoryType) -> Result<bool> {
+        self.storage.renew_memory_bypass(id, memory_type)
+    }
+
+    /// Update a memory's content and/or memory_type.
+    ///
+    /// If memory_type is changed, the TTL is reset to the new type's default.
+    pub fn update_memory(
+        &self,
+        id: &str,
+        content: Option<&str>,
+        memory_type: Option<MemoryType>,
+    ) -> Result<()> {
+        self.storage.update_memory(id, content, memory_type)
+    }
+
+    /// Immediately expire (delete) a memory by ID.
+    ///
+    /// Handles "not found" gracefully (no error returned).
+    pub fn expire_memory(&self, id: &str) -> Result<()> {
+        self.storage.expire_memory(id)
+    }
+
+    /// Lazy cleanup trigger — runs cleanup if:
+    /// - query_count is a multiple of 100 (every 100 queries)
+    /// - last_cleanup_at is more than 24 hours ago
+    ///
+    /// Uses the agent policy's grace_period (default 7 days).
+    fn maybe_trigger_cleanup(&self) -> Result<()> {
+        let count = self.storage.query_count();
+        if count % 100 == 0 {
+            // Check last_cleanup_at
+            if let Some(last_cleanup) = self.storage.get_system_metadata("last_cleanup_at")? {
+                if let Ok(last_dt) = DateTime::parse_from_rfc3339(&last_cleanup) {
+                    let elapsed = Utc::now()
+                        .signed_duration_since(last_dt.with_timezone(&Utc));
+                    if elapsed.num_hours() > 24 {
+                        let grace = AgentPolicy::default().grace_period_secs;
+                        let _ = self.storage.cleanup_expired(grace);
+                    }
+                }
+            } else {
+                // Never cleaned — run now
+                let grace = AgentPolicy::default().grace_period_secs;
+                let _ = self.storage.cleanup_expired(grace);
+            }
+        }
+        Ok(())
+    }
+
     // ── Episode Compression ──
 
     /// Generate a compression summary from source episodes.

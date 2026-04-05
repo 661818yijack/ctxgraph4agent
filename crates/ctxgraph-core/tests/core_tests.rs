@@ -1743,6 +1743,259 @@ fn test_compress_nonexistent_episode_returns_error() {
     );
 }
 
+// ── B2: Edge Inheritance from Compressed Nodes ───────────────────────────────
+
+#[test]
+fn test_compress_episodes_inherits_edges_from_source_episodes() {
+    let graph = test_graph();
+
+    // Create three entities
+    let docker = Entity::new("Docker", "Component");
+    let linux = Entity::new("Linux", "Component");
+    let nginx = Entity::new("Nginx", "Component");
+    let docker_id = docker.id.clone();
+    let linux_id = linux.id.clone();
+    let nginx_id = nginx.id.clone();
+    graph.add_entity(docker).unwrap();
+    graph.add_entity(linux).unwrap();
+    graph.add_entity(nginx).unwrap();
+
+    // Create two episodes
+    let ep1 = Episode::builder("Debugged Docker networking").build();
+    let ep2 = Episode::builder("Installed Nginx on Linux").build();
+    let id1 = ep1.id.clone();
+    let id2 = ep2.id.clone();
+    graph.add_episode(ep1).unwrap();
+    graph.add_episode(ep2).unwrap();
+
+    // Link episodes to entities
+    graph.link_episode_entity(&id1, &docker_id, None, None).unwrap();
+    graph.link_episode_entity(&id2, &linux_id, None, None).unwrap();
+    graph.link_episode_entity(&id2, &nginx_id, None, None).unwrap();
+
+    // Create edges from episodes with episode_id set
+    let mut edge1 = Edge::new(&docker_id, &linux_id, "runs_on");
+    edge1.episode_id = Some(id1.clone());
+    let edge1_id = edge1.id.clone();
+    graph.add_edge(edge1).unwrap();
+
+    let mut edge2 = Edge::new(&nginx_id, &linux_id, "deployed_on");
+    edge2.episode_id = Some(id2.clone());
+    let edge2_id = edge2.id.clone();
+    graph.add_edge(edge2).unwrap();
+
+    // Compress
+    let compressed_id = graph.compress_episodes(&[id1.clone(), id2.clone()]).unwrap();
+
+    // Inherited edges should be retrievable via get_edges_for_entity
+    let docker_edges = graph.get_edges_for_entity(&docker_id).unwrap();
+    let linux_edges = graph.get_edges_for_entity(&linux_id).unwrap();
+    let nginx_edges = graph.get_edges_for_entity(&nginx_id).unwrap();
+
+    // Docker should have runs_on edge (inherited)
+    assert!(
+        docker_edges.iter().any(|e| e.source_id == docker_id && e.target_id == linux_id && e.relation == "runs_on"),
+        "Docker entity should have inherited 'runs_on' edge via get_edges_for_entity; got: {:?}",
+        docker_edges
+    );
+
+    // Nginx should have deployed_on edge (inherited)
+    assert!(
+        nginx_edges.iter().any(|e| e.source_id == nginx_id && e.target_id == linux_id && e.relation == "deployed_on"),
+        "Nginx entity should have inherited 'deployed_on' edge via get_edges_for_entity; got: {:?}",
+        nginx_edges
+    );
+
+    // Linux (as target) should also have both edges via get_edges_for_entity
+    assert!(
+        linux_edges.len() >= 2,
+        "Linux entity should have at least 2 inherited edges; got {}",
+        linux_edges.len()
+    );
+
+    // Inherited edges must have episode_id pointing to compressed episode
+    // (the original edges also exist with their own episode_id — find the inherited one specifically)
+    let inherited_docker_edge = docker_edges
+        .iter()
+        .find(|e| {
+            e.relation == "runs_on"
+                && e.episode_id.as_ref().map_or(false, |id| id == &compressed_id)
+        })
+        .expect("should find inherited runs_on edge with episode_id = compressed_id");
+    assert_eq!(
+        inherited_docker_edge.episode_id.as_ref().unwrap(),
+        &compressed_id,
+        "inherited runs_on edge must have episode_id = compressed_id"
+    );
+
+    let inherited_nginx_edge = nginx_edges
+        .iter()
+        .find(|e| {
+            e.relation == "deployed_on"
+                && e.episode_id.as_ref().map_or(false, |id| id == &compressed_id)
+        })
+        .expect("should find inherited deployed_on edge with episode_id = compressed_id");
+    assert_eq!(
+        inherited_nginx_edge.episode_id.as_ref().unwrap(),
+        &compressed_id,
+        "inherited deployed_on edge must have episode_id = compressed_id"
+    );
+
+    // Inherited edges must have metadata with inherited_from and source_edges
+    let meta = inherited_docker_edge
+        .metadata
+        .as_ref()
+        .expect("inherited edge must have metadata");
+    assert!(
+        meta.get("inherited_from").is_some(),
+        "inherited edge must have 'inherited_from' in metadata"
+    );
+    let source_edges = meta
+        .get("source_edges")
+        .expect("inherited edge must have 'source_edges' in metadata")
+        .as_array()
+        .expect("source_edges must be an array");
+    assert!(
+        source_edges.iter().any(|v| v.as_str() == Some(&edge1_id)),
+        "source_edges must contain the original edge ID"
+    );
+
+    // Original edges must NOT be deleted (they decay naturally)
+    let all_docker_edges = graph.storage.get_edges_for_entity(&docker_id).unwrap();
+    assert!(
+        all_docker_edges.iter().any(|e| e.id == edge1_id),
+        "original edge {} must still exist in the database",
+        edge1_id
+    );
+}
+
+#[test]
+fn test_compress_episodes_merges_duplicate_edges_max_confidence() {
+    let graph = test_graph();
+
+    // Two entities
+    let alice = Entity::new("Alice", "Person");
+    let bob = Entity::new("Bob", "Person");
+    let alice_id = alice.id.clone();
+    let bob_id = bob.id.clone();
+    graph.add_entity(alice).unwrap();
+    graph.add_entity(bob).unwrap();
+
+    // Two episodes
+    let ep1 = Episode::builder("Alice chose Bob for the project").build();
+    let ep2 = Episode::builder("Alice recommended Bob for the project").build();
+    let id1 = ep1.id.clone();
+    let id2 = ep2.id.clone();
+    graph.add_episode(ep1).unwrap();
+    graph.add_episode(ep2).unwrap();
+
+    // Link episodes to entities
+    graph.link_episode_entity(&id1, &alice_id, None, None).unwrap();
+    graph.link_episode_entity(&id1, &bob_id, None, None).unwrap();
+    graph.link_episode_entity(&id2, &alice_id, None, None).unwrap();
+    graph.link_episode_entity(&id2, &bob_id, None, None).unwrap();
+
+    // Same triplet in both episodes — different confidences
+    let mut edge1 = Edge::new(&alice_id, &bob_id, "chose");
+    edge1.episode_id = Some(id1.clone());
+    edge1.confidence = 0.7;
+    let edge1_id = edge1.id.clone();
+    graph.add_edge(edge1).unwrap();
+
+    let mut edge2 = Edge::new(&alice_id, &bob_id, "chose");
+    edge2.episode_id = Some(id2.clone());
+    edge2.confidence = 0.95; // higher
+    let edge2_id = edge2.id.clone();
+    graph.add_edge(edge2).unwrap();
+
+    // Compress
+    let compressed_id = graph.compress_episodes(&[id1.clone(), id2.clone()]).unwrap();
+
+    // Should have exactly ONE inherited edge (deduplicated)
+    // Use get_current_edges_for_entity since original edges are now invalidated after compression
+    let alice_edges = graph.storage.get_current_edges_for_entity(&alice_id).unwrap();
+    let chose_edges: Vec<_> = alice_edges.iter()
+        .filter(|e| e.relation == "chose" && e.source_id == alice_id && e.target_id == bob_id)
+        .collect();
+
+    assert_eq!(
+        chose_edges.len(), 1,
+        "Should have exactly 1 deduplicated 'chose' edge, got {}: {:?}",
+        chose_edges.len(), chose_edges
+    );
+
+    let merged = chose_edges[0];
+    assert!(
+        merged.confidence == 0.95,
+        "Merged edge should keep max confidence (0.95), got {}",
+        merged.confidence
+    );
+
+    // Metadata should contain both source edge IDs
+    let meta = merged.metadata.as_ref().expect("merged edge must have metadata");
+    let source_edges = meta.get("source_edges")
+        .expect("merged edge must have source_edges")
+        .as_array()
+        .expect("source_edges must be array");
+    assert_eq!(source_edges.len(), 2, "source_edges should contain both original edge IDs");
+    let source_ids: Vec<_> = source_edges.iter().filter_map(|v| v.as_str()).collect();
+    assert!(source_ids.contains(&edge1_id.as_str()), "source_edges must contain edge1_id");
+    assert!(source_ids.contains(&edge2_id.as_str()), "source_edges must contain edge2_id");
+}
+
+#[test]
+fn test_compress_episodes_idempotent_on_same_group() {
+    let graph = test_graph();
+
+    let alice = Entity::new("Alice", "Person");
+    let bob = Entity::new("Bob", "Person");
+    let alice_id = alice.id.clone();
+    let bob_id = bob.id.clone();
+    graph.add_entity(alice).unwrap();
+    graph.add_entity(bob).unwrap();
+
+    let ep = Episode::builder("Alice collaborated with Bob").build();
+    let ep_id = ep.id.clone();
+    graph.add_episode(ep).unwrap();
+
+    graph.link_episode_entity(&ep_id, &alice_id, None, None).unwrap();
+    graph.link_episode_entity(&ep_id, &bob_id, None, None).unwrap();
+
+    let mut edge = Edge::new(&alice_id, &bob_id, "collaborated_with");
+    edge.episode_id = Some(ep_id.clone());
+    graph.add_edge(edge).unwrap();
+
+    // First compression
+    let compressed_id_1 = graph.compress_episodes(&[ep_id.clone()]).unwrap();
+
+    let alice_edges_first = graph.get_edges_for_entity(&alice_id).unwrap();
+    let inherited_count_first = alice_edges_first.iter()
+        .filter(|e| e.relation == "collaborated_with")
+        .count();
+
+    // Second compression of the same source episode (ep_id still has compression_id set)
+    // compress_episodes should be idempotent — calling it again on the same group
+    // should not create duplicate inherited edges
+    let compressed_id_2 = graph.compress_episodes(&[ep_id.clone()]).unwrap();
+
+    // Should return the same compressed_id (already compressed)
+    assert_eq!(
+        compressed_id_1, compressed_id_2,
+        "re-compressing already-compressed episode should return same compressed_id"
+    );
+
+    let alice_edges_second = graph.get_edges_for_entity(&alice_id).unwrap();
+    let inherited_count_second = alice_edges_second.iter()
+        .filter(|e| e.relation == "collaborated_with")
+        .count();
+
+    assert_eq!(
+        inherited_count_first, inherited_count_second,
+        "Idempotent compression should not create duplicate inherited edges; before={}, after={}",
+        inherited_count_first, inherited_count_second
+    );
+}
+
 // ── Pattern Description (D1b) Tests ─────────────────────────────────────────
 
 use ctxgraph::pattern::{FailingPatternDescriber, MockPatternDescriber, PatternDescriber};
