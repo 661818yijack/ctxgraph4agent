@@ -11,9 +11,9 @@ priority: P1
 effort: M
 depends_on:
 - A1
-- A3
+- A6
 created_at: '2026-04-04T08:55:00.000000Z'
-updated_at: '2026-04-05T12:00:00.000000Z'
+updated_at: '2026-04-05T14:00:00.000000Z'
 tags:
 - c2
 - phase-c
@@ -22,57 +22,108 @@ tags:
 ---
 
 <!-- DESCRIPTION -->
-Phase C Story 2 (P1, Medium effort, depends on A1+A3). Implicit TTL renewal: when a memory is recalled via `retrieve_for_context` and its content is used, its TTL is implicitly renewed. Renewal resets `created_at` to now. Gated by `max_renewals` policy (default 5). Uses `renewal_count` (NOT `usage_count`) — renewal_count only increments on actual renewal; usage_count tracks general recall frequency for scoring. Only Facts and Preferences are eligible; Experiences are not.
+Phase C Story 2 (P1, Medium effort, depends on A1+A6). Implicit TTL renewal: when a memory is recalled via `retrieve_for_context` and its content is used, its TTL is implicitly renewed. Renewal resets `created_at` to now. Gated by `max_renewals` policy (default 5). Only Facts and Preferences are eligible; Experiences are not.
 
 ### Acceptance Criteria:
-1. `Storage::renew_memory(id: &str, memory_type: MemoryType) -> Result<bool>` updates `created_at` to now and increments `renewal_count` if renewal is allowed
-2. Renewal only applies to `Fact` and `Preference` memory types (not Experience, Pattern, or Decision)
-3. Renewal count tracked via `renewal_count` (separate from `usage_count`) — if `renewal_count >= max_renewals`, renewal is denied
-4. `MemoryPolicyConfig` has `max_renewals: usize` field (default 5)
-5. Renewal returns false (no-op) if memory is already expired (decay_score = 0.0)
-6. `retrieve_for_context` automatically calls `renew_memory` for each returned memory (only Facts and Preferences)
-7. Renewal only fires for memories that appear in the final returned results (within budget), not all candidates
+1. `renewal_count` column exists in `entities` and `edges` tables (migration 009)
+2. `renew_memory(id, memory_type)` checks `renewal_count < max_renewals` before renewing; increments `renewal_count` on success
+3. Renewal only applies to `Fact` and `Preference` memory types (not Experience, Pattern, or Decision)
+4. Renewal returns false (no-op) if memory is already expired (decay_score = 0.0)
+5. `retrieve_for_context` automatically calls `touch_entity`/`touch_edge` for each returned memory (update usage_count + last_recalled_at)
+6. Budget-enforced results (final returned set) trigger `renew_memory` for Facts and Preferences only
+7. `max_renewals` is configurable per-agent in `AgentPolicy` (default: 5)
 
 ### Technical Requirements:
-- Files to modify: types.rs (add max_renewals to MemoryPolicyConfig), storage/migrations.rs (migration 009: renewal_count INTEGER), storage/sqlite.rs (renew_memory, integrate into retrieve_for_context)
-- Config: `max_renewals = 5` in `[policies.<agent>]`
+- Files to modify:
+  - `storage/migrations.rs` — add migration 009: `renewal_count INTEGER DEFAULT 0` on entities and edges
+  - `types.rs` — add `max_renewals: usize` to `AgentPolicy`
+  - `storage/sqlite.rs` — implement gated `renew_memory()`, wire `touch_*` into `retrieve_candidates`, call `renew_memory` on budget-enforced results
+- `max_renewals = 5` default in `[policies.<agent>]`
 
 ---
 
-## Investigation Notes (2026-04-05)
+## Investigation Notes (2026-04-05, updated)
 
-### Current State: NOTHING auto-renews
+### Current State: Partial Implementation
 
-The entire implicit TTL renewal mechanism is missing. Here's what exists vs. what's needed:
+#### What Exists
+| Function | Location | Purpose |
+|----------|----------|---------|
+| `touch_entity(id)` | sqlite.rs:1076 | Increment `usage_count`, set `last_recalled_at` |
+| `touch_edge(id)` | sqlite.rs:1090 | Increment `usage_count`, set `last_recalled_at` |
+| `renew_memory_bypass(id, memory_type)` | sqlite.rs:1272 | Reset `created_at` + `recorded_at`, set new TTL (unconditional, no renewal_count gate) |
+| `Graph::renew_memory(id, memory_type)` | graph.rs:697 | Passthrough to `renew_memory_bypass` |
+| `maybe_trigger_cleanup` | graph.rs | Lazy cleanup trigger every 100 queries |
 
-#### What Exists (Manual Only)
-- `Storage::renew_memory_bypass()` (sqlite.rs:1125) — manual renew for reverify CLI only, no `renewal_count` gate, no type filtering
-- `touch_entity()` / `touch_edge()` (sqlite.rs:788) — increments `usage_count` + sets `last_recalled_at`, must be called explicitly, not used in retrieval path
-- `get_stale_memories()` (sqlite.rs:992) — lists stale memories for reverify CLI
-- `cleanup_expired()` (sqlite.rs:1261) — deletes/archive based on TTL+grace, runs every 100 queries
+#### What's Missing (the actual gap)
+| Requirement | Status |
+|---|---|
+| `renewal_count` DB column | MISSING — no migration 009 |
+| `max_renewals` in `AgentPolicy` | MISSING — `AgentPolicy` has no max_renewals |
+| Gated `renew_memory()` with `renewal_count < max_renewals` | MISSING — current `renew_memory_bypass` is unconditional |
+| `touch_*` wired into `retrieve_candidates` | MISSING — `touch_*` exist but never called during retrieval |
+| Budget-enforced results trigger `renew_memory` | MISSING — renewal happens nowhere in retrieval path |
+| Type filtering (Fact+Preference only) | MISSING — current renew bypasses apply to all types |
 
-#### What's Missing
-| Requirement | Status | Evidence |
-|---|---|---|
-| `renewal_count` DB column | MISSING | Migration 009 does not exist. DB schema has no `renewal_count` |
-| `max_renewals` in policy | MISSING | No `MemoryPolicyConfig` in types.rs. `AgentPolicy` has no `max_renewals` |
-| `Storage::renew_memory()` with gate logic | MISSING | Only `renew_memory_bypass` exists (unconditional) |
-| `retrieve_for_context` auto-renew | MISSING | Pipeline: candidates → score/rank → enforce_budget → return. No renew step |
-| `renewal_count` vs `usage_count` separation | MISSING | No `renewal_count` field anywhere |
+#### Retrieval Pipeline (what actually runs)
+```
+retrieve_candidates (sqlite.rs:2037)
+  → FTS5 entity search
+  → FTS5 edge search
+  → FTS5 episode search
+  → 1-hop graph traversal
+  → deduplication
+  → RETURN candidates (NO touch, NO renew)
 
-#### Key Code Locations
-- `retrieve_for_context`: sqlite.rs:2029 — ends at `enforce_budget`, no renewal call after
-- `score_candidate`: types.rs — reads `usage_count` for scoring bonus, never writes it
-- `touch_entity`/`touch_edge`: sqlite.rs:788 — explicit-only, not called by retrieval
-- `maybe_trigger_cleanup`: graph.rs:726 — triggers cleanup every 100 queries, not related to renewal
+score_candidates (graph.rs)
+  → compute decay_score
+  → compute usage bonus using usage_count (always 0 since never touched)
+  → sort descending
 
-#### Relevant Files to Modify
-1. `crates/ctxgraph-core/src/storage/migrations.rs` — add migration 009 for `renewal_count INTEGER DEFAULT 0`
-2. `crates/ctxgraph-core/src/types.rs` — add `max_renewals: usize` to `AgentPolicy` or new `MemoryPolicyConfig`
-3. `crates/ctxgraph-core/src/storage/sqlite.rs` — implement `renew_memory()` with gate logic, integrate into `retrieve_for_context`
+enforce_budget (types.rs)
+  → greedy selection within token budget
+  → RETURN ranked memories (NO renew call)
+```
+
+**Both `usage_count` and `renewal_count` are never written.** The `touch_*` functions exist and the `renew_memory_bypass` function exists, but neither is called from the retrieval pipeline.
+
+#### Key Code Locations (current, may shift)
+- `retrieve_candidates`: sqlite.rs:2037
+- `retrieve_for_context`: sqlite.rs:2176
+- `renew_memory_bypass`: sqlite.rs:1272
+- `touch_entity` / `touch_edge`: sqlite.rs:1076/1090
+- `Graph::renew_memory`: graph.rs:697
+- `score_candidate`: types.rs:651
+
+#### Implementation Plan
+
+**Step 1 — Wire touch into retrieval (small, safe)**
+- In `retrieve_candidates`, after building `cand_map`, call `touch_entity(id)` for each entity candidate and `touch_edge(id)` for each edge candidate
+- This activates the `usage_count` and `last_recalled_at` fields so scoring bonus works
+- No new fields, no migrations needed
+
+**Step 2 — Add renewal_count column (migration 009)**
+- Add `renewal_count INTEGER DEFAULT 0` to `entities` and `edges`
+- Migration must be idempotent
+
+**Step 3 — Add max_renewals to AgentPolicy**
+- `AgentPolicy.max_renewals: usize = 5`
+
+**Step 4 — Implement gated renew_memory**
+- `renew_memory(id, memory_type, max_renewals)`:
+  1. Check memory_type is Fact or Preference → otherwise return false
+  2. Check current `renewal_count < max_renewals` → otherwise return false
+  3. Reset `created_at` to now + set TTL
+  4. Increment `renewal_count`
+  5. Return true
+
+**Step 5 — Call renew_memory on budget-enforced results**
+- After `enforce_budget`, iterate returned memories
+- For each with type Fact or Preference, call `renew_memory`
+- Only candidates that survived budget enforcement get renewed
 
 #### Relationship to Cleanup (A6)
 - Cleanup (`cleanup_expired`) runs every 100 queries if last run > 24h ago
-- Cleanup uses TTL+grace (Fact=97d, Experience=21d, Preference=37d, Decision=97d) — no 6-month boundary
-- Implicit renewal (C2) should run on retrieval, before cleanup ever fires
-- These are separate mechanisms: renewal extends life; cleanup deletes expired content
+- Renewal extends TTL on actively-used memories; cleanup deletes unused expired content
+- These are complementary: renewal keeps good memories alive; cleanup removes stale ones
+- 6-month hard cutoff enforced by cleanup regardless of renewal count
