@@ -199,6 +199,8 @@ Skills have their own lifecycle:
 
 These three cover the core lifecycle: learn (Phase D), forget (Phase A6 manual complement), and visibility (health checks).
 
+**Compression is learn-internal, not a standalone tool.** The first `learn` run extracts patterns from raw episodes. The second `learn` run compresses old episodes first, then extracts from summaries — this is why compress exists: it's a hint about decision quality (compressed summaries have better signal-to-noise than raw episodes). The `learn` tool handles this automatically.
+
 ### What Stays the Same
 
 The extraction pipeline (GLiNER, GLiREL, heuristics, temporal parsing) — this is solid and doesn't need changes. The graph model (entities, edges, bi-temporal) — this already supports everything we need. SQLite storage — single file, zero deps, this is the right choice.
