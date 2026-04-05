@@ -578,7 +578,7 @@ impl Graph {
     /// Orchestrates the full retrieval pipeline:
     /// 1. A4a: retrieve_candidates — FTS5 + graph traversal
     /// 2. A4b: rank_candidates — score and sort by composite score
-    /// 3. enforce_budget — greedy selection within token budget
+    /// 3. A4c: enforce_budget — greedy selection within token budget
     ///
     /// This is a convenience passthrough to Storage::retrieve_for_context.
     ///
@@ -588,12 +588,16 @@ impl Graph {
     ///
     /// Uses the provided `budget_tokens` directly rather than looking up
     /// an agent policy (policy lookup is A5).
+    ///
+    /// Also triggers lazy cleanup if query_count threshold is reached.
     pub fn retrieve_for_context(
         &self,
         query: &str,
         agent_name: &str,
         budget_tokens: usize,
     ) -> Result<(Vec<RankedMemory>, usize)> {
+        // Trigger lazy cleanup check before retrieval
+        self.maybe_trigger_cleanup()?;
         self.storage
             .retrieve_for_context(query, agent_name, budget_tokens)
     }
@@ -697,12 +701,13 @@ impl Graph {
     /// Update a memory's content and/or memory_type.
     ///
     /// If memory_type is changed, the TTL is reset to the new type's default.
+    /// Returns Ok(true) if found and updated, Ok(false) if not found.
     pub fn update_memory(
         &self,
         id: &str,
         content: Option<&str>,
         memory_type: Option<MemoryType>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.storage.update_memory(id, content, memory_type)
     }
 

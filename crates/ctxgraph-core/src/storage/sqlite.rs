@@ -1119,24 +1119,28 @@ impl Storage {
     ///
     /// Used by the reverify CLI to extend a memory's life without requiring re-verification.
     /// Returns true if found and updated, false if not found.
+    ///
+    /// Also updates created_at/recorded_at to now() so the memory's age is reset,
+    /// ensuring decay_score recomputes from fresh (not from the original creation time).
     pub fn renew_memory_bypass(&self, id: &str, memory_type: MemoryType) -> Result<bool> {
         self.query_count.fetch_add(1, Ordering::Relaxed);
         let new_ttl = memory_type.default_ttl_seconds();
+        let now = Utc::now().to_rfc3339();
 
-        // Try entity first
+        // Try entity first - update both ttl and created_at to reset age
         let entity_updated = self.conn.execute(
-            "UPDATE entities SET ttl_seconds = ?1 WHERE id = ?2",
-            params![new_ttl, id],
+            "UPDATE entities SET ttl_seconds = ?1, created_at = ?2 WHERE id = ?3",
+            params![new_ttl, now, id],
         )?;
 
         if entity_updated > 0 {
             return Ok(true);
         }
 
-        // Try edge
+        // Try edge - update both ttl and recorded_at to reset age
         let edge_updated = self.conn.execute(
-            "UPDATE edges SET ttl_seconds = ?1 WHERE id = ?2",
-            params![new_ttl, id],
+            "UPDATE edges SET ttl_seconds = ?1, recorded_at = ?2 WHERE id = ?3",
+            params![new_ttl, now, id],
         )?;
 
         Ok(edge_updated > 0)
@@ -1146,12 +1150,13 @@ impl Storage {
     ///
     /// If memory_type is changed, the TTL is reset to the new type's default.
     /// Updates entity name/summary or edge fact/relation.
+    /// Returns Ok(true) if found and updated, Ok(false) if not found.
     pub fn update_memory(
         &self,
         id: &str,
         content: Option<&str>,
         memory_type: Option<MemoryType>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.query_count.fetch_add(1, Ordering::Relaxed);
 
         // Try entity first
@@ -1168,16 +1173,15 @@ impl Storage {
                         params![mt.to_string(), new_ttl, id],
                     )?;
                 }
-                return Ok(());
+                return Ok(true);
             }
         }
 
         // Try edge - update fact if content provided
         if let Some(c) = content {
-            let edge_updated = self.conn.execute(
-                "UPDATE edges SET fact = ?1 WHERE id = ?2",
-                params![c, id],
-            )?;
+            let edge_updated = self
+                .conn
+                .execute("UPDATE edges SET fact = ?1 WHERE id = ?2", params![c, id])?;
             if edge_updated > 0 {
                 if let Some(mt) = memory_type {
                     let new_ttl = mt.default_ttl_seconds();
@@ -1186,7 +1190,7 @@ impl Storage {
                         params![mt.to_string(), new_ttl, id],
                     )?;
                 }
-                return Ok(());
+                return Ok(true);
             }
         }
 
@@ -1198,32 +1202,39 @@ impl Storage {
                 params![memory_type.unwrap().to_string(), new_ttl, id],
             )?;
             if entity_updated > 0 {
-                return Ok(());
+                return Ok(true);
             }
             let edge_updated = self.conn.execute(
                 "UPDATE edges SET memory_type = ?1, ttl_seconds = ?2 WHERE id = ?3",
                 params![memory_type.unwrap().to_string(), new_ttl, id],
             )?;
             if edge_updated > 0 {
-                return Ok(());
+                return Ok(true);
             }
         }
 
-        Ok(())
+        Ok(false) // Nothing was updated - ID not found
     }
 
     /// Immediately expire (delete) a memory by ID.
     ///
-    /// Tries to delete from entities first, then edges.
+    /// Deletes from episode_entities junction first (for FK integrity),
+    /// then entities, then edges.
     /// "not found" is handled gracefully (no error returned).
     pub fn expire_memory(&self, id: &str) -> Result<()> {
         self.query_count.fetch_add(1, Ordering::Relaxed);
 
-        // Try entity first
-        self.conn.execute("DELETE FROM entities WHERE id = ?1", params![id])?;
+        // Delete from episode_entities junction first (FK integrity)
+        self.conn
+            .execute("DELETE FROM episode_entities WHERE entity_id = ?1", params![id])?;
+
+        // Then try entity
+        self.conn
+            .execute("DELETE FROM entities WHERE id = ?1", params![id])?;
 
         // Then try edge
-        self.conn.execute("DELETE FROM edges WHERE id = ?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM edges WHERE id = ?1", params![id])?;
 
         Ok(())
     }
@@ -1233,215 +1244,204 @@ impl Storage {
     /// Clean up expired memories based on grace_period.
     ///
     /// Logic:
-    /// 1. Acquire cleanup_in_progress lock (check/set system_metadata)
-    /// 2. Query all entities/edges with memory_type IN (Fact, Experience)
-    ///    AND created_at < (now - grace_period)
-    /// 3. For each, compute decay_score. If decay_score == 0.0: DELETE
-    /// 4. For Preferences/Decisions past grace_period with decay_score == 0: ARCHIVE
+    /// 1. Acquire cleanup_in_progress lock using BEGIN IMMEDIATE transaction
+    /// 2. Query entities/edges where age > TTL + grace_period (not just age > grace_period)
+    /// 3. For Facts/Experiences with decay_score == 0: DELETE (after deleting referencing edges)
+    /// 4. For Preferences/Decisions with decay_score == 0: ARCHIVE (soft-delete via metadata)
     /// 5. Patterns: NEVER clean (skip even if decay_score == 0)
     /// 6. Update last_cleanup_at in system_metadata
-    /// 7. Release lock
+    /// 7. Commit transaction (releases lock)
     /// 8. Return CleanupResult
     ///
     /// The grace_period is additional time AFTER TTL expiration before cleanup.
-    /// Facts/Experiences: delete when decay_score=0 AND age > grace_period
-    /// Preferences/Decisions: archive (soft-delete via metadata)
-    /// Patterns: never cleaned
+    /// Delete/archive only when: age > TTL + grace_period
+    ///
+    /// TTL defaults per type: Fact=90d, Experience=14d, Preference=30d, Decision=90d
+    /// Grace period: typically 7 days
     pub fn cleanup_expired(&self, grace_period_secs: u64) -> Result<CleanupResult> {
         self.query_count.fetch_add(1, Ordering::Relaxed);
 
-        // Step 1: Acquire cleanup_in_progress lock
-        let existing = self.get_system_metadata("cleanup_in_progress")?;
-        if existing.as_deref() == Some("true") {
-            return Ok(CleanupResult {
-                errors: vec!["cleanup already in progress".to_string()],
-                ..Default::default()
-            });
-        }
-        self.set_system_metadata("cleanup_in_progress", "true")?;
+        // Step 1: Acquire cleanup_in_progress lock using BEGIN IMMEDIATE
+        // This acquires a reserved lock immediately, blocking other writers
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
 
         let mut result = CleanupResult::default();
 
-        // Step 2 & 3: Process entities
-        // Query entities with memory_type IN (Fact, Experience) that are past grace_period
-        let grace_ts = Utc::now()
-            .checked_sub_signed(chrono::Duration::seconds(grace_period_secs as i64))
-            .unwrap_or(Utc::now());
+        // Check if another cleanup is already in progress (defensive, IMMEDIATE should prevent this)
+        #[allow(clippy::collapsible_if)]
+        if let Ok(Some(val)) = self.get_system_metadata("cleanup_in_progress") {
+            if val == "true" {
+                self.conn.execute_batch("ROLLBACK")?;
+                return Ok(CleanupResult {
+                    errors: vec!["cleanup already in progress".to_string()],
+                    ..Default::default()
+                });
+            }
+        }
+        self.set_system_metadata("cleanup_in_progress", "true")?;
 
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, memory_type, ttl_seconds, summary, created_at, metadata
-             FROM entities
-             WHERE memory_type IN ('fact', 'experience')
-             AND created_at < ?1",
-        )?;
+        // Helper to compute cutoff timestamp: now - (type_ttl + grace_period)
+        let make_cutoff = |ttl_secs: i64| -> chrono::DateTime<Utc> {
+            Utc::now()
+                .checked_sub_signed(chrono::Duration::seconds(ttl_secs + grace_period_secs as i64))
+                .unwrap_or(Utc::now())
+        };
 
-        let entities: Vec<(String, String, String, Option<i64>, Option<String>, String, Option<String>)> = stmt
-            .query_map(params![grace_ts.to_rfc3339()], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                ))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        // Default TTLs in seconds:
+        // Fact: 90d = 7776000s, Experience: 14d = 1209600s
+        // Preference: 30d = 2592000s, Decision: 90d = 7776000s
+        let fact_cutoff = make_cutoff(7776000); // 90d + grace
+        let experience_cutoff = make_cutoff(1209600); // 14d + grace
+        let preference_cutoff = make_cutoff(2592000); // 30d + grace
+        let decision_cutoff = make_cutoff(7776000); // 90d + grace
 
-        for (id, _name, memory_type_str, ttl_seconds, _summary, created_at_str, _metadata) in entities {
-            let memory_type = MemoryType::from_db(&memory_type_str);
-            let created_at = parse_datetime(&created_at_str);
-            let ttl = ttl_seconds.and_then(parse_ttl_seconds);
-            let decay_score = memory_type.decay_score(1.0, created_at, ttl);
+        // Step 2 & 3: Collect expired Fact/Experience entity IDs for edge cleanup
+        // Query with age > TTL + grace (using pre-computed cutoff timestamps)
+        let expired_fact_entity_ids: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id FROM entities WHERE memory_type = 'fact' AND created_at < ?1",
+            )?;
+            stmt.query_map(params![fact_cutoff.to_rfc3339()], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
 
-            if decay_score == 0.0 {
-                // Delete Fact/Experience with decay_score=0
-                match self.conn.execute("DELETE FROM entities WHERE id = ?1", params![id]) {
-                    Ok(_) => result.entities_deleted += 1,
-                    Err(e) => result.errors.push(format!("failed to delete entity {}: {}", id, e)),
-                }
+        let expired_exp_entity_ids: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id FROM entities WHERE memory_type = 'experience' AND created_at < ?1",
+            )?;
+            stmt.query_map(params![experience_cutoff.to_rfc3339()], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        let mut expired_entity_ids: Vec<String> = Vec::new();
+        expired_entity_ids.extend(expired_fact_entity_ids);
+        expired_entity_ids.extend(expired_exp_entity_ids);
+
+        // First, delete edges referencing expired entities (for FK integrity)
+        // Delete edges where source_id or target_id is in expired_entity_ids
+        if !expired_entity_ids.is_empty() {
+            let placeholders: Vec<String> = expired_entity_ids.iter().enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect();
+            let sql = format!(
+                "DELETE FROM edges WHERE source_id IN ({}) OR target_id IN ({})",
+                placeholders.join(", "),
+                placeholders.join(", ")
+            );
+            let params: Vec<&dyn rusqlite::ToSql> = expired_entity_ids.iter()
+                .map(|s| s as &dyn rusqlite::ToSql)
+                .collect();
+            // Execute twice with same params for source and target
+            let deleted_edges = self.conn.execute(&sql, rusqlite::params_from_iter(params.iter()))?;
+            result.edges_deleted += deleted_edges;
+
+            // Also delete from episode_entities junction table
+            let episode_sql = format!("DELETE FROM episode_entities WHERE entity_id IN ({})", placeholders.join(", "));
+            let _ = self.conn.execute(&episode_sql, rusqlite::params_from_iter(params.iter()));
+        }
+
+        // Now delete the expired entities themselves
+        for id in &expired_entity_ids {
+            match self.conn.execute("DELETE FROM entities WHERE id = ?1", params![id]) {
+                Ok(_) => result.entities_deleted += 1,
+                Err(e) => result.errors.push(format!("failed to delete entity {}: {}", id, e)),
             }
         }
 
         // Step 4: Process Preferences/Decisions - archive (soft-delete)
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, memory_type, ttl_seconds, summary, created_at, metadata
-             FROM entities
-             WHERE memory_type IN ('preference', 'decision')
-             AND created_at < ?1",
-        )?;
+        // Query with age > TTL + grace for each type
+        let pref_dec_entity_ids: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id FROM entities WHERE memory_type IN ('preference', 'decision')
+                 AND ((memory_type = 'preference' AND created_at < ?1)
+                      OR (memory_type = 'decision' AND created_at < ?2))",
+            )?;
+            stmt.query_map(params![preference_cutoff.to_rfc3339(), decision_cutoff.to_rfc3339()], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
 
-        let pref_entities: Vec<(String, String, String, Option<i64>, Option<String>, String, Option<String>)> = stmt
-            .query_map(params![grace_ts.to_rfc3339()], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                ))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for id in pref_dec_entity_ids {
+            // Fetch metadata to archive
+            let metadata: Option<String> = self.conn.query_row(
+                "SELECT metadata FROM entities WHERE id = ?1",
+                params![&id],
+                |row| row.get(0),
+            )?;
 
-        for (id, _name, memory_type_str, ttl_seconds, _summary, created_at_str, metadata) in pref_entities {
-            let memory_type = MemoryType::from_db(&memory_type_str);
-            let created_at = parse_datetime(&created_at_str);
-            let ttl = ttl_seconds.and_then(parse_ttl_seconds);
-            let decay_score = memory_type.decay_score(1.0, created_at, ttl);
+            let mut meta_map = metadata
+                .and_then(|s| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&s).ok())
+                .unwrap_or_default();
+            meta_map.insert("archived".to_string(), serde_json::Value::Bool(true));
+            meta_map.insert("archived_at".to_string(), serde_json::Value::String(Utc::now().to_rfc3339()));
 
-            if decay_score == 0.0 {
-                // Archive: set archived=true in metadata
-                let mut meta_map = metadata
-                    .and_then(|s| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&s).ok())
-                    .unwrap_or(serde_json::Map::new());
-                meta_map.insert("archived".to_string(), serde_json::Value::Bool(true));
-                meta_map.insert("archived_at".to_string(), serde_json::Value::String(Utc::now().to_rfc3339()));
-
-                let new_meta = serde_json::to_string(&meta_map).unwrap_or_default();
-                match self.conn.execute(
-                    "UPDATE entities SET metadata = ?1 WHERE id = ?2",
-                    params![new_meta, id],
-                ) {
-                    Ok(_) => result.entities_archived += 1,
-                    Err(e) => result.errors.push(format!("failed to archive entity {}: {}", id, e)),
-                }
+            let new_meta = serde_json::to_string(&meta_map).unwrap_or_default();
+            match self.conn.execute(
+                "UPDATE entities SET metadata = ?1 WHERE id = ?2",
+                params![new_meta, &id],
+            ) {
+                Ok(_) => result.entities_archived += 1,
+                Err(e) => result.errors.push(format!("failed to archive entity {}: {}", id, e)),
             }
         }
 
-        // Step 3 (edges): Process edges with memory_type IN (Fact, Experience)
-        let mut stmt = self.conn.prepare(
-            "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact, recorded_at, metadata
-             FROM edges
-             WHERE memory_type IN ('fact', 'experience')
-             AND recorded_at < ?1",
-        )?;
+        // Step 3b (edges): Process Fact/Experience edges with age > TTL + grace
+        let expired_edge_ids: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id FROM edges WHERE memory_type = 'fact' AND recorded_at < ?1
+                 UNION ALL
+                 SELECT id FROM edges WHERE memory_type = 'experience' AND recorded_at < ?2",
+            )?;
+            stmt.query_map(params![fact_cutoff.to_rfc3339(), experience_cutoff.to_rfc3339()], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
 
-        let edges: Vec<(String, String, String, String, String, Option<i64>, Option<String>, String, Option<String>)> = stmt
-            .query_map(params![grace_ts.to_rfc3339()], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                ))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-
-        for (id, _source_id, _target_id, _relation, memory_type_str, ttl_seconds, _fact, recorded_at_str, _metadata) in edges {
-            let memory_type = MemoryType::from_db(&memory_type_str);
-            let recorded_at = parse_datetime(&recorded_at_str);
-            let ttl = ttl_seconds.and_then(parse_ttl_seconds);
-            let decay_score = memory_type.decay_score(1.0, recorded_at, ttl);
-
-            if decay_score == 0.0 {
-                match self.conn.execute("DELETE FROM edges WHERE id = ?1", params![id]) {
-                    Ok(_) => result.edges_deleted += 1,
-                    Err(e) => result.errors.push(format!("failed to delete edge {}: {}", id, e)),
-                }
+        for id in expired_edge_ids {
+            match self.conn.execute("DELETE FROM edges WHERE id = ?1", params![&id]) {
+                Ok(_) => result.edges_deleted += 1,
+                Err(e) => result.errors.push(format!("failed to delete edge {}: {}", id, e)),
             }
         }
 
-        // Step 4 (edges): Archive Preferences/Decisions edges
-        let mut stmt = self.conn.prepare(
-            "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact, recorded_at, metadata
-             FROM edges
-             WHERE memory_type IN ('preference', 'decision')
-             AND recorded_at < ?1",
-        )?;
+        // Step 4b (edges): Archive Preference/Decision edges with age > TTL + grace
+        let pref_dec_edge_ids: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id FROM edges WHERE memory_type IN ('preference', 'decision')
+                 AND ((memory_type = 'preference' AND recorded_at < ?1)
+                      OR (memory_type = 'decision' AND recorded_at < ?2))",
+            )?;
+            stmt.query_map(params![preference_cutoff.to_rfc3339(), decision_cutoff.to_rfc3339()], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
 
-        let pref_edges: Vec<(String, String, String, String, String, Option<i64>, Option<String>, String, Option<String>)> = stmt
-            .query_map(params![grace_ts.to_rfc3339()], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                ))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for id in pref_dec_edge_ids {
+            let metadata: Option<String> = self.conn.query_row(
+                "SELECT metadata FROM edges WHERE id = ?1",
+                params![&id],
+                |row| row.get(0),
+            )?;
 
-        for (id, _source_id, _target_id, _relation, memory_type_str, ttl_seconds, _fact, recorded_at_str, metadata) in pref_edges {
-            let memory_type = MemoryType::from_db(&memory_type_str);
-            let recorded_at = parse_datetime(&recorded_at_str);
-            let ttl = ttl_seconds.and_then(parse_ttl_seconds);
-            let decay_score = memory_type.decay_score(1.0, recorded_at, ttl);
+            let mut meta_map = metadata
+                .and_then(|s| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&s).ok())
+                .unwrap_or_default();
+            meta_map.insert("archived".to_string(), serde_json::Value::Bool(true));
+            meta_map.insert("archived_at".to_string(), serde_json::Value::String(Utc::now().to_rfc3339()));
 
-            if decay_score == 0.0 {
-                let mut meta_map = metadata
-                    .and_then(|s| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&s).ok())
-                    .unwrap_or(serde_json::Map::new());
-                meta_map.insert("archived".to_string(), serde_json::Value::Bool(true));
-                meta_map.insert("archived_at".to_string(), serde_json::Value::String(Utc::now().to_rfc3339()));
-
-                let new_meta = serde_json::to_string(&meta_map).unwrap_or_default();
-                match self.conn.execute(
-                    "UPDATE edges SET metadata = ?1 WHERE id = ?2",
-                    params![new_meta, id],
-                ) {
-                    Ok(_) => result.edges_archived += 1,
-                    Err(e) => result.errors.push(format!("failed to archive edge {}: {}", id, e)),
-                }
+            let new_meta = serde_json::to_string(&meta_map).unwrap_or_default();
+            match self.conn.execute(
+                "UPDATE edges SET metadata = ?1 WHERE id = ?2",
+                params![new_meta, &id],
+            ) {
+                Ok(_) => result.edges_archived += 1,
+                Err(e) => result.errors.push(format!("failed to archive edge {}: {}", id, e)),
             }
         }
 
         // Step 6: Update last_cleanup_at
         self.set_system_metadata("last_cleanup_at", &Utc::now().to_rfc3339())?;
 
-        // Step 7: Release lock
+        // Step 7: Release lock via COMMIT
         self.set_system_metadata("cleanup_in_progress", "false")?;
+        self.conn.execute_batch("COMMIT")?;
 
         Ok(result)
     }
@@ -1893,6 +1893,9 @@ impl Storage {
         limit: usize,
         max_patterns_included: usize,
     ) -> Result<Vec<RetrievalCandidate>> {
+        // Increment query count for lazy cleanup trigger
+        self.query_count.fetch_add(1, Ordering::Relaxed);
+
         // Collect all candidates in a map: key = "entity:<id>" or "edge:<id>", value = candidate
         // This enables deduplication by entity_id or edge_id while keeping the higher score.
         use std::collections::HashMap;
