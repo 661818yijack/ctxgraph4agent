@@ -2,9 +2,13 @@
 
 ## What This Project Is
 
-A context graph engine for AI agents that **learns, forgets, and stays within budget** — so agents get smarter over time without getting slower or more expensive.
+This project is scoped to **software engineering agents** — agents that need memory to learn, improve, and make better decisions over time, within a **6-month active window**. Facts, decisions, and preferences are re-verified at 3 months and cleaned up at 6 months. Skills compound (never expire). Cost stays flat forever.
 
-This is NOT just another knowledge graph. The differentiator is the **memory lifecycle**:
+This is NOT a general-purpose agent memory. We explicitly do NOT target:
+- **Project agents** (single-ticket focus, research/collect) — handled by vtic
+- **Finance agents** (5+ year memory, time-series records) — needs a completely different architecture (document store / time-series DB), not ctxgraph4agent
+
+The differentiator is the **memory lifecycle**:
 
 ```
 Store → TTL → Forget → Decay → Re-verify → Compress → Budget → Learn
@@ -52,7 +56,7 @@ preferences:   30d   (re-verify with user monthly)
 decisions:     90d   (archive after 3 months, keep summary)
 ```
 
-Different agents get different policies. A finance agent remembers longer than a coding agent.
+Different engineering contexts (prototype vs production vs general assistant) have different policies.
 
 ### 3. Forget (to build)
 When TTL expires, the node isn't immediately deleted. It enters a **decay** phase:
@@ -188,12 +192,12 @@ Skills have their own lifecycle:
 - Compression pipeline (batch compress old episodes into summaries)
 - Budget-aware retrieval (rank by freshness * relevance * budget_remaining)
 
-**ctxgraph-mcp** — New tools:
-- `set_policy` — configure memory policies per agent/type
-- `forget` — manually expire a memory or type
-- `compress` — trigger compression of old episodes
-- `stats` — memory health (total nodes, by type, decayed, budget usage)
-- `learn` — extract patterns from recent experiences
+**ctxgraph-mcp** — New tools (must-have for the memory lifecycle):
+- `stats` — memory health (nodes by type, decayed counts, budget usage) — **needs MCP implementation**
+- `learn` — extract patterns from recent experiences — **needs MCP implementation**
+- `forget` — manually expire a memory by ID — **needs MCP implementation**
+
+These three cover the core lifecycle: learn (Phase D), forget (Phase A6 manual complement), and visibility (health checks).
 
 ### What Stays the Same
 
@@ -208,12 +212,14 @@ The extraction pipeline (GLiNER, GLiREL, heuristics, temporal parsing) — this 
 - **Mental models** — Can add later as a layer on top of patterns.
 - **Forever storage** — Nothing is permanent. Everything has a refresh cycle.
 
-## Different Agents, Different Policies
+## Per-Agent Memory Policies
+
+Only software engineering agents use ctxgraph4agent. Different engineering contexts still need different policies — a prototype探索阶段 needs different TTL/budget than a production system.
 
 ```toml
-# ctxgraph.toml — per-agent memory policies
+# ctxgraph.toml — per-agent memory policies for software engineering agents
 
-[policies.programming]
+[policies.prototype]
 facts_ttl = "14d"
 experiences_ttl = "7d"
 patterns_ttl = "never"
@@ -221,23 +227,27 @@ decisions_ttl = "30d"
 memory_budget_tokens = 8000
 compress_after = "7d"
 
-[policies.finance]
-facts_ttl = "365d"
-experiences_ttl = "90d"
+[policies.production]
+facts_ttl = "90d"
+experiences_ttl = "14d"
 patterns_ttl = "never"
-decisions_ttl = "365d"
-memory_budget_tokens = 15000
-compress_after = "30d"
+decisions_ttl = "90d"
+memory_budget_tokens = 20000
+compress_after = "14d"
 
-[policies.assistant]  # like me (Hermes/Apex)
+[policies.assistant]  # general assistant (Hermes/Apex)
 facts_ttl = "90d"
 experiences_ttl = "14d"
 patterns_ttl = "never"
 decisions_ttl = "never"
 preferences_ttl = "30d"
-memory_budget_tokens = 10000
+memory_budget_tokens = 15000
 compress_after = "14d"
 ```
+
+All policies share the same **6-month hard cutoff** — no memory lives beyond 6 months regardless of policy. Budget caps ensure cost stays flat.
+
+**Note:** Finance agents and project agents are separate systems. ctxgraph4agent is not designed for 5-year time-series memory or single-ticket research workflows.
 
 ## Build Order
 
@@ -262,7 +272,6 @@ Phase D: Learn (the differentiator)
   - Pattern extraction from compressed experiences
   - Skill creation and evolution
   - Cross-session skill persistence
-  - Per-agent policy configuration
 ```
 
 ## Key Principles
@@ -273,7 +282,7 @@ Phase D: Learn (the differentiator)
 4. **Nothing is permanent.** Everything has a refresh cycle.
 5. **SQLite first.** Zero external dependencies. Single file. Works everywhere.
 6. **Quality over quantity.** A small graph of relevant, fresh memories beats a massive graph of everything.
-7. **Per-agent policies.** A finance agent and a coding agent should not have the same memory behavior.
+7. **Scoped to software engineering agents.** 6-month active window. Project agents and finance agents need different systems.
 
 ## Reference
 
