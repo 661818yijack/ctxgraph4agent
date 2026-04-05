@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -849,6 +850,152 @@ impl Storage {
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(episodes)
+    }
+
+    // ── Batch Compression Triggers (B3) ───────────────────────────────────────
+
+    /// Count uncompressed episodes older than max_age_days.
+    pub fn count_uncompressed_episodes(&self, max_age_days: u32) -> Result<usize> {
+        let cutoff = Utc::now() - chrono::Duration::days(max_age_days as i64);
+        let count: usize = self.conn.query_row(
+            "SELECT COUNT(*) FROM episodes
+             WHERE compression_id IS NULL
+               AND source IS NOT 'compression'
+               AND recorded_at < ?1",
+            params![cutoff.to_rfc3339()],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Backdate an episode's recorded_at timestamp — used for test setup
+    /// and any scenario where episode age needs manual adjustment.
+    pub fn backdate_episode(&self, episode_id: &str, days_ago: i64) -> Result<()> {
+        let target = Utc::now() - chrono::Duration::days(days_ago);
+        let changed = self.conn.execute(
+            "UPDATE episodes SET recorded_at = ?1 WHERE id = ?2",
+            params![target.to_rfc3339(), episode_id],
+        )?;
+        if changed == 0 {
+            return Err(CtxGraphError::NotFound(format!(
+                "episode {episode_id} not found"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Run time-based batch compression.
+    ///
+    /// Finds uncompressed episodes older than `config.max_age_days`,
+    /// groups them by calendar day, then calls `compress_episodes` per group
+    /// (up to `config.batch_size` episodes per group).
+    ///
+    /// Idempotent: already-compressed episodes are skipped.
+    pub fn run_batch_compression(&self, config: &CompressionConfig) -> Result<CompressionResult> {
+        let cutoff = Utc::now() - chrono::Duration::days(config.max_age_days as i64);
+
+        // Fetch all uncompressed, aged-out episodes ordered by date
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content, source, recorded_at, metadata, compression_id, memory_type
+             FROM episodes
+             WHERE compression_id IS NULL
+               AND source IS NOT 'compression'
+               AND recorded_at < ?1
+             ORDER BY recorded_at ASC",
+        )?;
+
+        let episodes: Vec<Episode> = stmt
+            .query_map(params![cutoff.to_rfc3339()], |row| {
+                Ok(Episode {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    source: row.get(2)?,
+                    recorded_at: parse_datetime(&row.get::<_, String>(3)?),
+                    metadata: row
+                        .get::<_, Option<String>>(4)?
+                        .and_then(|s| parse_metadata(&s)),
+                    compression_id: row.get(5)?,
+                    memory_type: MemoryType::from_db(&row.get::<_, String>(6)?),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        if episodes.is_empty() {
+            return Ok(CompressionResult::default());
+        }
+
+        // Group episodes by calendar day (date part of recorded_at)
+        let mut day_groups: HashMap<String, Vec<String>> = HashMap::new();
+        for ep in &episodes {
+            let day_key = ep.recorded_at.format("%Y-%m-%d").to_string();
+            day_groups.entry(day_key).or_default().push(ep.id.clone());
+        }
+
+        let mut result = CompressionResult::default();
+
+        // Process each day, splitting into batches of batch_size
+        for (_, mut ep_ids) in day_groups {
+            // ep_ids are already in ASC order by recorded_at (oldest first)
+            // Process in chunks of batch_size
+            for chunk in ep_ids.chunks(config.batch_size) {
+                let chunk_ids: Vec<String> = chunk.iter().cloned().collect();
+
+                // Check if any episode in this chunk is already compressed
+                // (shouldn't happen since we filtered compression_id IS NULL,
+                // but compress_episodes handles this gracefully)
+                let summary = format!(
+                    "Group of {} episodes",
+                    chunk_ids.len()
+                );
+
+                match self.compress_episodes(&chunk_ids, &summary) {
+                    Ok(_) => {
+                        result.groups_compressed += 1;
+                        result.episodes_compressed += chunk_ids.len();
+                    }
+                    Err(e) => {
+                        result.errors.push(format!(
+                            "Failed to compress group [{}]: {}",
+                            chunk_ids.join(", "),
+                            e
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Run size-based compression if uncompressed episode count >= threshold.
+    ///
+    /// If `uncompressed_count >= threshold`, calls `run_batch_compression` with
+    /// `max_age_days = 7` and the given `batch_size`. Otherwise returns a zeroed
+    /// result with `skipped_already_compressed = current_uncompressed_count`.
+    pub fn run_compression_if_needed(
+        &self,
+        threshold: usize,
+        batch_size: usize,
+    ) -> Result<CompressionResult> {
+        let max_age_days = 7; // default, can be made configurable
+        let count = self.count_uncompressed_episodes(max_age_days)?;
+
+        if count < threshold {
+            return Ok(CompressionResult {
+                groups_compressed: 0,
+                episodes_compressed: 0,
+                skipped_already_compressed: count,
+                errors: Vec::new(),
+            });
+        }
+
+        let config = CompressionConfig {
+            max_age_days,
+            batch_size,
+            size_threshold: Some(threshold),
+        };
+
+        self.run_batch_compression(&config)
     }
 
     // ── Stats ──

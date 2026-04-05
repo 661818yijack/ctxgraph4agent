@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use ctxgraph::{Episode, Graph};
+use ctxgraph::{Episode, Graph, MockPatternDescriber, MockSkillSynthesizer, SkillScope};
 use ctxgraph_embed::EmbedEngine;
 use serde_json::{Value, json};
 
@@ -352,6 +352,66 @@ impl ToolContext {
         Ok(result)
     }
 
+    /// Tool: stats
+    pub async fn stats(&self, _args: Value) -> Result<Value, String> {
+        let graph = self.graph.lock().map_err(|e| e.to_string())?;
+        let stats = graph.stats().map_err(|e| e.to_string())?;
+        Ok(json!({
+            "episodes": stats.episode_count,
+            "entities": stats.entity_count,
+            "edges": stats.edge_count,
+            "decayed_entities": stats.decayed_entities,
+            "decayed_edges": stats.decayed_edges,
+            "db_size_bytes": stats.db_size_bytes,
+            "sources": stats.sources
+        }))
+    }
+
+    /// Tool: learn
+    /// Run the learning pipeline: extract patterns from recent experiences and create or update skills.
+    /// First run extracts from raw episodes. Subsequent runs compress old episodes first, then extract
+    /// from summaries for better pattern quality.
+    pub async fn learn(&self, args: Value) -> Result<Value, String> {
+        let agent = args.get("agent")
+            .and_then(|v| v.as_str())
+            .unwrap_or("assistant")
+            .to_string();
+        let scope_str = args.get("scope")
+            .and_then(|v| v.as_str())
+            .unwrap_or("private");
+        let scope = if scope_str == "shared" { SkillScope::Shared } else { SkillScope::Private };
+        let limit = args.get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(50) as usize;
+
+        let describer = MockPatternDescriber::new("behavioral pattern");
+        let synthesizer = MockSkillSynthesizer;
+
+        let graph = self.graph.lock().map_err(|e| e.to_string())?;
+        let result = graph
+            .run_learning_pipeline(&agent, scope, &describer, &synthesizer, limit)
+            .map_err(|e| e.to_string())?;
+
+        Ok(json!({
+            "patterns_found": result.patterns_found,
+            "skills_created": result.skills_created,
+            "skills_updated": result.skills_updated
+        }))
+    }
+
+    /// Tool: forget
+    /// Manually expire a memory (entity or edge) by ID. This bypasses TTL and immediately marks
+    /// the memory for cleanup. Use this when you know a memory is no longer relevant.
+    pub async fn forget(&self, args: Value) -> Result<Value, String> {
+        let id = args.get("id")
+            .and_then(|v| v.as_str())
+            .ok_or("missing required field: id")?;
+
+        let graph = self.graph.lock().map_err(|e| e.to_string())?;
+        graph.expire_memory(id).map_err(|e| e.to_string())?;
+        Ok(json!({"ok": true, "id": id}))
+    }
+
     /// Tool: traverse_batch
     /// Traverse multiple entities in one call, returning a merged result.
     ///
@@ -525,6 +585,37 @@ pub fn tools_list() -> Value {
                         "include_episodes": {"type": "boolean", "description": "Include episodes in export (default false)"},
                         "limit": {"type": "integer", "description": "Max entities to export (default 10000)"}
                     }
+                }
+            },
+            {
+                "name": "stats",
+                "description": "Returns memory health statistics: episode/entity/edge counts by type, decayed counts, and database size. Use this to monitor memory lifecycle health.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "learn",
+                "description": "Run the learning pipeline: extract patterns from recent experiences and create or update skills. First run extracts from raw episodes. Subsequent runs compress old episodes first, then extract from summaries for better pattern quality.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "agent": {"type": "string", "description": "Agent name (default: 'assistant')"},
+                        "scope": {"type": "string", "description": "'private' (default) or 'shared'"},
+                        "limit": {"type": "integer", "description": "Max patterns to extract (default: 50)"}
+                    }
+                }
+            },
+            {
+                "name": "forget",
+                "description": "Manually expire a memory (entity or edge) by ID. This bypasses TTL and immediately marks the memory for cleanup. Use this when you know a memory is no longer relevant.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "Memory ID to expire"}
+                    },
+                    "required": ["id"]
                 }
             }
         ]

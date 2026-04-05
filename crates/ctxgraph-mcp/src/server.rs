@@ -103,6 +103,9 @@ impl McpServer {
                     "find_precedents" => ctx.find_precedents(args).await,
                     "list_entities" => ctx.list_entities(args).await,
                     "export_graph" => ctx.export_graph(args).await,
+                    "stats" => ctx.stats(args).await,
+                    "learn" => ctx.learn(args).await,
+                    "forget" => ctx.forget(args).await,
                     other => Err(format!("unknown tool: {other}")),
                 };
 

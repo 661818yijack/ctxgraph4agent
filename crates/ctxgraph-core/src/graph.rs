@@ -817,6 +817,29 @@ impl Graph {
         self.storage.list_uncompressed_episodes(before)
     }
 
+    /// Run time-based batch compression (B3).
+    ///
+    /// Finds all uncompressed episodes older than `config.max_age_days`,
+    /// groups them by calendar day, and compresses them in batches.
+    ///
+    /// Idempotent: already-compressed episodes are skipped.
+    pub fn run_batch_compression(&self, config: &CompressionConfig) -> Result<CompressionResult> {
+        self.storage.run_batch_compression(config)
+    }
+
+    /// Run size-based batch compression if the number of uncompressed episodes
+    /// exceeds the threshold (B3).
+    ///
+    /// If `uncompressed_count < threshold`, returns a zeroed result.
+    /// Otherwise compresses all episodes older than 7 days.
+    pub fn run_compression_if_needed(
+        &self,
+        threshold: usize,
+        batch_size: usize,
+    ) -> Result<CompressionResult> {
+        self.storage.run_compression_if_needed(threshold, batch_size)
+    }
+
     // ── Pattern Extraction (D1a + D1b) ────────────────────────────────────────
 
     /// Extract pattern candidates from compression groups using co-occurrence counting (D1a).

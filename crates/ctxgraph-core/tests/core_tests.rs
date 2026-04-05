@@ -1996,6 +1996,250 @@ fn test_compress_episodes_idempotent_on_same_group() {
     );
 }
 
+// ── B3: Compression Triggers ────────────────────────────────────────────────
+
+/// RED test: batch compression finds and compresses old episodes by age.
+#[test]
+fn test_run_batch_compression_time_based() {
+    use chrono::{Duration, Utc};
+    let graph = test_graph();
+
+    // Create 5 episodes across 3 different days — all older than 7 days
+    let now = Utc::now();
+
+    let ep1 = Episode::builder("Day 1 conversation").build();
+    let ep1_id = ep1.id.clone();
+    graph.add_episode(ep1).unwrap();
+    // Backdate ep1 to 10 days ago
+    let _ = graph.storage.conn.execute(
+        "UPDATE episodes SET recorded_at = ?1 WHERE id = ?2",
+        params![(now - Duration::days(10)).to_rfc3339(), &ep1_id],
+    );
+
+    let ep2 = Episode::builder("Also day 1").build();
+    let ep2_id = ep2.id.clone();
+    graph.add_episode(ep2).unwrap();
+    let _ = graph.storage.conn.execute(
+        "UPDATE episodes SET recorded_at = ?1 WHERE id = ?2",
+        params![(now - Duration::days(10)).to_rfc3339(), &ep2_id],
+    );
+
+    let ep3 = Episode::builder("Day 2 conversation").build();
+    let ep3_id = ep3.id.clone();
+    graph.add_episode(ep3).unwrap();
+    let _ = graph.storage.conn.execute(
+        "UPDATE episodes SET recorded_at = ?1 WHERE id = ?2",
+        params![(now - Duration::days(8)).to_rfc3339(), &ep3_id],
+    );
+
+    let ep4 = Episode::builder("Also day 2").build();
+    let ep4_id = ep4.id.clone();
+    graph.add_episode(ep4).unwrap();
+    let _ = graph.storage.conn.execute(
+        "UPDATE episodes SET recorded_at = ?1 WHERE id = ?2",
+        params![(now - Duration::days(8)).to_rfc3339(), &ep4_id],
+    );
+
+    let ep5 = Episode::builder("Day 3 conversation").build();
+    let ep5_id = ep5.id.clone();
+    graph.add_episode(ep5).unwrap();
+    let _ = graph.storage.conn.execute(
+        "UPDATE episodes SET recorded_at = ?1 WHERE id = ?2",
+        params![(now - Duration::days(6)).to_rfc3339(), &ep5_id],
+    );
+
+    let config = CompressionConfig {
+        max_age_days: 7,
+        batch_size: 2,
+        size_threshold: None,
+    };
+
+    // Run batch compression — should pick up day1 (2 ep) and day2 (2 ep) as separate groups
+    // day3 (6 days old) is under the 7-day threshold so excluded
+    let result = graph.run_batch_compression(&config).unwrap();
+
+    assert_eq!(
+        result.groups_compressed, 2,
+        "Should compress 2 groups: day1 and day2 (batch_size=2, max_age=7); got {}",
+        result.groups_compressed
+    );
+    assert_eq!(
+        result.episodes_compressed, 4,
+        "Should compress 4 episodes total (day1:2, day2:2); got {}",
+        result.episodes_compressed
+    );
+    assert_eq!(
+        result.skipped_already_compressed, 0,
+        "No episodes should be skipped on first run"
+    );
+    assert!(
+        result.errors.is_empty(),
+        "No errors expected on first run, got: {:?}",
+        result.errors
+    );
+}
+
+/// RED test: size-based trigger skips when under threshold.
+#[test]
+fn test_run_compression_if_needed_skips_when_under_threshold() {
+    let graph = test_graph();
+
+    // Create 3 uncompressed episodes (threshold = 5)
+    for i in 0..3 {
+        let ep = Episode::builder(format!("Unimportant episode {i}")).build();
+        graph.add_episode(ep).unwrap();
+    }
+
+    let result = graph
+        .run_compression_if_needed(5, 10)
+        .unwrap();
+
+    assert_eq!(
+        result.groups_compressed, 0,
+        "Should not compress anything when under threshold"
+    );
+    assert_eq!(
+        result.episodes_compressed, 0,
+        "No episodes should be compressed"
+    );
+    assert_eq!(
+        result.skipped_already_compressed, 3,
+        "All 3 episodes should be counted as skipped under threshold"
+    );
+}
+
+/// RED test: size-based trigger fires when at or above threshold.
+#[test]
+fn test_run_compression_if_needed_triggers_when_at_threshold() {
+    use chrono::{Duration, Utc};
+    let graph = test_graph();
+    let now = Utc::now();
+
+    // Create 6 uncompressed episodes (threshold = 5)
+    for i in 0..6 {
+        let ep = Episode::builder(format!("Episode {i}")).build();
+        let ep_id = ep.id.clone();
+        graph.add_episode(ep).unwrap();
+        let _ = graph.storage.conn.execute(
+            "UPDATE episodes SET recorded_at = ?1 WHERE id = ?2",
+            params![(now - Duration::days(10)).to_rfc3339(), &ep_id],
+        );
+    }
+
+    let result = graph
+        .run_compression_if_needed(5, 3) // threshold=5, batch_size=3
+        .unwrap();
+
+    assert!(
+        result.groups_compressed >= 1,
+        "Should compress at least 1 group when at/above threshold"
+    );
+    assert_eq!(
+        result.skipped_already_compressed, 0,
+        "Nothing should be skipped when compression runs"
+    );
+}
+
+/// RED test: batch compression groups episodes by temporal window.
+#[test]
+fn test_batch_compression_groups_by_temporal_window() {
+    use chrono::{Duration, Utc};
+    let graph = test_graph();
+    let now = Utc::now();
+
+    // Create 10 episodes: 4 from day1, 4 from day2, 2 from day3
+    // day1 = 10 days ago, day2 = 9 days ago, day3 = 8 days ago
+    for i in 0..4 {
+        let ep = Episode::builder(format!("Day1 ep {i}")).build();
+        let ep_id = ep.id.clone();
+        graph.add_episode(ep).unwrap();
+        let _ = graph.storage.conn.execute(
+            "UPDATE episodes SET recorded_at = ?1 WHERE id = ?2",
+            params![(now - Duration::days(10)).to_rfc3339(), &ep_id],
+        );
+    }
+    for i in 0..4 {
+        let ep = Episode::builder(format!("Day2 ep {i}")).build();
+        let ep_id = ep.id.clone();
+        graph.add_episode(ep).unwrap();
+        let _ = graph.storage.conn.execute(
+            "UPDATE episodes SET recorded_at = ?1 WHERE id = ?2",
+            params![(now - Duration::days(9)).to_rfc3339(), &ep_id],
+        );
+    }
+    for i in 0..2 {
+        let ep = Episode::builder(format!("Day3 ep {i}")).build();
+        let ep_id = ep.id.clone();
+        graph.add_episode(ep).unwrap();
+        let _ = graph.storage.conn.execute(
+            "UPDATE episodes SET recorded_at = ?1 WHERE id = ?2",
+            params![(now - Duration::days(8)).to_rfc3339(), &ep_id],
+        );
+    }
+
+    let config = CompressionConfig {
+        max_age_days: 7,
+        batch_size: 3,
+        size_threshold: None,
+    };
+
+    let result = graph.run_batch_compression(&config).unwrap();
+
+    // day1 (4ep, batch_size=3) → 2 groups (3+1)
+    // day2 (4ep, batch_size=3) → 2 groups (3+1)
+    // day3 (2ep, batch_size=3) → 1 group (2)
+    // Total: 5 groups, 10 episodes
+    assert_eq!(result.groups_compressed, 5, "Expected 5 groups; got {}", result.groups_compressed);
+    assert_eq!(result.episodes_compressed, 10, "Expected 10 episodes; got {}", result.episodes_compressed);
+}
+
+/// RED test: batch compression is idempotent on already-compressed episodes.
+#[test]
+fn test_batch_compression_idempotent_on_already_compressed() {
+    use chrono::{Duration, Utc};
+    let graph = test_graph();
+    let now = Utc::now();
+
+    // Create 3 episodes from same day
+    let mut ep_ids = vec![];
+    for i in 0..3 {
+        let ep = Episode::builder(format!("Same day ep {i}")).build();
+        let ep_id = ep.id.clone();
+        graph.add_episode(ep).unwrap();
+        let _ = graph.storage.conn.execute(
+            "UPDATE episodes SET recorded_at = ?1 WHERE id = ?2",
+            params![(now - Duration::days(10)).to_rfc3339(), &ep_id],
+        );
+        ep_ids.push(ep_id);
+    }
+
+    let config = CompressionConfig {
+        max_age_days: 7,
+        batch_size: 10,
+        size_threshold: None,
+    };
+
+    // First run
+    let result1 = graph.run_batch_compression(&config).unwrap();
+    assert_eq!(result1.groups_compressed, 1);
+    assert_eq!(result1.episodes_compressed, 3);
+
+    // Second run — should skip already-compressed episodes
+    let result2 = graph.run_batch_compression(&config).unwrap();
+    assert_eq!(
+        result2.groups_compressed, 0,
+        "Second run should not create new groups"
+    );
+    assert_eq!(
+        result2.episodes_compressed, 0,
+        "Second run should compress 0 episodes"
+    );
+    assert_eq!(
+        result2.skipped_already_compressed, 3,
+        "All 3 episodes should be marked as skipped on second run"
+    );
+}
+
 // ── Pattern Description (D1b) Tests ─────────────────────────────────────────
 
 use ctxgraph::pattern::{FailingPatternDescriber, MockPatternDescriber, PatternDescriber};

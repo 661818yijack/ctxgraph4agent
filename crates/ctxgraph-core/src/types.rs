@@ -464,6 +464,53 @@ impl Default for CleanupResult {
     }
 }
 
+/// Configuration for batch compression triggers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionConfig {
+    /// Max age (days) of episodes to consider for compression.
+    /// Episodes older than this are excluded.
+    pub max_age_days: u32,
+    /// Max episodes per compression group.
+    pub batch_size: usize,
+    /// Optional size threshold for size-based triggering.
+    /// If set, compression only runs when uncompressed episode count >= this value.
+    pub size_threshold: Option<usize>,
+}
+
+impl Default for CompressionConfig {
+    fn default() -> Self {
+        Self {
+            max_age_days: 7,
+            batch_size: 14,
+            size_threshold: None,
+        }
+    }
+}
+
+/// Result from a batch compression run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionResult {
+    /// Number of distinct compression groups processed.
+    pub groups_compressed: usize,
+    /// Total episodes compressed across all groups.
+    pub episodes_compressed: usize,
+    /// Episodes skipped because they were already compressed.
+    pub skipped_already_compressed: usize,
+    /// Errors encountered during compression.
+    pub errors: Vec<String>,
+}
+
+impl Default for CompressionResult {
+    fn default() -> Self {
+        Self {
+            groups_compressed: 0,
+            episodes_compressed: 0,
+            skipped_already_compressed: 0,
+            errors: Vec::new(),
+        }
+    }
+}
+
 /// A memory that has become stale (decay_score below threshold).
 ///
 /// Used by the reverify CLI to list memories needing attention.
