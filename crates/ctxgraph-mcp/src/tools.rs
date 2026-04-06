@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use ctxgraph::{Episode, Graph, MockPatternDescriber, MockSkillSynthesizer, SkillScope};
+use ctxgraph::{Episode, Graph, MockBatchLabelDescriber, SkillScope};
 use ctxgraph_embed::EmbedEngine;
 use serde_json::{Value, json};
 
@@ -369,8 +369,6 @@ impl ToolContext {
 
     /// Tool: learn
     /// Run the learning pipeline: extract patterns from recent experiences and create or update skills.
-    /// First run extracts from raw episodes. Subsequent runs compress old episodes first, then extract
-    /// from summaries for better pattern quality.
     pub async fn learn(&self, args: Value) -> Result<Value, String> {
         let agent = args.get("agent")
             .and_then(|v| v.as_str())
@@ -384,12 +382,11 @@ impl ToolContext {
             .and_then(|v| v.as_u64())
             .unwrap_or(50) as usize;
 
-        let describer = MockPatternDescriber::new("behavioral pattern");
-        let synthesizer = MockSkillSynthesizer;
+        let describer = MockBatchLabelDescriber;
 
         let graph = self.graph.lock().map_err(|e| e.to_string())?;
         let result = graph
-            .run_learning_pipeline(&agent, scope, &describer, &synthesizer, limit)
+            .run_learning_pipeline(&agent, scope, &describer, limit)
             .map_err(|e| e.to_string())?;
 
         Ok(json!({
@@ -597,7 +594,7 @@ pub fn tools_list() -> Value {
             },
             {
                 "name": "learn",
-                "description": "Run the learning pipeline: extract patterns from recent experiences and create or update skills. First run extracts from raw episodes. Subsequent runs compress old episodes first, then extract from summaries for better pattern quality.",
+                "description": "Run the learning pipeline: extract patterns from recent experiences and create or update skills.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

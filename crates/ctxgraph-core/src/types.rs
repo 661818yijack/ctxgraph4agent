@@ -154,10 +154,7 @@ pub struct Episode {
     pub source: Option<String>,
     pub recorded_at: DateTime<Utc>,
     pub metadata: Option<serde_json::Value>,
-    /// Links this episode to a compressed summary episode (set when this episode is compressed).
-    pub compression_id: Option<String>,
     /// Memory type for this episode, driving TTL and decay behavior.
-    /// Defaults to Experience for regular episodes, Fact for compressed summaries.
     pub memory_type: MemoryType,
 }
 
@@ -214,7 +211,6 @@ impl EpisodeBuilder {
             source: self.source,
             recorded_at: Utc::now(),
             metadata,
-            compression_id: None,
             memory_type: self.memory_type,
         }
     }
@@ -464,53 +460,6 @@ impl Default for CleanupResult {
     }
 }
 
-/// Configuration for batch compression triggers.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompressionConfig {
-    /// Max age (days) of episodes to consider for compression.
-    /// Episodes older than this are excluded.
-    pub max_age_days: u32,
-    /// Max episodes per compression group.
-    pub batch_size: usize,
-    /// Optional size threshold for size-based triggering.
-    /// If set, compression only runs when uncompressed episode count >= this value.
-    pub size_threshold: Option<usize>,
-}
-
-impl Default for CompressionConfig {
-    fn default() -> Self {
-        Self {
-            max_age_days: 7,
-            batch_size: 14,
-            size_threshold: None,
-        }
-    }
-}
-
-/// Result from a batch compression run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompressionResult {
-    /// Number of distinct compression groups processed.
-    pub groups_compressed: usize,
-    /// Total episodes compressed across all groups.
-    pub episodes_compressed: usize,
-    /// Episodes skipped because they were already compressed.
-    pub skipped_already_compressed: usize,
-    /// Errors encountered during compression.
-    pub errors: Vec<String>,
-}
-
-impl Default for CompressionResult {
-    fn default() -> Self {
-        Self {
-            groups_compressed: 0,
-            episodes_compressed: 0,
-            skipped_already_compressed: 0,
-            errors: Vec::new(),
-        }
-    }
-}
-
 /// A memory that has become stale (decay_score below threshold).
 ///
 /// Used by the reverify CLI to list memories needing attention.
@@ -579,23 +528,6 @@ impl Default for PatternExtractorConfig {
             max_patterns_per_extraction: 20,
         }
     }
-}
-
-/// A compression group with its associated data for pattern extraction.
-///
-/// Represents one compressed episode (the "summary") together with all source
-/// episodes, their edges, and their entities — the raw material from which
-/// co-occurrence patterns are mined.
-#[derive(Debug, Clone)]
-pub struct CompressionGroupData {
-    /// ID of the compressed (summary) episode.
-    pub compression_id: String,
-    /// IDs of the original episodes that were compressed.
-    pub source_episode_ids: Vec<String>,
-    /// All edges associated with the source episodes.
-    pub edges: Vec<Edge>,
-    /// All entities referenced by the source episodes.
-    pub entities: Vec<Entity>,
 }
 
 // ── Retrieval Types (A4a + A4b) ───────────────────────────────────────────
@@ -1577,16 +1509,6 @@ impl Skill {
     }
 }
 
-/// A draft skill — intermediate struct produced by SkillCreator before LLM synthesis (D2).
-#[derive(Debug, Clone)]
-pub struct DraftSkill {
-    pub entity_types: Vec<String>,
-    pub success_count: u32,
-    pub failure_count: u32,
-    pub source_pattern_ids: Vec<String>,
-    pub source_summaries: Vec<String>,
-}
-
 /// Configuration for skill creation — defines success/failure relations (D2 AC4).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillCreatorConfig {
@@ -1622,7 +1544,7 @@ impl Default for SkillCreatorConfig {
 /// A pattern candidate extracted from co-occurrence analysis.
 ///
 /// Each candidate represents something that appears repeatedly across
-/// compression groups — either an entity type, an entity pair, or a
+/// episodes — either an entity type, an entity pair, or a
 /// relation triplet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatternCandidate {
@@ -1634,11 +1556,11 @@ pub struct PatternCandidate {
     pub entity_pair: Option<(String, String)>,
     /// Relation triplet (source_name, relation, target_name) if applicable.
     pub relation_triplet: Option<(String, String, String)>,
-    /// How many compression groups this pattern appeared in.
+    /// How many episodes this pattern appeared in.
     pub occurrence_count: u32,
-    /// IDs of compression groups where this pattern was observed.
+    /// IDs of episodes where this pattern was observed.
     pub source_groups: Vec<String>,
-    /// Normalized confidence: occurrence_count / total_groups.
+    /// Normalized confidence: occurrence_count / total_episodes.
     pub confidence: f64,
     /// Human-readable description (populated by D1b LLM step; always None for D1a).
     pub description: Option<String>,

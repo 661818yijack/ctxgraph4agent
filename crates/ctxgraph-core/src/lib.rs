@@ -7,6 +7,8 @@ pub mod types;
 
 pub use error::{CtxGraphError, Result};
 pub use graph::Graph;
-pub use pattern::{MockPatternDescriber, PatternDescriber, PatternExtractor};
-pub use skill::{MockSkillSynthesizer, SkillCreator, SkillSynthesizer};
+pub use pattern::{
+    BatchLabelDescriber, FailingBatchLabelDescriber, MockBatchLabelDescriber, PatternExtractor,
+};
+pub use skill::SkillCreator;
 pub use types::*;

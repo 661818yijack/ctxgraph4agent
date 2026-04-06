@@ -5,8 +5,8 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 
 use crate::error::{CtxGraphError, Result};
-use crate::pattern::{PatternDescriber, PatternExtractor};
-use crate::skill::{SkillCreator, SkillSynthesizer};
+use crate::pattern::BatchLabelDescriber;
+use crate::skill::SkillCreator;
 use crate::storage::Storage;
 use crate::types::*;
 
@@ -745,108 +745,13 @@ impl Graph {
         Ok(())
     }
 
-    // ── Episode Compression ──
-
-    /// Generate a compression summary from source episodes.
-    ///
-    /// Concatenates episode contents (truncated to budget) and returns a placeholder summary.
-    /// TODO: Replace with actual LLM call when LLM client is available in Graph layer.
-    pub fn generate_compression_summary(&self, episodes: &[Episode]) -> Result<String> {
-        if episodes.is_empty() {
-            return Err(CtxGraphError::InvalidInput(
-                "cannot compress empty episode list".to_string(),
-            ));
-        }
-
-        // Truncate each content to ~200 chars for the budget (~2000 chars total for 10 episodes)
-        let budget_per_episode = 200;
-        let truncated: Vec<&str> = episodes
-            .iter()
-            .map(|ep| {
-                if ep.content.len() > budget_per_episode {
-                    &ep.content[..budget_per_episode]
-                } else {
-                    ep.content.as_str()
-                }
-            })
-            .collect();
-
-        // TODO: Replace with actual LLM call when LLM client is available in Graph layer
-        Ok(format!(
-            "Summary of {} episodes: {}",
-            episodes.len(),
-            truncated.join(" | ")
-        ))
-    }
-
-    /// Compress a set of episodes into a single summary episode with Fact memory_type.
-    ///
-    /// Orchestrates: load episodes -> generate summary -> persist via Storage.
-    /// Source episodes get their compression_id set to the new summary episode's ID.
-    /// Entity links from all source episodes are merged into the compressed episode.
-    /// Returns the ID of the new compressed summary episode.
-    pub fn compress_episodes(&self, episode_ids: &[String]) -> Result<String> {
-        if episode_ids.is_empty() {
-            return Err(CtxGraphError::InvalidInput(
-                "cannot compress empty episode list".to_string(),
-            ));
-        }
-
-        // Load all source episodes
-        let mut episodes: Vec<Episode> = Vec::new();
-        for id in episode_ids {
-            let episode = self
-                .storage
-                .get_episode(id)?
-                .ok_or_else(|| CtxGraphError::NotFound(format!("episode {id} not found")))?;
-            episodes.push(episode);
-        }
-
-        // Generate summary (placeholder — will be LLM call in future)
-        let summary = self.generate_compression_summary(&episodes)?;
-
-        // Persist via Storage (pure SQLite)
-        self.storage.compress_episodes(episode_ids, &summary)
-    }
-
-    /// List episodes that have not been compressed, recorded before the given date.
-    pub fn list_uncompressed_episodes(
-        &self,
-        before: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Vec<Episode>> {
-        self.storage.list_uncompressed_episodes(before)
-    }
-
-    /// Run time-based batch compression (B3).
-    ///
-    /// Finds all uncompressed episodes older than `config.max_age_days`,
-    /// groups them by calendar day, and compresses them in batches.
-    ///
-    /// Idempotent: already-compressed episodes are skipped.
-    pub fn run_batch_compression(&self, config: &CompressionConfig) -> Result<CompressionResult> {
-        self.storage.run_batch_compression(config)
-    }
-
-    /// Run size-based batch compression if the number of uncompressed episodes
-    /// exceeds the threshold (B3).
-    ///
-    /// If `uncompressed_count < threshold`, returns a zeroed result.
-    /// Otherwise compresses all episodes older than 7 days.
-    pub fn run_compression_if_needed(
-        &self,
-        threshold: usize,
-        batch_size: usize,
-    ) -> Result<CompressionResult> {
-        self.storage.run_compression_if_needed(threshold, batch_size)
-    }
-
     // ── Pattern Extraction (D1a + D1b) ────────────────────────────────────────
 
-    /// Extract pattern candidates from compression groups using co-occurrence counting (D1a).
+    /// Extract pattern candidates from raw episodes using co-occurrence counting (D1a).
     ///
-    /// Loads compression groups from the last 7 days and runs the `PatternExtractor`
-    /// to find entity types, entity pairs, and relation triplets that appear
-    /// repeatedly across groups.
+    /// Loads recent episodes with their associated entities and edges and runs
+    /// the `PatternExtractor` to find entity types, entity pairs, and relation
+    /// triplets that appear repeatedly across episodes.
     ///
     /// Returns ranked candidates sorted by `occurrence_count` descending,
     /// capped at `max_patterns_per_extraction`.
@@ -854,94 +759,9 @@ impl Graph {
         &self,
         config: &PatternExtractorConfig,
     ) -> Result<Vec<PatternCandidate>> {
-        let before = Utc::now();
-        let groups = self.storage.get_compression_groups(before)?;
-        let extractor = PatternExtractor::new();
-        Ok(extractor.extract(&groups, config))
+        self.storage.get_pattern_candidates(config)
     }
 
-    /// Generate a behavioral description for a pattern candidate using the LLM (D1b).
-    ///
-    /// Uses the provided `PatternDescriber` implementation to generate a 1-2 sentence
-    /// description that captures the behavioral insight, NOT co-occurrence metadata.
-    ///
-    /// This is a pure delegation — the actual LLM call happens in the `PatternDescriber`.
-    pub fn generate_pattern_description(
-        &self,
-        candidate: &PatternCandidate,
-        source_summaries: &[String],
-        describer: &dyn PatternDescriber,
-    ) -> Result<String> {
-        describer.generate(candidate, source_summaries)
-    }
-
-    /// Full D1a + D1b pipeline: extract candidates and generate descriptions.
-    ///
-    /// Orchestrates:
-    /// 1. Extract pattern candidates from compression groups (D1a)
-    /// 2. For each candidate, generate a behavioral description using LLM (D1b)
-    /// 3. Store each described pattern as a LearnedPattern entity
-    ///
-    /// If LLM description generation fails for a candidate, that candidate is skipped
-    /// but others continue. Returns partial results on partial failure.
-    ///
-    /// Returns the list of successfully stored pattern candidates with descriptions.
-    pub fn extract_and_describe_patterns(
-        &self,
-        config: &PatternExtractorConfig,
-        describer: &dyn PatternDescriber,
-    ) -> Result<Vec<PatternCandidate>> {
-        // D1a: extract candidates
-        let candidates = self.extract_pattern_candidates(config)?;
-
-        // Empty candidate list is not an error — return early
-        if candidates.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut described = Vec::new();
-        for mut candidate in candidates {
-            // Get source episode contents for context
-            let source_summaries: Vec<String> = candidate
-                .source_groups
-                .iter()
-                .filter_map(|gid| {
-                    self.storage
-                        .get_episode(gid)
-                        .ok()
-                        .flatten()
-                        .map(|ep| ep.content)
-                })
-                .collect();
-
-            // D1b: generate description
-            match self.generate_pattern_description(&candidate, &source_summaries, describer) {
-                Ok(description) => {
-                    candidate.description = Some(description.clone());
-                    // Store the pattern
-                    if let Err(e) = self.storage.store_pattern(&candidate) {
-                        eprintln!(
-                            "ctxgraph: warning: failed to store pattern {}: {}",
-                            candidate.id, e
-                        );
-                        // Skip this candidate but continue with others
-                    } else {
-                        described.push(candidate);
-                    }
-                }
-                Err(e) => {
-                    // LLM failure: skip this candidate but continue
-                    // Per acceptance criteria: "extraction can be retried"
-                    eprintln!(
-                        "ctxgraph: warning: failed to generate description for candidate {}: {}",
-                        candidate.id, e
-                    );
-                }
-            }
-        }
-
-        Ok(described)
-    }
 
     /// List all stored patterns (LearnedPattern entities).
     ///
@@ -960,180 +780,89 @@ impl Graph {
         self.storage.store_pattern(candidate)
     }
 
-    /// Get all compression groups before the given timestamp.
+    /// Get pattern candidates from raw episodes.
     ///
     /// Used by D1a for pattern candidate extraction.
-    pub fn get_compression_groups(
+    /// NOTE: Compression has been removed. This now returns pattern candidates
+    /// from raw episodes via storage layer.
+    pub fn get_pattern_candidates(
         &self,
-        before: DateTime<Utc>,
-    ) -> Result<Vec<CompressionGroupData>> {
-        self.storage.get_compression_groups(before)
+        config: &PatternExtractorConfig,
+    ) -> Result<Vec<PatternCandidate>> {
+        self.storage.get_pattern_candidates(config)
     }
 
     // ── Skill Creation and Evolution (D2) ─────────────────────────────────────
 
-    /// Create skills from pattern candidates (D2 orchestration).
-    ///
-    /// Orchestrates the full skill creation pipeline:
-    /// 1. Load edges for the patterns' source groups
-    /// 2. Use SkillCreator to produce DraftSkill vec from patterns + edges
-    /// 3. For each draft, use SkillSynthesizer to produce behavioral fields
-    /// 4. Build Skill struct with provenance and store via Storage
-    ///
-    /// If the synthesizer fails for a draft, the error propagates (no partial
-    /// skills stored, per D2 AC: "If LLM fails, skill creation returns error").
-    ///
-    /// Returns the list of successfully created skills.
-    pub fn create_skills_from_patterns(
-        &self,
-        patterns: &[PatternCandidate],
-        synthesizer: &dyn SkillSynthesizer,
-        agent: &str,
-        config: &SkillCreatorConfig,
-        scope: SkillScope,
-        limit: usize,
-    ) -> Result<Vec<Skill>> {
-        if patterns.is_empty() {
+    /// Load edges associated with a set of episode IDs.
+    fn load_edges_for_episodes(&self, episode_ids: &[String]) -> Result<Vec<Edge>> {
+        if episode_ids.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Load edges associated with pattern source groups
-        let all_group_ids: Vec<String> = patterns
-            .iter()
-            .flat_map(|p| p.source_groups.iter().cloned())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
+        let placeholders: Vec<String> = (1..=episode_ids.len())
+            .map(|i| format!("?{i}"))
             .collect();
+        let in_clause = placeholders.join(", ");
+        let sql = format!(
+            "SELECT e.id, e.source_id, e.target_id, e.relation, e.memory_type,
+                    e.ttl_seconds, e.fact, e.valid_from, e.valid_until,
+                    e.recorded_at, e.confidence, e.episode_id, e.metadata,
+                    e.usage_count, e.last_recalled_at
+             FROM edges e
+             WHERE e.episode_id IN ({in_clause})
+             AND e.valid_until IS NULL"
+        );
 
-        let mut all_edges: Vec<Edge> = Vec::new();
-        for gid in &all_group_ids {
-            // Load edges from source episodes in this compression group
-            let mut stmt = self
-                .storage
-                .conn
-                .prepare(
-                    "SELECT e.id, e.source_id, e.target_id, e.relation, e.memory_type,
-                            e.ttl_seconds, e.fact, e.valid_from, e.valid_until,
-                            e.recorded_at, e.confidence, e.episode_id, e.metadata,
-                            e.usage_count, e.last_recalled_at
-                     FROM edges e
-                     WHERE e.episode_id IN (SELECT id FROM episodes WHERE compression_id = ?1)
-                     AND e.valid_until IS NULL",
-                )
-                .map_err(CtxGraphError::Storage)?;
+        let mut stmt = self
+            .storage
+            .conn
+            .prepare(&sql)
+            .map_err(CtxGraphError::Storage)?;
 
-            let edges: Vec<Edge> = stmt
-                .query_map(rusqlite::params![gid], |row| {
-                    Ok(Edge {
-                        id: row.get(0)?,
-                        source_id: row.get(1)?,
-                        target_id: row.get(2)?,
-                        relation: row.get(3)?,
-                        memory_type: MemoryType::from_db(&row.get::<_, String>(4)?),
-                        ttl: row.get::<_, Option<i64>>(5)?.and_then(|s| {
-                            if s >= 0 {
-                                Some(Duration::from_secs(s as u64))
-                            } else {
-                                None
-                            }
-                        }),
-                        fact: row.get(6)?,
-                        valid_from: row.get::<_, Option<String>>(7)?.map(|s| {
-                            DateTime::parse_from_rfc3339(&s)
-                                .map(|dt| dt.with_timezone(&Utc))
-                                .unwrap_or_else(|_| Utc::now())
-                        }),
-                        valid_until: row.get::<_, Option<String>>(8)?.map(|s| {
-                            DateTime::parse_from_rfc3339(&s)
-                                .map(|dt| dt.with_timezone(&Utc))
-                                .unwrap_or_else(|_| Utc::now())
-                        }),
-                        recorded_at: {
-                            let s: String = row.get(9)?;
-                            DateTime::parse_from_rfc3339(&s)
-                                .map(|dt| dt.with_timezone(&Utc))
-                                .unwrap_or_else(|_| Utc::now())
-                        },
-                        confidence: row.get(10)?,
-                        episode_id: row.get(11)?,
-                        metadata: row
-                            .get::<_, Option<String>>(12)?
-                            .and_then(|s| serde_json::from_str(&s).ok()),
-                        usage_count: row.get(13)?,
-                        last_recalled_at: row.get::<_, Option<String>>(14)?.map(|s| {
-                            DateTime::parse_from_rfc3339(&s)
-                                .map(|dt| dt.with_timezone(&Utc))
-                                .unwrap_or_else(|_| Utc::now())
-                        }),
-                    })
-                })
-                .map_err(CtxGraphError::Storage)?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(CtxGraphError::Storage)?;
-
-            all_edges.extend(edges);
-        }
-
-        // Build source summaries map: compression_group_id -> [summary contents]
-        let mut source_summaries: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-        for gid in &all_group_ids {
-            if let Ok(Some(ep)) = self.storage.get_episode(gid) {
-                // The compression group ID is the summary episode ID
-                source_summaries
-                    .entry(gid.clone())
-                    .or_default()
-                    .push(ep.content);
-            }
-        }
-
-        // Step 2: Draft skills from patterns + edges
-        let drafts = SkillCreator::draft_skills(patterns, &all_edges, &source_summaries, config);
-
-        if drafts.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Step 3+4: Synthesize and store each skill (up to limit)
-        let mut created_skills = Vec::new();
-        let drafts: Vec<_> = drafts.into_iter().take(limit).collect();
-        for draft in drafts {
-            let (name, description, trigger_condition, action) = synthesizer.synthesize(&draft)?;
-
-            let confidence = Skill::compute_confidence(draft.success_count, draft.failure_count);
-            let provenance = Some(Skill::generate_provenance(
-                format!(
-                    "Derived from {} pattern(s): {}",
-                    draft.source_pattern_ids.len(),
-                    draft.source_pattern_ids.join(", ")
-                ),
-                &draft.source_summaries,
-                config.reasoning_ttl_days,
-                config.context_facts_ttl_days,
-            ));
-
-            let skill = Skill {
-                id: uuid::Uuid::now_v7().to_string(),
-                name,
-                description,
-                trigger_condition,
-                action,
-                success_count: draft.success_count,
-                failure_count: draft.failure_count,
-                confidence,
-                superseded_by: None,
-                created_at: Utc::now(),
-                entity_types: draft.entity_types,
-                provenance,
-                scope,
-                created_by_agent: agent.to_string(),
-            };
-
-            self.storage.create_skill(&skill)?;
-            created_skills.push(skill);
-        }
-
-        Ok(created_skills)
+        stmt.query_map(rusqlite::params_from_iter(episode_ids.iter()), |row| {
+            Ok(Edge {
+                id: row.get(0)?,
+                source_id: row.get(1)?,
+                target_id: row.get(2)?,
+                relation: row.get(3)?,
+                memory_type: MemoryType::from_db(&row.get::<_, String>(4)?),
+                ttl: row.get::<_, Option<i64>>(5)?.and_then(|s| {
+                    if s >= 0 { Some(Duration::from_secs(s as u64)) } else { None }
+                }),
+                fact: row.get(6)?,
+                valid_from: row.get::<_, Option<String>>(7)?.map(|s| {
+                    DateTime::parse_from_rfc3339(&s)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now())
+                }),
+                valid_until: row.get::<_, Option<String>>(8)?.map(|s| {
+                    DateTime::parse_from_rfc3339(&s)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now())
+                }),
+                recorded_at: {
+                    let s: String = row.get(9)?;
+                    DateTime::parse_from_rfc3339(&s)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now())
+                },
+                confidence: row.get(10)?,
+                episode_id: row.get(11)?,
+                metadata: row
+                    .get::<_, Option<String>>(12)?
+                    .and_then(|s| serde_json::from_str(&s).ok()),
+                usage_count: row.get(13)?,
+                last_recalled_at: row.get::<_, Option<String>>(14)?.map(|s| {
+                    DateTime::parse_from_rfc3339(&s)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now())
+                }),
+            })
+        })
+        .map_err(CtxGraphError::Storage)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CtxGraphError::Storage)
     }
 
     /// List all active (non-superseded) skills.
@@ -1220,11 +949,11 @@ impl Graph {
 
     // ── Learning Pipeline (D4) ────────────────────────────────────────────────
 
-    /// Run the full learning pipeline: D1a → D1b → D2 → D3 supersession.
+    /// Run the full learning pipeline: D1a -> D1b -> D2 -> D3 supersession.
     ///
     /// This is the main entry point for the `learn` CLI command and MCP tool.
     /// It orchestrates:
-    /// 1. Extract pattern candidates from compression groups (D1a)
+    /// 1. Extract pattern candidates from raw episodes (D1a)
     /// 2. Generate behavioral descriptions using LLM (D1b)
     /// 3. Store described patterns (dedup against existing)
     /// 4. Create skills from new patterns (D2)
@@ -1235,13 +964,12 @@ impl Graph {
         &self,
         agent: &str,
         scope: SkillScope,
-        describer: &dyn PatternDescriber,
-        synthesizer: &dyn SkillSynthesizer,
+        describer: &dyn BatchLabelDescriber,
         limit: usize,
     ) -> Result<LearningOutcome> {
-        // D1a: Extract pattern candidates from recent compression groups
+        // Stage 1: Extract pattern candidates
         let config = PatternExtractorConfig::default();
-        let candidates = self.extract_pattern_candidates(&config)?;
+        let mut candidates = self.extract_pattern_candidates(&config)?;
 
         if candidates.is_empty() {
             return Ok(LearningOutcome {
@@ -1253,71 +981,96 @@ impl Graph {
             });
         }
 
-        // D1b: Generate descriptions for candidates
-        let mut described_candidates: Vec<PatternCandidate> = Vec::new();
-        for mut candidate in candidates {
-            let source_summaries: Vec<String> = candidate
-                .source_groups
-                .iter()
-                .filter_map(|gid| self.storage.get_episode(gid).ok().flatten())
-                .map(|ep| ep.content)
-                .collect();
+        // Stage 2: Filter — keep only candidates with occurrence_count >= 3
+        candidates.retain(|c| c.occurrence_count >= 3);
 
-            match self.generate_pattern_description(&candidate, &source_summaries, describer) {
-                Ok(description) => {
-                    candidate.description = Some(description);
-                    described_candidates.push(candidate);
-                }
-                Err(e) => {
-                    eprintln!(
-                        "ctxgraph: warning: Failed to generate description for candidate: {}",
-                        e
-                    );
-                }
-            }
-        }
+        // Stage 3: Intra-batch dedup — remove duplicate pattern keys within this batch
+        let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        candidates.retain(|c| seen_keys.insert(pattern_key(c)));
 
-        // Store described patterns and deduplicate against existing
+        // Stage 4: Inter-pattern dedup — filter out candidates already stored as patterns
         let existing_patterns = self.storage.get_patterns()?;
         let existing_keys: std::collections::HashSet<String> =
             existing_patterns.iter().map(|p| pattern_key(p)).collect();
+        candidates.retain(|c| !existing_keys.contains(&pattern_key(c)));
 
-        let mut new_patterns: Vec<PatternCandidate> = Vec::new();
-        for p in &described_candidates {
-            let key = pattern_key(p);
-            if !existing_keys.contains(&key) {
-                // Store the new pattern
-                if let Err(e) = self.storage.store_pattern(p) {
-                    eprintln!("ctxgraph: warning: Failed to store pattern {}: {}", p.id, e);
-                } else {
-                    new_patterns.push(p.clone());
+        let patterns_found = candidates.len();
+
+        if candidates.is_empty() {
+            return Ok(LearningOutcome {
+                patterns_found: 0,
+                patterns_new: 0,
+                skills_created: 0,
+                skills_updated: 0,
+                skill_ids: Vec::new(),
+            });
+        }
+
+        // Stage 5: Build source_summaries map: pattern_id -> Vec<episode content>
+        let all_episode_ids: Vec<String> = candidates
+            .iter()
+            .flat_map(|c| c.source_groups.iter().cloned())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let mut source_summaries: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for candidate in &candidates {
+            let mut summaries = Vec::new();
+            for gid in &candidate.source_groups {
+                if let Ok(Some(ep)) = self.storage.get_episode(gid) {
+                    summaries.push(ep.content);
                 }
+            }
+            source_summaries.insert(candidate.id.clone(), summaries);
+        }
+
+        // Stage 6: One batch LLM call for all candidates
+        let label_pairs = describer.describe_batch(&candidates, &source_summaries)?;
+        let descriptions: std::collections::HashMap<String, String> =
+            label_pairs.into_iter().collect();
+
+        // Stage 7: Load edges and create Skills directly (no DraftSkill, no store_pattern)
+        let all_edges = self.load_edges_for_episodes(&all_episode_ids)?;
+        // Build episode-keyed source summaries for SkillCreator
+        let mut episode_summaries: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for eid in &all_episode_ids {
+            if let Ok(Some(ep)) = self.storage.get_episode(eid) {
+                episode_summaries.entry(eid.clone()).or_default().push(ep.content);
             }
         }
 
-        // D2: Create skills from new patterns
         let skill_config = SkillCreatorConfig::default();
-        let new_skills = self.create_skills_from_patterns(
-            &new_patterns,
-            synthesizer,
-            agent,
+        let candidates_limited: Vec<_> = candidates.into_iter().take(limit).collect();
+        let new_skills = SkillCreator::create_skills(
+            &candidates_limited,
+            &all_edges,
+            &episode_summaries,
+            &descriptions,
             &skill_config,
             scope,
-            limit,
-        )?;
+            agent,
+        );
 
-        // D3: Supersession — check new skills against existing
+        // Store new skills
+        for skill in &new_skills {
+            if let Err(e) = self.storage.create_skill(skill) {
+                eprintln!("ctxgraph: warning: Failed to store skill {}: {}", skill.id, e);
+            }
+        }
+
+        // Stage 8: D3 Supersession — entity_type overlap only (no action comparison)
         let existing_skills = self.get_skills_for_agent(agent)?;
         let mut skills_updated = 0;
 
         for new_skill in &new_skills {
             for old_skill in &existing_skills {
-                // Supersede if entity_types overlap AND actions differ
                 if new_skill
                     .entity_types
                     .iter()
                     .any(|et| old_skill.entity_types.contains(et))
-                    && new_skill.action != old_skill.action
                 {
                     if let Err(e) = self.supersede_skill(&old_skill.id, &new_skill.id) {
                         eprintln!(
@@ -1327,7 +1080,7 @@ impl Graph {
                     } else {
                         skills_updated += 1;
                     }
-                    break; // Only supersede each old skill once
+                    break;
                 }
             }
         }
@@ -1335,8 +1088,8 @@ impl Graph {
         let skill_ids: Vec<String> = new_skills.iter().map(|s| s.id.clone()).collect();
 
         Ok(LearningOutcome {
-            patterns_found: described_candidates.len(),
-            patterns_new: new_patterns.len(),
+            patterns_found,
+            patterns_new: patterns_found,
             skills_created: new_skills.len(),
             skills_updated,
             skill_ids,

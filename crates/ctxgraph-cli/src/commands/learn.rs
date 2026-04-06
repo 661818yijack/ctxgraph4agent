@@ -1,104 +1,40 @@
 //! `ctxgraph learn` — run the learning pipeline to extract patterns and create skills.
 
+use std::collections::HashMap;
 use std::env;
 
-use ctxgraph::pattern::PatternDescriber;
-use ctxgraph::skill::SkillSynthesizer;
-use ctxgraph::{CtxGraphError, Result, SkillScope};
+use ctxgraph::pattern::BatchLabelDescriber;
+use ctxgraph::{CtxGraphError, PatternCandidate, Result, SkillScope};
 
 use super::open_graph;
 
-/// Real LLM-based pattern describer for the CLI.
-struct RealPatternDescriber {
+/// Real LLM-based batch label describer for the CLI.
+///
+/// Makes a single LLM call for all candidates and returns one label per candidate.
+struct RealBatchLabelDescriber {
     model: String,
 }
 
-impl RealPatternDescriber {
+impl RealBatchLabelDescriber {
     fn new() -> Self {
         Self {
-            model: env::var("CTXGRAPH_MODEL")
-                .unwrap_or_else(|_| "glm-5-turbo".to_string()),
+            model: env::var("CTXGRAPH_MODEL").unwrap_or_else(|_| "glm-5-turbo".to_string()),
         }
     }
-}
 
-impl PatternDescriber for RealPatternDescriber {
-    fn generate(
-        &self,
-        candidate: &ctxgraph::PatternCandidate,
-        source_summaries: &[String],
-    ) -> Result<String> {
-        // Build a behavioral description using the LLM
-        // For now, use a template-based approach since we don't have an LLM client in the CLI
-        // The actual LLM call would be made by ctxgraph-cli with an API client
-        let candidate_type = if candidate.relation_triplet.is_some() {
-            "relation triplet"
-        } else if candidate.entity_pair.is_some() {
-            "entity pair"
-        } else {
-            "entity type"
-        };
-
-        let entity_info = if let Some(ref triplet) = candidate.relation_triplet {
-            format!("{} --({})--> {}", triplet.0, triplet.1, triplet.2)
-        } else if let Some(ref pair) = candidate.entity_pair {
-            format!("{} <-> {}", pair.0, pair.1)
-        } else {
-            format!("types: {}", candidate.entity_types.join(", "))
-        };
-
-        let summaries_context = if source_summaries.is_empty() {
-            "No source summaries available.".to_string()
-        } else {
-            source_summaries
-                .iter()
-                .take(3)
-                .map(|s| format!("- {}", s))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-
-        let prompt = format!(
-            "You are a behavioral pattern analyzer for an AI agent memory system.\n\
-            Based on the following co-occurrence pattern, write a 1-2 sentence behavioral \
-            description that captures the actionable insight.\n\n\
-            Pattern type: {}\n\
-            Pattern details: {}\n\
-            Occurrence count: {}\n\
-            Source summaries:\n{}\n\n\
-            Write a behavioral description following these rules:\n\
-            - GOOD: \"When debugging Docker networking issues, the agent typically needs to restart \
-            the service container and clear the network bridge — avoid assuming the daemon is healthy.\"\n\
-            - GOOD: \"The user prefers using dark mode and resists configuration changes unless \
-            the rationale is clearly explained.\"\n\
-            - BAD: \"Entity type Component appears in 5 similar contexts.\"\n\
-            - BAD: \"Entity pair (User, Postgres) appears 3 times across source summaries.\"\n\
-            - DO NOT include occurrence counts or entity type names in your description\n\
-            - Focus on what the agent or user DOES, PREFERS, or SHOULD AVOID\n\
-            - Keep it to 1-2 sentences, max 150 characters\n\
-            Description:",
-            candidate_type,
-            entity_info,
-            candidate.occurrence_count,
-            summaries_context
-        );
-
-        // Call LLM via ZAI API
+    fn call_llm(&self, prompt: &str, max_tokens: u32) -> Result<String> {
         let api_key = env::var("ZAI_API_KEY").ok();
         let minimax_key = env::var("MINIMAX_API_KEY").ok();
 
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_secs(120))
             .build()
             .map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
 
         let body = serde_json::json!({
             "model": self.model,
-            "messages": [{
-                "role": "user",
-                "content": prompt
-            }],
-            "max_tokens": 150,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
             "temperature": 0.3
         });
 
@@ -127,117 +63,99 @@ impl PatternDescriber for RealPatternDescriber {
             .json()
             .map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
 
-        let text = json["choices"][0]["message"]["content"]
+        json["choices"][0]["message"]["content"]
             .as_str()
-            .ok_or_else(|| CtxGraphError::Extraction("Invalid LLM response".to_string()))?;
-
-        Ok(text.trim().to_string())
+            .map(|s| s.trim().to_string())
+            .ok_or_else(|| CtxGraphError::Extraction("Invalid LLM response".to_string()))
     }
 }
 
-/// Real LLM-based skill synthesizer for the CLI.
-struct RealSkillSynthesizer {
-    model: String,
-}
-
-impl RealSkillSynthesizer {
-    fn new() -> Self {
-        Self {
-            model: env::var("CTXGRAPH_MODEL")
-                .unwrap_or_else(|_| "glm-5-turbo".to_string()),
-        }
-    }
-}
-
-impl SkillSynthesizer for RealSkillSynthesizer {
-    fn synthesize(
+impl BatchLabelDescriber for RealBatchLabelDescriber {
+    fn describe_batch(
         &self,
-        draft: &ctxgraph::DraftSkill,
-    ) -> Result<(String, String, String, String)> {
+        candidates: &[PatternCandidate],
+        source_summaries: &HashMap<String, Vec<String>>,
+    ) -> Result<Vec<(String, String)>> {
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build numbered pattern list for the prompt
+        let patterns_text: String = candidates
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let detail = if let Some(ref triplet) = c.relation_triplet {
+                    format!("{} --({})--> {}", triplet.0, triplet.1, triplet.2)
+                } else if let Some(ref pair) = c.entity_pair {
+                    format!("{} <-> {}", pair.0, pair.1)
+                } else {
+                    format!("types: {}", c.entity_types.join(", "))
+                };
+                let summaries = source_summaries
+                    .get(&c.id)
+                    .map(|v| v.iter().take(2).cloned().collect::<Vec<_>>().join("; "))
+                    .unwrap_or_default();
+                let ctx = if summaries.is_empty() {
+                    String::new()
+                } else {
+                    format!(" | context: {}", summaries)
+                };
+                format!(
+                    "{}. {} | episodes: {}{}",
+                    i + 1,
+                    detail,
+                    c.occurrence_count,
+                    ctx
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
         let prompt = format!(
-            "You are a skill synthesizer for an AI agent memory system.\n\
-            Given a draft skill derived from behavioral patterns, generate:\n\
-            1. A short skill NAME (max 10 words)\n\
-            2. A TRIGGER CONDITION: when to apply this skill (1 sentence, specific scenario)\n\
-            3. An ACTION: what to do when triggered (1-2 sentences, specific steps)\n\
-            4. A DESCRIPTION: brief overview (1 sentence)\n\n\
-            Draft skill:\n\
-            - Entity types: {:?}\n\
-            - Success count: {} (times this pattern led to success)\n\
-            - Failure count: {} (times this pattern led to failure)\n\
-            - Source summaries: {}\n\n\
-            Output format (JSON):\n\
-            {{\"name\": \"...\", \"trigger\": \"...\", \"action\": \"...\", \"description\": \"...\"}}\n\n\
+            "You are a behavioral pattern analyzer. For each pattern below, generate a \
+            1-2 sentence behavioral label describing what the agent or user does/should do.\n\n\
+            Patterns:\n{}\n\n\
+            Output JSON array:\n\
+            [{{\n  \"id\": \"1\",\n  \"label\": \"...\"\n}}, ...]\n\n\
             Rules:\n\
-            - GOOD trigger: \"When debugging Docker networking issues involving container-to-container connectivity\"\n\
-            - GOOD action: \"Restart the service container, clear the network bridge, verify DNS resolution — do NOT assume the daemon is healthy\"\n\
-            - BAD trigger: \"When entity types [Component, Network] appear together\"\n\
-            - BAD action: \"Apply pattern 3\"\n\
-            - Do NOT mention entity type names, counts, or co-occurrence metadata in any field\n\
-            - Focus on observable behaviors and specific actions",
-            draft.entity_types,
-            draft.success_count,
-            draft.failure_count,
-            draft.source_summaries.join(" | ")
+            - Max 150 chars per label\n\
+            - Focus on observable behaviors, not metadata\n\
+            - DO NOT include episode counts or entity type names\n\
+            - id must match the pattern number exactly",
+            patterns_text
         );
 
-        let api_key = env::var("ZAI_API_KEY").ok();
-        let minimax_key = env::var("MINIMAX_API_KEY").ok();
+        let max_tokens = (candidates.len() as u32) * 60 + 100;
+        let raw = self.call_llm(&prompt, max_tokens)?;
 
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
+        // Parse JSON array response
+        let parsed: serde_json::Value = serde_json::from_str(raw.trim()).map_err(|e| {
+            CtxGraphError::Extraction(format!("Failed to parse batch labels JSON: {}", e))
+        })?;
 
-        let body = serde_json::json!({
-            "model": self.model,
-            "messages": [{
-                "role": "user",
-                "content": prompt
-            }],
-            "max_tokens": 300,
-            "temperature": 0.3
-        });
+        let arr = parsed
+            .as_array()
+            .ok_or_else(|| CtxGraphError::Extraction("Expected JSON array from LLM".to_string()))?;
 
-        let response = if let Some(key) = api_key {
-            client
-                .post("https://api.z.ai/api/coding/paas/v4/chat/completions")
-                .header("Authorization", format!("Bearer {}", key))
-                .header("Content-Type", "application/json")
-                .json(&body)
-                .send()
-        } else if let Some(key) = minimax_key {
-            client
-                .post("https://api.minimax.io/anthropic")
-                .header("Authorization", format!("Bearer {}", key))
-                .header("Content-Type", "application/json")
-                .json(&body)
-                .send()
-        } else {
-            return Err(CtxGraphError::InvalidInput(
-                "ZAI_API_KEY or MINIMAX_API_KEY must be set for learn command".to_string(),
-            ));
-        };
+        let mut results = Vec::new();
+        for item in arr {
+            let id_str = item["id"]
+                .as_str()
+                .or_else(|| item["id"].as_u64().map(|_| ""))
+                .unwrap_or("")
+                .to_string();
+            let label = item["label"].as_str().unwrap_or("").to_string();
 
-        let response = response.map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
-        let json: serde_json::Value = response
-            .json()
-            .map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
+            // Map 1-based index back to candidate id
+            if let Ok(idx) = id_str.parse::<usize>() {
+                if idx >= 1 && idx <= candidates.len() {
+                    results.push((candidates[idx - 1].id.clone(), label));
+                }
+            }
+        }
 
-        let text = json["choices"][0]["message"]["content"]
-            .as_str()
-            .ok_or_else(|| CtxGraphError::Extraction("Invalid LLM response".to_string()))?;
-
-        // Parse JSON from response
-        let parsed: serde_json::Value = serde_json::from_str(text.trim())
-            .map_err(|e| CtxGraphError::Extraction(format!("Failed to parse skill JSON: {}", e)))?;
-
-        let name = parsed["name"].as_str().unwrap_or("Untitled Skill").to_string();
-        let trigger = parsed["trigger"].as_str().unwrap_or("").to_string();
-        let action = parsed["action"].as_str().unwrap_or("").to_string();
-        let description = parsed["description"].as_str().unwrap_or("").to_string();
-
-        Ok((name, trigger, action, description))
+        Ok(results)
     }
 }
 
@@ -251,23 +169,25 @@ pub struct LearnOptions {
 
 pub fn run(options: LearnOptions) -> Result<()> {
     let graph = open_graph()?;
-    let describer = RealPatternDescriber::new();
-    let synthesizer = RealSkillSynthesizer::new();
+    let describer = RealBatchLabelDescriber::new();
 
     if options.dry_run {
-        // Dry run: just show what would be learned without persisting
         let config = ctxgraph::PatternExtractorConfig::default();
         let candidates = graph.extract_pattern_candidates(&config)?;
 
         if candidates.is_empty() {
-            println!("No patterns found. Run compression first: ctxgraph compress");
+            println!("No patterns found. Add more experiences and try again.");
             return Ok(());
         }
 
         println!("ctxgraph learn (dry-run)");
         println!("{}", "-".repeat(40));
         println!("Patterns found: {}", candidates.len());
-        println!("Skills that would be created: ~{} (limit: {})", candidates.len().min(options.limit), options.limit);
+        println!(
+            "Skills that would be created: ~{} (limit: {})",
+            candidates.len().min(options.limit),
+            options.limit
+        );
         println!("Scope: {:?}", options.scope);
         println!("Agent: {}", options.agent);
         println!();
@@ -279,7 +199,6 @@ pub fn run(options: LearnOptions) -> Result<()> {
         &options.agent,
         options.scope,
         &describer,
-        &synthesizer,
         options.limit,
     )?;
 

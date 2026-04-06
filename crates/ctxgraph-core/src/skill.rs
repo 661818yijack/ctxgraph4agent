@@ -1,139 +1,39 @@
 //! Skill creation and evolution (D2) — pure logic module.
 //!
-//! The `SkillCreator` takes pattern candidates and associated edge data
-//! to produce `DraftSkill` structs. It filters patterns by success/failure
-//! relations and aggregates counts. No I/O — all data is passed in.
+//! The `SkillCreator` takes pattern candidates, associated edge data, and
+//! LLM-generated labels to produce `Skill` structs directly. No intermediate
+//! DraftSkill layer — candidates go straight to skills.
 
-use crate::types::{DraftSkill, Edge, PatternCandidate, SkillCreatorConfig};
+use crate::types::{Edge, PatternCandidate, Skill, SkillCreatorConfig, SkillScope};
+use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 
 /// Pure-logic skill creator.
 ///
-/// Analyzes pattern candidates alongside their associated edges to produce
-/// draft skills — intermediate structs ready for LLM synthesis of
-/// name, trigger_condition, action, and description.
+/// Analyzes pattern candidates alongside their associated edges and
+/// LLM-generated labels to produce Skills directly. Stateless — all data
+/// is passed in via the `create_skills` method.
 pub struct SkillCreator;
 
-/// Trait for synthesizing behavioral fields on a draft skill via LLM (D2).
-///
-/// Implementations take a `DraftSkill` and produce the behavioral
-/// fields: name, description, trigger_condition, and action.
-pub trait SkillSynthesizer: Send + Sync {
-    /// Synthesize behavioral fields for a draft skill.
-    ///
-    /// Returns (name, description, trigger_condition, action).
-    fn synthesize(
-        &self,
-        draft: &DraftSkill,
-    ) -> crate::error::Result<(String, String, String, String)>;
-}
-
-// ── Test implementations ──────────────────────────────────────────────────────
-
-/// A SkillSynthesizer that generates deterministic behavioral fields from draft data.
-/// Useful for testing without a real LLM.
-pub struct MockSkillSynthesizer;
-
-impl SkillSynthesizer for MockSkillSynthesizer {
-    fn synthesize(
-        &self,
-        draft: &DraftSkill,
-    ) -> crate::error::Result<(String, String, String, String)> {
-        let types = if draft.entity_types.is_empty() {
-            "general".to_string()
-        } else {
-            draft.entity_types.join(", ")
-        };
-
-        let is_positive = draft.success_count > draft.failure_count;
-        let name = if is_positive {
-            format!("Successful {} pattern", types)
-        } else if draft.failure_count > 0 {
-            format!("Risky {} anti-pattern", types)
-        } else {
-            format!("Observed {} pattern", types)
-        };
-
-        let description = format!(
-            "A behavioral skill derived from {} patterns involving {}. \
-             {} successes and {} failures observed.",
-            draft.source_pattern_ids.len(),
-            types,
-            draft.success_count,
-            draft.failure_count,
-        );
-
-        let trigger_condition = if draft.source_summaries.is_empty() {
-            format!("When working with {}", types)
-        } else {
-            format!(
-                "When patterns related to {} are detected in the current context",
-                types
-            )
-        };
-
-        let action = if is_positive {
-            format!(
-                "Apply the proven approach for {} — it has succeeded {} times",
-                types, draft.success_count
-            )
-        } else if draft.failure_count > 0 {
-            format!(
-                "Avoid the failing approach for {} — it has failed {} times",
-                types, draft.failure_count
-            )
-        } else {
-            format!(
-                "Consider the pattern involving {} when making decisions",
-                types
-            )
-        };
-
-        Ok((name, description, trigger_condition, action))
-    }
-}
-
-/// A SkillSynthesizer that always returns an error.
-/// Useful for testing LLM failure handling.
-pub struct FailingSkillSynthesizer {
-    message: String,
-}
-
-impl FailingSkillSynthesizer {
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-}
-
-impl SkillSynthesizer for FailingSkillSynthesizer {
-    fn synthesize(
-        &self,
-        _draft: &DraftSkill,
-    ) -> crate::error::Result<(String, String, String, String)> {
-        Err(crate::error::CtxGraphError::Extraction(
-            self.message.clone(),
-        ))
-    }
-}
-
 impl SkillCreator {
-    /// Create draft skills from pattern candidates and their associated edges.
+    /// Create skills directly from pattern candidates, edges, and LLM-generated labels.
     ///
     /// Algorithm:
-    /// 1. Build a map of edge relations per pattern (from associated edges).
-    /// 2. For each pattern, count success/failure edges based on config relations.
-    /// 3. Filter out patterns with zero success AND zero failure signals.
-    /// 4. Produce DraftSkill for each qualifying pattern.
+    /// 1. Count success/failure edges for each pattern from associated episodes.
+    /// 2. Filter out patterns with zero success AND zero failure signals.
+    /// 3. Build template-based name, trigger_condition, action, and provenance.
+    /// 4. Set description from the LLM descriptions map (or empty string if missing).
     ///
     /// Returns an empty vec if no patterns have success/failure signals.
-    pub fn draft_skills(
+    pub fn create_skills(
         patterns: &[PatternCandidate],
         edges: &[Edge],
         source_summaries: &HashMap<String, Vec<String>>,
+        descriptions: &HashMap<String, String>,
         config: &SkillCreatorConfig,
-    ) -> Vec<DraftSkill> {
+        scope: SkillScope,
+        agent: &str,
+    ) -> Vec<Skill> {
         if patterns.is_empty() {
             return Vec::new();
         }
@@ -158,63 +58,116 @@ impl SkillCreator {
             }
         }
 
-        let mut drafts = Vec::new();
+        let mut skills = Vec::new();
 
         for pattern in patterns {
             let mut success_count: u32 = 0;
             let mut failure_count: u32 = 0;
             let mut all_summaries: Vec<String> = Vec::new();
+            let mut success_relations: Vec<String> = Vec::new();
 
-            // Count success/failure from edges associated with this pattern's source groups.
-            // Source groups are compression group IDs. We need to find edges whose episode_id
-            // was compressed into that group. Since we can't easily do that from here,
-            // we also match edges directly by episode_id == source_group_id.
             for group_id in &pattern.source_groups {
-                // Try matching edges by episode_id directly
                 if let Some(edge_list) = episode_edges.get(group_id) {
                     for edge in edge_list {
                         let relation_lower = edge.relation.to_lowercase();
                         if success_set.contains(&relation_lower) {
                             success_count += 1;
+                            success_relations.push(edge.relation.clone());
                         } else if failure_set.contains(&relation_lower) {
                             failure_count += 1;
                         }
                     }
                 }
 
-                // Collect summaries for this source group
                 if let Some(summaries) = source_summaries.get(group_id) {
                     all_summaries.extend(summaries.iter().cloned());
                 }
             }
 
-            // Only create a draft if there's at least one success or failure signal
+            // Only create a skill if there's at least one success or failure signal
             if success_count == 0 && failure_count == 0 {
                 continue;
             }
 
-            // Collect unique entity types from the pattern
             let mut entity_types: Vec<String> = pattern.entity_types.clone();
             entity_types.sort();
             entity_types.dedup();
 
-            drafts.push(DraftSkill {
-                entity_types,
+            let types_str = if entity_types.is_empty() {
+                "general".to_string()
+            } else {
+                entity_types.join("+")
+            };
+
+            // Most common success relation for action template
+            let most_common_relation = {
+                let mut rel_counts: HashMap<&str, usize> = HashMap::new();
+                for r in &success_relations {
+                    *rel_counts.entry(r.as_str()).or_insert(0) += 1;
+                }
+                rel_counts
+                    .into_iter()
+                    .max_by_key(|(_, c)| *c)
+                    .map(|(r, _)| r.to_string())
+                    .unwrap_or_else(|| "interact".to_string())
+            };
+
+            let name = format!(
+                "{} pattern ({} successes, {} failures)",
+                types_str, success_count, failure_count
+            );
+            let description = descriptions
+                .get(&pattern.id)
+                .cloned()
+                .unwrap_or_default();
+            let trigger_condition = format!("When {} entities co-occur", types_str);
+            let action = format!(
+                "When {} entities co-occur, apply {} approach",
+                types_str, most_common_relation
+            );
+            let provenance_reasoning = format!(
+                "Pattern observed across {} episodes with {} successes and {} failures",
+                pattern.source_groups.len(),
+                success_count,
+                failure_count
+            );
+            let context_facts: Vec<String> = all_summaries;
+
+            let provenance = Skill::generate_provenance(
+                provenance_reasoning,
+                &context_facts,
+                180,
+                90,
+            );
+
+            let confidence = Skill::compute_confidence(success_count, failure_count);
+
+            skills.push(Skill {
+                id: uuid::Uuid::now_v7().to_string(),
+                name,
+                description,
+                trigger_condition,
+                action,
                 success_count,
                 failure_count,
-                source_pattern_ids: vec![pattern.id.clone()],
-                source_summaries: all_summaries,
+                confidence,
+                superseded_by: None,
+                created_at: Utc::now(),
+                entity_types,
+                provenance: Some(provenance),
+                scope,
+                created_by_agent: agent.to_string(),
             });
         }
 
-        drafts
+        skills
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{MemoryType, Skill};
+    use crate::types::{MemoryType, SkillScope};
     use chrono::Utc;
     use std::time::Duration;
 
@@ -257,101 +210,101 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_draft_skills_empty_patterns_returns_empty() {
-        let config = SkillCreatorConfig::default();
-        let drafts = SkillCreator::draft_skills(&[], &[], &HashMap::new(), &config);
-        assert!(drafts.is_empty());
+    fn default_args<'a>(
+        patterns: &'a [PatternCandidate],
+        edges: &'a [Edge],
+    ) -> (
+        &'a [PatternCandidate],
+        &'a [Edge],
+        HashMap<String, Vec<String>>,
+        HashMap<String, String>,
+        SkillCreatorConfig,
+        SkillScope,
+        &'static str,
+    ) {
+        (
+            patterns,
+            edges,
+            HashMap::new(),
+            HashMap::new(),
+            SkillCreatorConfig::default(),
+            SkillScope::Private,
+            "test-agent",
+        )
     }
 
     #[test]
-    fn test_draft_skills_no_signals_returns_empty() {
-        let patterns = vec![make_pattern("p1", &["ep1"], &["Component"])];
-        // Edge with unrelated relation
-        let edges = vec![make_edge("e1", "a", "b", "unrelated", "ep1")];
-        let config = SkillCreatorConfig::default();
-
-        let drafts = SkillCreator::draft_skills(&patterns, &edges, &HashMap::new(), &config);
-        assert!(
-            drafts.is_empty(),
-            "no success/failure signals should produce no drafts"
-        );
-    }
-
-    #[test]
-    fn test_draft_skills_success_relation_creates_draft() {
+    fn test_create_skills_from_candidates() {
         let patterns = vec![make_pattern("p1", &["ep1"], &["Docker"])];
-        let edges = vec![
-            make_edge("e1", "a", "b", "resolved", "ep1"),
-            make_edge("e2", "a", "b", "fixed", "ep1"),
-        ];
-        let config = SkillCreatorConfig::default();
-
-        let drafts = SkillCreator::draft_skills(&patterns, &edges, &HashMap::new(), &config);
-        assert_eq!(drafts.len(), 1);
-        assert_eq!(drafts[0].success_count, 2);
-        assert_eq!(drafts[0].failure_count, 0);
-        assert_eq!(drafts[0].entity_types, vec!["Docker"]);
+        let edges = vec![make_edge("e1", "a", "b", "resolved", "ep1")];
+        let (p, e, ss, desc, cfg, scope, agent) = default_args(&patterns, &edges);
+        let skills = SkillCreator::create_skills(p, e, &ss, &desc, &cfg, scope, agent);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].created_by_agent, "test-agent");
     }
 
     #[test]
-    fn test_draft_skills_failure_relation_creates_draft() {
-        let patterns = vec![make_pattern("p1", &["ep1"], &["Service"])];
-        let edges = vec![make_edge("e1", "a", "b", "failed", "ep1")];
-        let config = SkillCreatorConfig::default();
-
-        let drafts = SkillCreator::draft_skills(&patterns, &edges, &HashMap::new(), &config);
-        assert_eq!(drafts.len(), 1);
-        assert_eq!(drafts[0].failure_count, 1);
-    }
-
-    #[test]
-    fn test_draft_skills_mixed_signals() {
+    fn test_create_skills_no_success_no_failure() {
         let patterns = vec![make_pattern("p1", &["ep1"], &["Component"])];
-        let edges = vec![
-            make_edge("e1", "a", "b", "resolved", "ep1"),
-            make_edge("e2", "a", "b", "failed", "ep1"),
-            make_edge("e3", "a", "b", "abandoned", "ep1"),
-        ];
-        let config = SkillCreatorConfig::default();
-
-        let drafts = SkillCreator::draft_skills(&patterns, &edges, &HashMap::new(), &config);
-        assert_eq!(drafts.len(), 1);
-        assert_eq!(drafts[0].success_count, 1);
-        assert_eq!(drafts[0].failure_count, 2);
+        let edges = vec![make_edge("e1", "a", "b", "unrelated", "ep1")];
+        let (p, e, ss, desc, cfg, scope, agent) = default_args(&patterns, &edges);
+        let skills = SkillCreator::create_skills(p, e, &ss, &desc, &cfg, scope, agent);
+        assert!(skills.is_empty(), "no signal should produce no skills");
     }
 
     #[test]
-    fn test_draft_skills_relation_case_insensitive() {
-        let patterns = vec![make_pattern("p1", &["ep1"], &["Component"])];
-        let edges = vec![make_edge("e1", "a", "b", "RESOLVED", "ep1")];
-        let config = SkillCreatorConfig::default();
-
-        let drafts = SkillCreator::draft_skills(&patterns, &edges, &HashMap::new(), &config);
-        assert_eq!(drafts.len(), 1);
-        assert_eq!(drafts[0].success_count, 1);
-    }
-
-    #[test]
-    fn test_draft_skills_collects_summaries() {
-        let patterns = vec![make_pattern("p1", &["comp1"], &["Docker"])];
-        let edges = vec![make_edge("e1", "a", "b", "fixed", "comp1")];
-
-        let mut summaries = HashMap::new();
-        summaries.insert(
-            "comp1".to_string(),
-            vec![
-                "Fixed DNS issue".to_string(),
-                "Restarted container".to_string(),
-            ],
+    fn test_create_skills_uses_description_from_map() {
+        let patterns = vec![make_pattern("p1", &["ep1"], &["Docker"])];
+        let edges = vec![make_edge("e1", "a", "b", "resolved", "ep1")];
+        let mut descriptions = HashMap::new();
+        descriptions.insert("p1".to_string(), "Use DNS-first approach.".to_string());
+        let skills = SkillCreator::create_skills(
+            &patterns,
+            &edges,
+            &HashMap::new(),
+            &descriptions,
+            &SkillCreatorConfig::default(),
+            SkillScope::Private,
+            "test-agent",
         );
-
-        let config = SkillCreatorConfig::default();
-        let drafts = SkillCreator::draft_skills(&patterns, &edges, &summaries, &config);
-
-        assert_eq!(drafts.len(), 1);
-        assert_eq!(drafts[0].source_summaries.len(), 2);
+        assert_eq!(skills[0].description, "Use DNS-first approach.");
     }
+
+    #[test]
+    fn test_create_skills_name_template() {
+        let patterns = vec![make_pattern("p1", &["ep1"], &["Docker", "Network"])];
+        let edges = vec![make_edge("e1", "a", "b", "resolved", "ep1")];
+        let (p, e, ss, desc, cfg, scope, agent) = default_args(&patterns, &edges);
+        let skills = SkillCreator::create_skills(p, e, &ss, &desc, &cfg, scope, agent);
+        assert!(
+            skills[0].name.contains("successes"),
+            "name should be template-based: {}",
+            skills[0].name
+        );
+        assert!(
+            skills[0].name.contains("failures"),
+            "name should contain failures: {}",
+            skills[0].name
+        );
+    }
+
+    #[test]
+    fn test_create_skills_provenance_template() {
+        let patterns = vec![make_pattern("p1", &["ep1", "ep2"], &["Docker"])];
+        let edges = vec![
+            make_edge("e1", "a", "b", "resolved", "ep1"),
+            make_edge("e2", "a", "b", "failed", "ep2"),
+        ];
+        let (p, e, ss, desc, cfg, scope, agent) = default_args(&patterns, &edges);
+        let skills = SkillCreator::create_skills(p, e, &ss, &desc, &cfg, scope, agent);
+        assert!(
+            skills[0].provenance.as_ref().unwrap().reasoning.contains("episodes"),
+            "provenance should be template-based: {}",
+            skills[0].provenance.as_ref().unwrap().reasoning
+        );
+    }
+
+    // ── Skill helper tests (no changes) ──────────────────────────────────────
 
     #[test]
     fn test_skill_confidence_all_success() {
@@ -393,70 +346,5 @@ mod tests {
     fn test_skill_provenance_empty_summaries_no_context_facts() {
         let provenance = Skill::generate_provenance("test reasoning".to_string(), &[], 180, 90);
         assert!(provenance.context_facts.is_none());
-    }
-
-    #[test]
-    fn test_mock_skill_synthesizer_produces_fields() {
-        let draft = DraftSkill {
-            entity_types: vec!["Docker".to_string(), "Network".to_string()],
-            success_count: 3,
-            failure_count: 1,
-            source_pattern_ids: vec!["p1".to_string()],
-            source_summaries: vec!["Fixed DNS".to_string()],
-        };
-
-        let synthesizer = MockSkillSynthesizer;
-        let (name, desc, trigger, action) = synthesizer.synthesize(&draft).unwrap();
-
-        assert!(!name.is_empty());
-        assert!(!desc.is_empty());
-        assert!(!trigger.is_empty());
-        assert!(!action.is_empty());
-        // Since success > failure, should be "Successful"
-        assert!(
-            name.contains("Successful"),
-            "name should contain 'Successful': {}",
-            name
-        );
-    }
-
-    #[test]
-    fn test_mock_skill_synthesizer_failure_pattern() {
-        let draft = DraftSkill {
-            entity_types: vec!["Component".to_string()],
-            success_count: 0,
-            failure_count: 3,
-            source_pattern_ids: vec!["p1".to_string()],
-            source_summaries: vec![],
-        };
-
-        let synthesizer = MockSkillSynthesizer;
-        let (name, _, _, action) = synthesizer.synthesize(&draft).unwrap();
-
-        assert!(
-            name.contains("Risky"),
-            "name should contain 'Risky': {}",
-            name
-        );
-        assert!(
-            action.contains("Avoid"),
-            "action should contain 'Avoid': {}",
-            action
-        );
-    }
-
-    #[test]
-    fn test_failing_skill_synthesizer_returns_error() {
-        let draft = DraftSkill {
-            entity_types: vec![],
-            success_count: 1,
-            failure_count: 0,
-            source_pattern_ids: vec![],
-            source_summaries: vec![],
-        };
-
-        let synthesizer = FailingSkillSynthesizer::new("LLM unavailable");
-        let result = synthesizer.synthesize(&draft);
-        assert!(result.is_err());
     }
 }
