@@ -7,21 +7,21 @@ fn test_graph() -> Graph {
 
 // ── Episode CRUD ──
 
-#[test]
-fn test_episode_insert_and_retrieve() {
+#[tokio::test]
+async fn test_episode_insert_and_retrieve() {
     let graph = test_graph();
     let episode = Episode::builder("Chose Postgres over SQLite for billing").build();
     let id = episode.id.clone();
 
-    let result = graph.add_episode(episode).unwrap();
+    let result = graph.add_episode(episode).await.unwrap();
     assert_eq!(result.episode_id, id);
 
     let retrieved = graph.get_episode(&id).unwrap().unwrap();
     assert_eq!(retrieved.content, "Chose Postgres over SQLite for billing");
 }
 
-#[test]
-fn test_episode_with_source_and_tags() {
+#[tokio::test]
+async fn test_episode_with_source_and_tags() {
     let graph = test_graph();
     let episode = Episode::builder("Priya approved the discount")
         .source("slack")
@@ -30,7 +30,7 @@ fn test_episode_with_source_and_tags() {
         .build();
     let id = episode.id.clone();
 
-    graph.add_episode(episode).unwrap();
+    graph.add_episode(episode).await.unwrap();
 
     let retrieved = graph.get_episode(&id).unwrap().unwrap();
     assert_eq!(retrieved.source.as_deref(), Some("slack"));
@@ -42,8 +42,8 @@ fn test_episode_with_source_and_tags() {
     assert_eq!(tags[0].as_str().unwrap(), "finance");
 }
 
-#[test]
-fn test_episode_with_metadata() {
+#[tokio::test]
+async fn test_episode_with_metadata() {
     let graph = test_graph();
     let episode = Episode::builder("Budget approved for Q3")
         .meta("author", "rohan")
@@ -51,20 +51,20 @@ fn test_episode_with_metadata() {
         .build();
     let id = episode.id.clone();
 
-    graph.add_episode(episode).unwrap();
+    graph.add_episode(episode).await.unwrap();
 
     let retrieved = graph.get_episode(&id).unwrap().unwrap();
     let meta = retrieved.metadata.unwrap();
     assert_eq!(meta.get("author").unwrap().as_str().unwrap(), "rohan");
 }
 
-#[test]
-fn test_list_episodes() {
+#[tokio::test]
+async fn test_list_episodes() {
     let graph = test_graph();
 
     for i in 0..5 {
         let ep = Episode::builder(&format!("Decision {i}")).build();
-        graph.add_episode(ep).unwrap();
+        graph.add_episode(ep).await.unwrap();
     }
 
     let episodes = graph.list_episodes(3, 0).unwrap();
@@ -77,8 +77,8 @@ fn test_list_episodes() {
     assert_eq!(offset.len(), 2);
 }
 
-#[test]
-fn test_episode_not_found() {
+#[tokio::test]
+async fn test_episode_not_found() {
     let graph = test_graph();
     let result = graph.get_episode("nonexistent-id").unwrap();
     assert!(result.is_none());
@@ -86,8 +86,8 @@ fn test_episode_not_found() {
 
 // ── Entity CRUD ──
 
-#[test]
-fn test_entity_insert_and_retrieve() {
+#[tokio::test]
+async fn test_entity_insert_and_retrieve() {
     let graph = test_graph();
     let entity = Entity::new("Postgres", "Component");
     let id = entity.id.clone();
@@ -99,8 +99,8 @@ fn test_entity_insert_and_retrieve() {
     assert_eq!(retrieved.entity_type, "Component");
 }
 
-#[test]
-fn test_entity_by_name() {
+#[tokio::test]
+async fn test_entity_by_name() {
     let graph = test_graph();
     let entity = Entity::new("Priya Sharma", "Person");
     graph.add_entity(entity).unwrap();
@@ -112,8 +112,8 @@ fn test_entity_by_name() {
     assert!(not_found.is_none());
 }
 
-#[test]
-fn test_list_entities_with_type_filter() {
+#[tokio::test]
+async fn test_list_entities_with_type_filter() {
     let graph = test_graph();
 
     graph
@@ -138,8 +138,8 @@ fn test_list_entities_with_type_filter() {
 
 // ── Edge CRUD + Bi-temporal ──
 
-#[test]
-fn test_edge_insert_and_retrieve() {
+#[tokio::test]
+async fn test_edge_insert_and_retrieve() {
     let graph = test_graph();
 
     let pg = Entity::new("Postgres", "Component");
@@ -159,14 +159,14 @@ fn test_edge_insert_and_retrieve() {
     assert_eq!(edges[0].relation, "chosen_for");
 }
 
-#[test]
-fn test_edge_is_current() {
+#[tokio::test]
+async fn test_edge_is_current() {
     let edge = Edge::new("a", "b", "test");
     assert!(edge.is_current());
 }
 
-#[test]
-fn test_edge_invalidation() {
+#[tokio::test]
+async fn test_edge_invalidation() {
     let graph = test_graph();
 
     let alice = Entity::new("Alice", "Person");
@@ -195,8 +195,8 @@ fn test_edge_invalidation() {
     assert!(!all_edges[0].is_current());
 }
 
-#[test]
-fn test_edge_valid_at() {
+#[tokio::test]
+async fn test_edge_valid_at() {
     let mut edge = Edge::new("a", "b", "test");
     let now = Utc::now();
     edge.valid_from = Some(now - chrono::Duration::days(30));
@@ -212,8 +212,8 @@ fn test_edge_valid_at() {
     assert!(!edge.is_valid_at(now - chrono::Duration::days(40)));
 }
 
-#[test]
-fn test_invalidate_nonexistent_edge() {
+#[tokio::test]
+async fn test_invalidate_nonexistent_edge() {
     let graph = test_graph();
     let result = graph.invalidate_edge("nonexistent");
     assert!(result.is_err());
@@ -221,13 +221,13 @@ fn test_invalidate_nonexistent_edge() {
 
 // ── Episode-Entity Links ──
 
-#[test]
-fn test_episode_entity_link() {
+#[tokio::test]
+async fn test_episode_entity_link() {
     let graph = test_graph();
 
     let episode = Episode::builder("Chose Postgres for billing").build();
     let ep_id = episode.id.clone();
-    graph.add_episode(episode).unwrap();
+    graph.add_episode(episode).await.unwrap();
 
     let entity = Entity::new("Postgres", "Component");
     let ent_id = entity.id.clone();
@@ -245,18 +245,21 @@ fn test_episode_entity_link() {
 
 // ── FTS5 Search ──
 
-#[test]
-fn test_fts5_search_episodes() {
+#[tokio::test]
+async fn test_fts5_search_episodes() {
     let graph = test_graph();
 
     graph
         .add_episode(Episode::builder("Chose Postgres over SQLite for billing").build())
+        .await
         .unwrap();
     graph
         .add_episode(Episode::builder("Switched from REST to gRPC for internal services").build())
+        .await
         .unwrap();
     graph
         .add_episode(Episode::builder("Priya approved the discount for Reliance").build())
+        .await
         .unwrap();
 
     let results = graph.search("Postgres", 10).unwrap();
@@ -267,19 +270,20 @@ fn test_fts5_search_episodes() {
     assert_eq!(results.len(), 2);
 }
 
-#[test]
-fn test_fts5_search_empty_results() {
+#[tokio::test]
+async fn test_fts5_search_empty_results() {
     let graph = test_graph();
     graph
         .add_episode(Episode::builder("Chose Postgres").build())
+        .await
         .unwrap();
 
     let results = graph.search("nonexistent_term_xyz", 10).unwrap();
     assert!(results.is_empty());
 }
 
-#[test]
-fn test_fts5_search_entities() {
+#[tokio::test]
+async fn test_fts5_search_entities() {
     let graph = test_graph();
 
     graph
@@ -300,8 +304,8 @@ fn test_fts5_search_entities() {
 
 // ── Entity Context ──
 
-#[test]
-fn test_entity_context() {
+#[tokio::test]
+async fn test_entity_context() {
     let graph = test_graph();
 
     let pg = Entity::new("Postgres", "Component");
@@ -330,18 +334,21 @@ fn test_entity_context() {
 
 // ── Stats ──
 
-#[test]
-fn test_stats() {
+#[tokio::test]
+async fn test_stats() {
     let graph = test_graph();
 
     graph
         .add_episode(Episode::builder("Decision 1").source("manual").build())
+        .await
         .unwrap();
     graph
         .add_episode(Episode::builder("Decision 2").source("manual").build())
+        .await
         .unwrap();
     graph
         .add_episode(Episode::builder("Slack message").source("slack").build())
+        .await
         .unwrap();
 
     let pg = Entity::new("Postgres", "Component");
@@ -364,8 +371,8 @@ fn test_stats() {
 
 // ── Graph Init ──
 
-#[test]
-fn test_graph_init_and_open() {
+#[tokio::test]
+async fn test_graph_init_and_open() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
 
@@ -381,20 +388,20 @@ fn test_graph_init_and_open() {
     let _graph = Graph::open(&db_path).unwrap();
 }
 
-#[test]
-fn test_graph_open_nonexistent() {
+#[tokio::test]
+async fn test_graph_open_nonexistent() {
     let result = Graph::open(std::path::Path::new("/tmp/nonexistent/graph.db"));
     assert!(result.is_err());
 }
 
 // ── Embedding Storage ──
 
-#[test]
-fn test_store_and_retrieve_embedding() {
+#[tokio::test]
+async fn test_store_and_retrieve_embedding() {
     let graph = test_graph();
     let episode = Episode::builder("Embedding test episode").build();
     let ep_id = episode.id.clone();
-    graph.add_episode(episode).unwrap();
+    graph.add_episode(episode).await.unwrap();
 
     // Store a fake 384-dim embedding
     let embedding: Vec<f32> = (0..384).map(|i| i as f32 / 384.0).collect();
@@ -415,22 +422,24 @@ fn test_store_and_retrieve_embedding() {
     }
 }
 
-#[test]
-fn test_get_embeddings_empty() {
+#[tokio::test]
+async fn test_get_embeddings_empty() {
     let graph = test_graph();
     let embeddings = graph.get_embeddings().unwrap();
     assert!(embeddings.is_empty());
 }
 
-#[test]
-fn test_search_fused_no_embeddings() {
+#[tokio::test]
+async fn test_search_fused_no_embeddings() {
     let graph = test_graph();
 
     graph
         .add_episode(Episode::builder("Chose Postgres for billing").build())
+        .await
         .unwrap();
     graph
         .add_episode(Episode::builder("Switched from REST to gRPC").build())
+        .await
         .unwrap();
 
     // Fused search with a dummy query embedding — FTS5 results only
@@ -444,16 +453,16 @@ fn test_search_fused_no_embeddings() {
     assert!(results[0].episode.content.contains("Postgres"));
 }
 
-#[test]
-fn test_search_fused_with_embeddings() {
+#[tokio::test]
+async fn test_search_fused_with_embeddings() {
     let graph = test_graph();
 
     let ep1 = Episode::builder("Chose Postgres for billing").build();
     let ep2 = Episode::builder("Switched from REST to gRPC").build();
     let id1 = ep1.id.clone();
     let id2 = ep2.id.clone();
-    graph.add_episode(ep1).unwrap();
-    graph.add_episode(ep2).unwrap();
+    graph.add_episode(ep1).await.unwrap();
+    graph.add_episode(ep2).await.unwrap();
 
     // Synthetic embeddings: ep1 in direction [1, 0, ...], ep2 in direction [0, 1, ...]
     let mut emb1 = vec![0.0f32; 384];
@@ -477,8 +486,8 @@ fn test_search_fused_with_embeddings() {
 
 // ── UUID v7 Ordering ──
 
-#[test]
-fn test_uuid_v7_is_time_sortable() {
+#[tokio::test]
+async fn test_uuid_v7_is_time_sortable() {
     let id1 = uuid::Uuid::now_v7().to_string();
     std::thread::sleep(std::time::Duration::from_millis(2));
     let id2 = uuid::Uuid::now_v7().to_string();
@@ -491,8 +500,8 @@ fn test_uuid_v7_is_time_sortable() {
 
 // ── Migrations Idempotent ──
 
-#[test]
-fn test_migrations_idempotent() {
+#[tokio::test]
+async fn test_migrations_idempotent() {
     let tmp = tempfile::tempdir().unwrap();
     let db_path = tmp.path().join("test.db");
 
@@ -504,8 +513,8 @@ fn test_migrations_idempotent() {
 
 // ── Entity Deduplication ──
 
-#[test]
-fn test_entity_dedup_merges_similar() {
+#[tokio::test]
+async fn test_entity_dedup_merges_similar() {
     let graph = test_graph();
 
     // Add "PostgreSQL" entity
@@ -532,8 +541,8 @@ fn test_entity_dedup_merges_similar() {
     assert_eq!(all[0].name, "PostgreSQL");
 }
 
-#[test]
-fn test_entity_dedup_preserves_different() {
+#[tokio::test]
+async fn test_entity_dedup_preserves_different() {
     let graph = test_graph();
 
     let pg = Entity::new("PostgreSQL", "Component");
@@ -552,8 +561,8 @@ fn test_entity_dedup_preserves_different() {
     );
 }
 
-#[test]
-fn test_entity_dedup_alias_lookup() {
+#[tokio::test]
+async fn test_entity_dedup_alias_lookup() {
     let graph = test_graph();
 
     // Add canonical entity
@@ -575,8 +584,8 @@ fn test_entity_dedup_alias_lookup() {
 
 // ── Empty Database ──
 
-#[test]
-fn test_empty_database_operations() {
+#[tokio::test]
+async fn test_empty_database_operations() {
     let graph = test_graph();
 
     // All operations should succeed on empty db
@@ -592,8 +601,8 @@ fn test_empty_database_operations() {
 
 // ── A1: MemoryType and TTL ──
 
-#[test]
-fn test_memory_type_from_entity_type_decision() {
+#[tokio::test]
+async fn test_memory_type_from_entity_type_decision() {
     assert_eq!(
         MemoryType::from_entity_type("Decision"),
         MemoryType::Decision
@@ -604,8 +613,8 @@ fn test_memory_type_from_entity_type_decision() {
     );
 }
 
-#[test]
-fn test_memory_type_from_entity_type_unknown_falls_back_to_fact() {
+#[tokio::test]
+async fn test_memory_type_from_entity_type_unknown_falls_back_to_fact() {
     assert_eq!(
         MemoryType::from_entity_type("UnknownType"),
         MemoryType::Fact
@@ -614,8 +623,8 @@ fn test_memory_type_from_entity_type_unknown_falls_back_to_fact() {
     assert_eq!(MemoryType::from_entity_type(""), MemoryType::Fact);
 }
 
-#[test]
-fn test_memory_type_default_ttl_fact() {
+#[tokio::test]
+async fn test_memory_type_default_ttl_fact() {
     use std::time::Duration;
     assert_eq!(
         MemoryType::Fact.default_ttl(),
@@ -623,13 +632,13 @@ fn test_memory_type_default_ttl_fact() {
     );
 }
 
-#[test]
-fn test_memory_type_default_ttl_pattern_never() {
+#[tokio::test]
+async fn test_memory_type_default_ttl_pattern_never() {
     assert_eq!(MemoryType::Pattern.default_ttl(), None);
 }
 
-#[test]
-fn test_memory_type_default_ttl_experience() {
+#[tokio::test]
+async fn test_memory_type_default_ttl_experience() {
     use std::time::Duration;
     assert_eq!(
         MemoryType::Experience.default_ttl(),
@@ -637,8 +646,8 @@ fn test_memory_type_default_ttl_experience() {
     );
 }
 
-#[test]
-fn test_memory_type_default_ttl_preference() {
+#[tokio::test]
+async fn test_memory_type_default_ttl_preference() {
     use std::time::Duration;
     assert_eq!(
         MemoryType::Preference.default_ttl(),
@@ -646,8 +655,8 @@ fn test_memory_type_default_ttl_preference() {
     );
 }
 
-#[test]
-fn test_memory_type_default_ttl_decision() {
+#[tokio::test]
+async fn test_memory_type_default_ttl_decision() {
     use std::time::Duration;
     assert_eq!(
         MemoryType::Decision.default_ttl(),
@@ -655,37 +664,37 @@ fn test_memory_type_default_ttl_decision() {
     );
 }
 
-#[test]
-fn test_memory_type_from_db() {
+#[tokio::test]
+async fn test_memory_type_from_db() {
     assert_eq!(MemoryType::from_db("fact"), MemoryType::Fact);
     assert_eq!(MemoryType::from_db("Pattern"), MemoryType::Pattern);
     assert_eq!(MemoryType::from_db("EXPERIENCE"), MemoryType::Experience);
     assert_eq!(MemoryType::from_db("unknown"), MemoryType::Fact);
 }
 
-#[test]
-fn test_memory_type_display() {
+#[tokio::test]
+async fn test_memory_type_display() {
     assert_eq!(format!("{}", MemoryType::Fact), "fact");
     assert_eq!(format!("{}", MemoryType::Pattern), "pattern");
     assert_eq!(format!("{}", MemoryType::Decision), "decision");
 }
 
-#[test]
-fn test_entity_new_auto_sets_memory_type_and_ttl() {
+#[tokio::test]
+async fn test_entity_new_auto_sets_memory_type_and_ttl() {
     let entity = Entity::new("JWT", "Component");
     assert_eq!(entity.memory_type, MemoryType::Fact); // Component -> Fact
     assert_eq!(entity.ttl, Some(std::time::Duration::from_secs(90 * 86400)));
 }
 
-#[test]
-fn test_entity_new_decision_type() {
+#[tokio::test]
+async fn test_entity_new_decision_type() {
     let entity = Entity::new("Use Postgres", "Decision");
     assert_eq!(entity.memory_type, MemoryType::Decision);
     assert_eq!(entity.ttl, Some(std::time::Duration::from_secs(90 * 86400)));
 }
 
-#[test]
-fn test_entity_with_explicit_memory() {
+#[tokio::test]
+async fn test_entity_with_explicit_memory() {
     let entity = Entity::with_memory(
         "Recurring bug",
         "Component",
@@ -696,8 +705,8 @@ fn test_entity_with_explicit_memory() {
     assert_eq!(entity.ttl, None);
 }
 
-#[test]
-fn test_entity_persist_and_retrieve_with_memory_type() {
+#[tokio::test]
+async fn test_entity_persist_and_retrieve_with_memory_type() {
     let graph = test_graph();
     let entity = Entity::new("Redis", "Component");
     let id = entity.id.clone();
@@ -711,8 +720,8 @@ fn test_entity_persist_and_retrieve_with_memory_type() {
     );
 }
 
-#[test]
-fn test_entity_persist_pattern_no_ttl() {
+#[tokio::test]
+async fn test_entity_persist_pattern_no_ttl() {
     let graph = test_graph();
     let entity = Entity::with_memory(
         "Users prefer dark mode",
@@ -728,15 +737,15 @@ fn test_entity_persist_pattern_no_ttl() {
     assert_eq!(retrieved.ttl, None);
 }
 
-#[test]
-fn test_edge_new_auto_sets_memory_type() {
+#[tokio::test]
+async fn test_edge_new_auto_sets_memory_type() {
     let edge = Edge::new("e1", "e2", "uses");
     assert_eq!(edge.memory_type, MemoryType::Fact);
     assert_eq!(edge.ttl, Some(std::time::Duration::from_secs(90 * 86400)));
 }
 
-#[test]
-fn test_edge_persist_and_retrieve_with_memory_type() {
+#[tokio::test]
+async fn test_edge_persist_and_retrieve_with_memory_type() {
     let graph = test_graph();
 
     let src = Entity::new("Service A", "Component");
@@ -764,90 +773,97 @@ fn test_edge_persist_and_retrieve_with_memory_type() {
 
 // ── A2: decay_score ──
 
-#[test]
-fn test_decay_fact_age_zero_returns_base_confidence() {
+#[tokio::test]
+async fn test_decay_fact_age_zero_returns_base_confidence() {
     // Fact at age=0 should return base_confidence exactly
-    let created_at = Utc::now();
+    let now = Utc::now();
+    let created_at = now;
     let ttl = Some(std::time::Duration::from_secs(90 * 86400));
-    let score = MemoryType::Fact.decay_score(1.0, created_at, ttl);
+    let score = MemoryType::Fact.decay_score_at(1.0, created_at, ttl, now);
     assert!(
         (score - 1.0).abs() < 1e-6,
         "Fact at age=0 should score ~1.0, got {score}"
     );
 }
 
-#[test]
-fn test_decay_fact_at_ttl_scores_0_25() {
+#[tokio::test]
+async fn test_decay_fact_at_ttl_scores_0_25() {
     // Fact at age=ttl with half_life=ttl/2: exp(-2*ln(2)) = 0.25
     let ttl_secs = 90u64 * 86400;
     let ttl = Some(std::time::Duration::from_secs(ttl_secs));
-    let created_at = Utc::now() - chrono::Duration::seconds(ttl_secs as i64);
-    let score = MemoryType::Fact.decay_score(1.0, created_at, ttl);
+    let now = Utc::now();
+    let created_at = now - chrono::Duration::seconds(ttl_secs as i64);
+    let score = MemoryType::Fact.decay_score_at(1.0, created_at, ttl, now);
     assert!(
         (score - 0.25).abs() < 1e-6,
         "Fact at age=ttl should score ~0.25, got {score}"
     );
 }
 
-#[test]
-fn test_decay_fact_at_half_ttl_scores_0_5() {
+#[tokio::test]
+async fn test_decay_fact_at_half_ttl_scores_0_5() {
     // Fact at age=half_life (ttl/2) should score 0.5
     let ttl_secs = 90u64 * 86400;
     let half_life = ttl_secs / 2;
     let ttl = Some(std::time::Duration::from_secs(ttl_secs));
-    let created_at = Utc::now() - chrono::Duration::seconds(half_life as i64);
-    let score = MemoryType::Fact.decay_score(1.0, created_at, ttl);
+    let now = Utc::now();
+    let created_at = now - chrono::Duration::seconds(half_life as i64);
+    let score = MemoryType::Fact.decay_score_at(1.0, created_at, ttl, now);
     assert!(
         (score - 0.5).abs() < 1e-4,
         "Fact at half-life should score ~0.5, got {score}"
     );
 }
 
-#[test]
-fn test_decay_pattern_never_decays() {
+#[tokio::test]
+async fn test_decay_pattern_never_decays() {
     // Pattern returns base_confidence regardless of age
-    let created_at = Utc::now() - chrono::Duration::days(365);
-    let score = MemoryType::Pattern.decay_score(0.8, created_at, None);
+    let now = Utc::now();
+    let created_at = now - chrono::Duration::days(365);
+    let score = MemoryType::Pattern.decay_score_at(0.8, created_at, None, now);
     assert_eq!(score, 0.8, "Pattern should always return base_confidence");
 
     // Even with a ttl provided, Pattern ignores it
     let ttl = Some(std::time::Duration::from_secs(30 * 86400));
-    let score2 = MemoryType::Pattern.decay_score(0.8, created_at, ttl);
+    let score2 = MemoryType::Pattern.decay_score_at(0.8, created_at, ttl, now);
     assert_eq!(score2, 0.8, "Pattern should ignore ttl");
 }
 
-#[test]
-fn test_decay_experience_linear_halfway() {
+#[tokio::test]
+async fn test_decay_experience_linear_halfway() {
     // Experience at age=ttl/2 should score 0.5
     let ttl_secs = 14u64 * 86400;
     let ttl = Some(std::time::Duration::from_secs(ttl_secs));
-    let created_at = Utc::now() - chrono::Duration::seconds((ttl_secs / 2) as i64);
-    let score = MemoryType::Experience.decay_score(1.0, created_at, ttl);
+    let now = Utc::now();
+    let created_at = now - chrono::Duration::seconds((ttl_secs / 2) as i64);
+    let score = MemoryType::Experience.decay_score_at(1.0, created_at, ttl, now);
     assert!(
         (score - 0.5).abs() < 1e-4,
         "Experience at half-ttl should score ~0.5, got {score}"
     );
 }
 
-#[test]
-fn test_decay_experience_at_ttl_scores_zero() {
+#[tokio::test]
+async fn test_decay_experience_at_ttl_scores_zero() {
     // Experience linear decay hits 0.0 at age=ttl
     let ttl_secs = 14u64 * 86400;
     let ttl = Some(std::time::Duration::from_secs(ttl_secs));
-    let created_at = Utc::now() - chrono::Duration::seconds(ttl_secs as i64);
-    let score = MemoryType::Experience.decay_score(1.0, created_at, ttl);
+    let now = Utc::now();
+    let created_at = now - chrono::Duration::seconds(ttl_secs as i64);
+    let score = MemoryType::Experience.decay_score_at(1.0, created_at, ttl, now);
     assert!(
         score.abs() < 1e-6,
         "Experience at age=ttl should score ~0.0, got {score}"
     );
 }
 
-#[test]
-fn test_decay_preference_exponential() {
+#[tokio::test]
+async fn test_decay_preference_exponential() {
     // Preference at age=0 scores base_confidence
-    let created_at = Utc::now();
+    let now = Utc::now();
+    let created_at = now;
     let ttl = Some(std::time::Duration::from_secs(30 * 86400));
-    let score = MemoryType::Preference.decay_score(1.0, created_at, ttl);
+    let score = MemoryType::Preference.decay_score_at(1.0, created_at, ttl, now);
     assert!(
         (score - 1.0).abs() < 1e-6,
         "Preference at age=0 should score ~1.0, got {score}"
@@ -856,71 +872,97 @@ fn test_decay_preference_exponential() {
     // At age=half_life (ttl*0.7) should score ~0.5
     let ttl_secs = 30u64 * 86400;
     let half_life = (ttl_secs as f64 * 0.7) as i64;
-    let created_at2 = Utc::now() - chrono::Duration::seconds(half_life);
+    let created_at2 = now - chrono::Duration::seconds(half_life);
     let ttl2 = Some(std::time::Duration::from_secs(ttl_secs));
-    let score2 = MemoryType::Preference.decay_score(1.0, created_at2, ttl2);
+    let score2 = MemoryType::Preference.decay_score_at(1.0, created_at2, ttl2, now);
     assert!(
         (score2 - 0.5).abs() < 1e-4,
         "Preference at half-life should score ~0.5, got {score2}"
     );
 }
 
-#[test]
-fn test_decay_decision_same_as_fact() {
-    // Decision uses same exponential as Fact (half_life = ttl * 0.5)
+#[tokio::test]
+async fn test_decay_decision_uses_plateau_curve() {
+    // Decision should stay trusted longer than Fact during most of its TTL.
     let ttl_secs = 90u64 * 86400;
     let ttl = Some(std::time::Duration::from_secs(ttl_secs));
 
-    let created_at = Utc::now() - chrono::Duration::seconds(ttl_secs as i64);
-    let fact_score = MemoryType::Fact.decay_score(1.0, created_at, ttl);
-    let decision_score = MemoryType::Decision.decay_score(1.0, created_at, ttl);
+    let now = Utc::now();
+    let created_at = now - chrono::Duration::days(50);
+    let fact_score = MemoryType::Fact.decay_score_at(1.0, created_at, ttl, now);
+    let decision_score = MemoryType::Decision.decay_score_at(1.0, created_at, ttl, now);
     assert!(
-        (fact_score - decision_score).abs() < 1e-10,
-        "Decision and Fact should have identical decay: fact={fact_score}, decision={decision_score}"
+        decision_score > fact_score,
+        "Decision should retain more confidence than Fact during the plateau: fact={fact_score}, decision={decision_score}"
     );
 }
 
-#[test]
-fn test_decay_expired_returns_zero() {
-    // Age > ttl should return 0.0
+#[tokio::test]
+async fn test_decay_post_ttl_soft_tail_for_long_lived_types() {
+    // Fact/Preference/Decision use a soft post-TTL tail; Experience stays hard-expired.
     let ttl_secs = 90u64 * 86400;
     let ttl = Some(std::time::Duration::from_secs(ttl_secs));
     // Create 91 days ago — one day past ttl
-    let created_at = Utc::now() - chrono::Duration::days(91);
+    let now = Utc::now();
+    let created_at = now - chrono::Duration::days(91);
 
-    assert_eq!(MemoryType::Fact.decay_score(1.0, created_at, ttl), 0.0);
+    assert!(MemoryType::Fact.decay_score_at(1.0, created_at, ttl, now) > 0.0);
     assert_eq!(
-        MemoryType::Experience.decay_score(1.0, created_at, ttl),
+        MemoryType::Experience.decay_score_at(1.0, created_at, ttl, now),
         0.0
     );
-    assert_eq!(
-        MemoryType::Preference.decay_score(1.0, created_at, ttl),
-        0.0
-    );
-    assert_eq!(MemoryType::Decision.decay_score(1.0, created_at, ttl), 0.0);
+    assert!(MemoryType::Preference.decay_score_at(1.0, created_at, ttl, now) > 0.0);
+    assert!(MemoryType::Decision.decay_score_at(1.0, created_at, ttl, now) > 0.0);
 }
 
-#[test]
-fn test_decay_ttl_none_returns_base_confidence() {
+#[tokio::test]
+async fn test_decay_preference_soft_tail_is_continuous_at_ttl() {
+    let ttl_secs = 30u64 * 86400;
+    let ttl = Some(std::time::Duration::from_secs(ttl_secs));
+    let now = Utc::now();
+    let at_ttl = now - chrono::Duration::seconds(ttl_secs as i64);
+    let one_second_after_ttl = at_ttl - chrono::Duration::seconds(1);
+
+    let score_at_ttl = MemoryType::Preference.decay_score_at(1.0, at_ttl, ttl, now);
+    let score_after_ttl =
+        MemoryType::Preference.decay_score_at(1.0, one_second_after_ttl, ttl, now);
+
+    assert!(
+        score_at_ttl > 0.35,
+        "Preference should score from its own TTL boundary, not Fact's 0.25 boundary: {score_at_ttl}"
+    );
+    assert!(
+        (score_at_ttl - score_after_ttl).abs() < 0.001,
+        "Preference soft tail should continue smoothly at TTL: at_ttl={score_at_ttl}, after={score_after_ttl}"
+    );
+}
+
+#[tokio::test]
+async fn test_decay_ttl_none_returns_base_confidence() {
     // Non-pattern with ttl=None returns base_confidence
-    let created_at = Utc::now() - chrono::Duration::days(100);
-    let score = MemoryType::Fact.decay_score(0.9, created_at, None);
+    let now = Utc::now();
+    let created_at = now - chrono::Duration::days(100);
+    let score = MemoryType::Fact.decay_score_at(0.9, created_at, None, now);
     assert_eq!(score, 0.9);
 }
 
-#[test]
-fn test_decay_ttl_zero_returns_zero() {
-    let created_at = Utc::now();
+#[tokio::test]
+async fn test_decay_ttl_zero_returns_zero() {
+    let now = Utc::now();
+    let created_at = now;
     let ttl = Some(std::time::Duration::from_secs(0));
-    assert_eq!(MemoryType::Fact.decay_score(1.0, created_at, ttl), 0.0);
     assert_eq!(
-        MemoryType::Experience.decay_score(1.0, created_at, ttl),
+        MemoryType::Fact.decay_score_at(1.0, created_at, ttl, now),
+        0.0
+    );
+    assert_eq!(
+        MemoryType::Experience.decay_score_at(1.0, created_at, ttl, now),
         0.0
     );
 }
 
-#[test]
-fn test_decay_scores_in_range() {
+#[tokio::test]
+async fn test_decay_scores_in_range() {
     // All decay functions must return values in [0.0, 1.0]
     let types = [
         MemoryType::Fact,
@@ -930,12 +972,13 @@ fn test_decay_scores_in_range() {
         MemoryType::Decision,
     ];
     let ages_days = [0i64, 7, 14, 30, 45, 90, 100, 365];
+    let now = Utc::now();
 
     for mt in &types {
         let ttl = mt.default_ttl();
         for &age in &ages_days {
-            let created_at = Utc::now() - chrono::Duration::days(age);
-            let score = mt.decay_score(1.0, created_at, ttl);
+            let created_at = now - chrono::Duration::days(age);
+            let score = mt.decay_score_at(1.0, created_at, ttl, now);
             assert!(
                 (0.0..=1.0).contains(&score),
                 "{mt:?} at age={age}d score={score} out of range"
@@ -944,8 +987,8 @@ fn test_decay_scores_in_range() {
     }
 }
 
-#[test]
-fn test_migration_003_reopen_safe() {
+#[tokio::test]
+async fn test_migration_003_reopen_safe() {
     let tmp = tempfile::tempdir().unwrap();
     let db_path = tmp.path().join("test.db");
 
@@ -974,8 +1017,8 @@ fn test_migration_003_reopen_safe() {
 
 // ── Migration 004: usage_count and last_recalled_at ─────────────────────────────────
 
-#[test]
-fn test_migration_004_entity_fields_exist() {
+#[tokio::test]
+async fn test_migration_004_entity_fields_exist() {
     let graph = test_graph();
     let entity = Entity::new("TestComponent", "Component");
     let id = entity.id.clone();
@@ -987,8 +1030,8 @@ fn test_migration_004_entity_fields_exist() {
     assert_eq!(retrieved.last_recalled_at, None);
 }
 
-#[test]
-fn test_migration_004_edge_fields_exist() {
+#[tokio::test]
+async fn test_migration_004_edge_fields_exist() {
     let graph = test_graph();
 
     let e1 = Entity::new("Source", "Component");
@@ -1008,8 +1051,8 @@ fn test_migration_004_edge_fields_exist() {
     assert_eq!(retrieved.last_recalled_at, None);
 }
 
-#[test]
-fn test_touch_entity_increments_usage_count() {
+#[tokio::test]
+async fn test_touch_entity_increments_usage_count() {
     let graph = test_graph();
     let entity = Entity::new("TouchTest", "Component");
     let id = entity.id.clone();
@@ -1026,8 +1069,8 @@ fn test_touch_entity_increments_usage_count() {
     assert!(retrieved.last_recalled_at.is_some());
 }
 
-#[test]
-fn test_touch_edge_increments_usage_count() {
+#[tokio::test]
+async fn test_touch_edge_increments_usage_count() {
     let graph = test_graph();
 
     let e1 = Entity::new("TouchEdgeE1", "Component");
@@ -1050,8 +1093,8 @@ fn test_touch_edge_increments_usage_count() {
     assert!(retrieved.last_recalled_at.is_some());
 }
 
-#[test]
-fn test_migration_004_reopen_safe() {
+#[tokio::test]
+async fn test_migration_004_reopen_safe() {
     let tmp = tempfile::tempdir().unwrap();
     let db_path = tmp.path().join("test.db");
 
@@ -1081,8 +1124,8 @@ fn test_migration_004_reopen_safe() {
     assert_eq!(retrieved3.usage_count, 2);
 }
 
-#[test]
-fn test_migration_004_applies_to_existing_db() {
+#[tokio::test]
+async fn test_migration_004_applies_to_existing_db() {
     let tmp = tempfile::tempdir().unwrap();
     let db_path = tmp.path().join("test.db");
 
@@ -1116,8 +1159,8 @@ fn test_migration_004_applies_to_existing_db() {
 
 // ── A3: usage_count and last_recalled_at ──
 
-#[test]
-fn test_entity_new_has_zero_usage_count_and_null_recalled() {
+#[tokio::test]
+async fn test_entity_new_has_zero_usage_count_and_null_recalled() {
     let entity = Entity::new("Test", "Component");
     assert_eq!(
         entity.usage_count, 0,
@@ -1129,8 +1172,8 @@ fn test_entity_new_has_zero_usage_count_and_null_recalled() {
     );
 }
 
-#[test]
-fn test_entity_with_memory_has_zero_usage_count_and_null_recalled() {
+#[tokio::test]
+async fn test_entity_with_memory_has_zero_usage_count_and_null_recalled() {
     let entity = Entity::with_memory(
         "Test",
         "Component",
@@ -1147,8 +1190,8 @@ fn test_entity_with_memory_has_zero_usage_count_and_null_recalled() {
     );
 }
 
-#[test]
-fn test_edge_new_has_zero_usage_count_and_null_recalled() {
+#[tokio::test]
+async fn test_edge_new_has_zero_usage_count_and_null_recalled() {
     let edge = Edge::new("a", "b", "uses");
     assert_eq!(edge.usage_count, 0, "new Edge should have usage_count = 0");
     assert!(
@@ -1157,8 +1200,8 @@ fn test_edge_new_has_zero_usage_count_and_null_recalled() {
     );
 }
 
-#[test]
-fn test_edge_with_memory_has_zero_usage_count_and_null_recalled() {
+#[tokio::test]
+async fn test_edge_with_memory_has_zero_usage_count_and_null_recalled() {
     let edge = Edge::with_memory(
         "a",
         "b",
@@ -1176,8 +1219,8 @@ fn test_edge_with_memory_has_zero_usage_count_and_null_recalled() {
     );
 }
 
-#[test]
-fn test_touch_entity_increments_count() {
+#[tokio::test]
+async fn test_touch_entity_increments_count() {
     let graph = test_graph();
 
     // Create an entity
@@ -1214,8 +1257,8 @@ fn test_touch_entity_increments_count() {
     );
 }
 
-#[test]
-fn test_touch_edge_increments_count() {
+#[tokio::test]
+async fn test_touch_edge_increments_count() {
     let graph = test_graph();
 
     // Create two entities and an edge
@@ -1253,8 +1296,8 @@ fn test_touch_edge_increments_count() {
     );
 }
 
-#[test]
-fn test_touch_nonexistent_returns_error() {
+#[tokio::test]
+async fn test_touch_nonexistent_returns_error() {
     let graph = test_graph();
 
     // Touch non-existent entity
@@ -1272,8 +1315,8 @@ fn test_touch_nonexistent_returns_error() {
     );
 }
 
-#[test]
-fn test_migration_004_idempotent() {
+#[tokio::test]
+async fn test_migration_004_idempotent() {
     let tmp = tempfile::tempdir().unwrap();
     let db_path = tmp.path().join("test.db");
 
@@ -1298,8 +1341,8 @@ fn test_migration_004_idempotent() {
     assert!(retrieved2.last_recalled_at.is_none());
 }
 
-#[test]
-fn test_read_paths_include_new_fields() {
+#[tokio::test]
+async fn test_read_paths_include_new_fields() {
     let graph = test_graph();
 
     // Create entity
@@ -1350,22 +1393,22 @@ fn test_read_paths_include_new_fields() {
 
 // ── B1: Episode Memory Type ────────────────────────────────────────────────
 
-#[test]
-fn test_episode_builder_with_memory_type() {
+#[tokio::test]
+async fn test_episode_builder_with_memory_type() {
     let episode = Episode::builder("Pattern summary")
         .memory_type(MemoryType::Pattern)
         .build();
     assert_eq!(episode.memory_type, MemoryType::Pattern);
 }
 
-#[test]
-fn test_episode_persist_and_retrieve_with_new_fields() {
+#[tokio::test]
+async fn test_episode_persist_and_retrieve_with_new_fields() {
     let graph = test_graph();
 
     // Regular episode
     let episode = Episode::builder("Regular episode content").build();
     let id = episode.id.clone();
-    graph.add_episode(episode).unwrap();
+    graph.add_episode(episode).await.unwrap();
 
     let retrieved = graph.get_episode(&id).unwrap().unwrap();
     assert_eq!(retrieved.memory_type, MemoryType::Experience);
@@ -1375,20 +1418,20 @@ fn test_episode_persist_and_retrieve_with_new_fields() {
         .memory_type(MemoryType::Pattern)
         .build();
     let pid = pattern_episode.id.clone();
-    graph.add_episode(pattern_episode).unwrap();
+    graph.add_episode(pattern_episode).await.unwrap();
 
     let retrieved_pattern = graph.get_episode(&pid).unwrap().unwrap();
     assert_eq!(retrieved_pattern.memory_type, MemoryType::Pattern);
 }
 
-#[test]
-fn test_migration_006_columns_exist() {
+#[tokio::test]
+async fn test_migration_006_columns_exist() {
     let graph = test_graph();
 
     // Insert an episode and verify the new columns are readable
     let episode = Episode::builder("Migration 006 test").build();
     let id = episode.id.clone();
-    graph.add_episode(episode).unwrap();
+    graph.add_episode(episode).await.unwrap();
 
     let retrieved = graph.get_episode(&id).unwrap().unwrap();
     assert_eq!(retrieved.memory_type, MemoryType::Experience);
@@ -1399,8 +1442,8 @@ fn test_migration_006_columns_exist() {
 use ctxgraph::pattern::{BatchLabelDescriber, FailingBatchLabelDescriber, MockBatchLabelDescriber};
 use std::collections::HashMap as SummaryMap;
 
-#[test]
-fn test_mock_batch_describer_returns_label_per_candidate() {
+#[tokio::test]
+async fn test_mock_batch_describer_returns_label_per_candidate() {
     let candidates = vec![
         PatternCandidate {
             id: "c1".to_string(),
@@ -1425,7 +1468,7 @@ fn test_mock_batch_describer_returns_label_per_candidate() {
     ];
 
     let describer = MockBatchLabelDescriber;
-    let results = describer.describe_batch(&candidates, &SummaryMap::new()).unwrap();
+    let results = describer.describe_batch(&candidates, &SummaryMap::new()).await.unwrap();
 
     assert_eq!(results.len(), 2, "should return one label per candidate");
     let ids: Vec<&str> = results.iter().map(|(id, _)| id.as_str()).collect();
@@ -1435,22 +1478,22 @@ fn test_mock_batch_describer_returns_label_per_candidate() {
     }
 }
 
-#[test]
-fn test_mock_batch_describer_empty_input() {
+#[tokio::test]
+async fn test_mock_batch_describer_empty_input() {
     let describer = MockBatchLabelDescriber;
-    let results = describer.describe_batch(&[], &SummaryMap::new()).unwrap();
+    let results = describer.describe_batch(&[], &SummaryMap::new()).await.unwrap();
     assert!(results.is_empty());
 }
 
-#[test]
-fn test_failing_batch_describer_returns_error() {
+#[tokio::test]
+async fn test_failing_batch_describer_returns_error() {
     let describer = FailingBatchLabelDescriber::new("LLM unavailable");
-    let result = describer.describe_batch(&[], &SummaryMap::new());
+    let result = describer.describe_batch(&[], &SummaryMap::new()).await;
     assert!(result.is_err(), "FailingBatchLabelDescriber should return error");
 }
 
-#[test]
-fn test_mock_batch_describer_triplet_label_mentions_entities() {
+#[tokio::test]
+async fn test_mock_batch_describer_triplet_label_mentions_entities() {
     let candidates = vec![PatternCandidate {
         id: "c1".to_string(),
         entity_types: vec!["Component".to_string()],
@@ -1463,7 +1506,7 @@ fn test_mock_batch_describer_triplet_label_mentions_entities() {
     }];
 
     let describer = MockBatchLabelDescriber;
-    let results = describer.describe_batch(&candidates, &SummaryMap::new()).unwrap();
+    let results = describer.describe_batch(&candidates, &SummaryMap::new()).await.unwrap();
     assert_eq!(results.len(), 1);
     let (_, label) = &results[0];
     assert!(label.contains("User") || label.contains("connects_to") || label.contains("Postgres"),
@@ -1471,8 +1514,8 @@ fn test_mock_batch_describer_triplet_label_mentions_entities() {
     assert!(label.len() < 300, "label should be concise: {}", label);
 }
 
-#[test]
-fn test_store_pattern_creates_learned_pattern_entity() {
+#[tokio::test]
+async fn test_store_pattern_creates_learned_pattern_entity() {
     let graph = test_graph();
 
     // Create and store a pattern directly via storage
@@ -1513,8 +1556,8 @@ fn test_store_pattern_creates_learned_pattern_entity() {
     );
 }
 
-#[test]
-fn test_get_patterns_returns_stored_patterns_with_descriptions() {
+#[tokio::test]
+async fn test_get_patterns_returns_stored_patterns_with_descriptions() {
     let graph = test_graph();
 
     // Store a pattern
@@ -1547,8 +1590,8 @@ fn test_get_patterns_returns_stored_patterns_with_descriptions() {
     );
 }
 
-#[test]
-fn test_entity_name_truncated_at_word_boundary_80_chars() {
+#[tokio::test]
+async fn test_entity_name_truncated_at_word_boundary_80_chars() {
     let graph = test_graph();
 
     // Create a description longer than 80 chars
@@ -1595,8 +1638,8 @@ fn test_entity_name_truncated_at_word_boundary_80_chars() {
     }
 }
 
-#[test]
-fn test_pattern_has_memory_type_pattern_and_no_ttl() {
+#[tokio::test]
+async fn test_pattern_has_memory_type_pattern_and_no_ttl() {
     let graph = test_graph();
 
     let candidate = PatternCandidate {
@@ -1634,8 +1677,8 @@ fn test_pattern_has_memory_type_pattern_and_no_ttl() {
 
 // ── Contradiction Detection (C1) Tests ───────────────────────────────────────
 
-#[test]
-fn test_contradiction_detected_when_new_fact_conflicts() {
+#[tokio::test]
+async fn test_contradiction_detected_when_new_fact_conflicts() {
     // Insert two conflicting edges, verify first is invalidated
     let graph = test_graph();
 
@@ -1674,8 +1717,8 @@ fn test_contradiction_detected_when_new_fact_conflicts() {
     assert_eq!(contradictions[0].relation, "chose");
 }
 
-#[test]
-fn test_contradiction_invalidated_edge_has_metadata() {
+#[tokio::test]
+async fn test_contradiction_invalidated_edge_has_metadata() {
     // Verify contradicted_by and contradicted_at in metadata
     let graph = test_graph();
 
@@ -1728,8 +1771,8 @@ fn test_contradiction_invalidated_edge_has_metadata() {
     );
 }
 
-#[test]
-fn test_no_contradiction_when_same_fact_inserted_twice() {
+#[tokio::test]
+async fn test_no_contradiction_when_same_fact_inserted_twice() {
     // Insert the same fact twice — no contradiction
     let graph = test_graph();
 
@@ -1764,8 +1807,8 @@ fn test_no_contradiction_when_same_fact_inserted_twice() {
     );
 }
 
-#[test]
-fn test_get_current_edges_returns_only_newer_after_contradiction() {
+#[tokio::test]
+async fn test_get_current_edges_returns_only_newer_after_contradiction() {
     // Verify old edge is excluded from current edges after contradiction
     let graph = test_graph();
 
@@ -1818,8 +1861,8 @@ fn test_get_current_edges_returns_only_newer_after_contradiction() {
     );
 }
 
-#[test]
-fn test_low_confidence_edge_replaced_silently() {
+#[tokio::test]
+async fn test_low_confidence_edge_replaced_silently() {
     // confidence=0.1 edge replaced without contradiction
     let graph = test_graph();
 
@@ -1871,8 +1914,8 @@ fn test_low_confidence_edge_replaced_silently() {
     assert_eq!(current_edges[0].id, edge2_id);
 }
 
-#[test]
-fn test_contradiction_check_empty_graph_returns_empty() {
+#[tokio::test]
+async fn test_contradiction_check_empty_graph_returns_empty() {
     // Unit test for check_contradictions on empty graph
     let graph = test_graph();
 

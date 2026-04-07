@@ -977,8 +977,8 @@ impl Storage {
         threshold: usize,
         batch_size: usize,
     ) -> Result<CompressionResult> {
-        let max_age_days = 7; // default, can be made configurable
-        let count = self.count_uncompressed_episodes(max_age_days)?;
+        let max_age_days: usize = 7; // default, can be made configurable
+        let count = self.count_uncompressed_episodes(max_age_days as u32)?;
 
         if count < threshold {
             return Ok(CompressionResult {
@@ -999,6 +999,46 @@ impl Storage {
     }
 
     // ── Stats ──
+
+    /// Get entity counts grouped by memory type.
+    ///
+    /// Returns a vec of (type_name, count) tuples, ordered by count descending.
+    /// Excludes archived entities (metadata.archived = true).
+    pub fn get_entity_counts_by_type(&self) -> Result<Vec<(String, usize)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT memory_type, COUNT(*) as cnt FROM entities
+             WHERE metadata IS NULL OR json_extract(metadata, '$.archived') IS NOT TRUE
+             GROUP BY memory_type ORDER BY cnt DESC",
+        )?;
+        let result = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(result)
+    }
+
+    /// Get decayed entity counts by memory type.
+    ///
+    /// A decayed entity has age > grace_period + ttl_seconds (decay_score=0).
+    /// Returns a vec of (type_name, count) tuples for types that have decayed entities.
+    pub fn get_decayed_counts_by_type(&self, grace_period_secs: i64) -> Result<Vec<(String, usize)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT memory_type, COUNT(*) as cnt FROM entities
+             WHERE memory_type IN ('fact', 'experience', 'preference', 'decision')
+               AND ttl_seconds IS NOT NULL
+               AND ttl_seconds > 0
+               AND (strftime('%s', 'now') - strftime('%s', created_at)) > (?1 + ttl_seconds)
+               AND (metadata IS NULL OR json_extract(metadata, '$.archived') IS NOT TRUE)
+             GROUP BY memory_type ORDER BY cnt DESC",
+        )?;
+        let result = stmt
+            .query_map(params![grace_period_secs], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(result)
+    }
 
     pub fn stats(&self) -> Result<GraphStats> {
         let episode_count: usize =
@@ -1067,6 +1107,15 @@ impl Storage {
             db_size_bytes,
             decayed_entities,
             decayed_edges,
+            last_cleanup_at: self.get_system_metadata("last_cleanup_at")?,
+            queries_since_cleanup: self.get_query_count_since_cleanup().unwrap_or(0),
+            cleanup_interval: self.get_cleanup_interval().unwrap_or(100),
+            cleanup_in_progress: self
+                .get_system_metadata("cleanup_in_progress")
+                .map(|v| v.as_deref() == Some("true"))
+                .unwrap_or(false),
+            total_entities_by_type: self.get_entity_counts_by_type()?,
+            decayed_entities_by_type: self.get_decayed_counts_by_type(grace_period_for_stats)?,
         })
     }
 
@@ -1122,6 +1171,64 @@ impl Storage {
         Ok(())
     }
 
+    /// Increment the query count since last cleanup.
+    ///
+    /// Called after each successful `retrieve_for_context()` to track
+    /// how many queries have run since the last cleanup sweep.
+    pub fn increment_query_count_since_cleanup(&self) -> Result<()> {
+        let current = self.get_query_count_since_cleanup()?;
+        let next = current + 1;
+        self.set_system_metadata("query_count_since_cleanup", &next.to_string())?;
+        Ok(())
+    }
+
+    /// Get the current query count since last cleanup.
+    ///
+    /// Returns 0 if the key doesn't exist (lazy initialization).
+    pub fn get_query_count_since_cleanup(&self) -> Result<u64> {
+        match self.get_system_metadata("query_count_since_cleanup")? {
+            Some(val) => Ok(val.parse::<u64>().unwrap_or(0)),
+            None => Ok(0), // lazy init: default to 0
+        }
+    }
+
+    /// Reset the query count since last cleanup to 0.
+    ///
+    /// Called after a successful `cleanup_expired()` to restart
+    /// the countdown to the next cleanup.
+    pub fn reset_query_count_since_cleanup(&self) -> Result<()> {
+        self.set_system_metadata("query_count_since_cleanup", "0")?;
+        Ok(())
+    }
+
+    /// Get the cleanup interval (number of queries between cleanup sweeps).
+    ///
+    /// Returns the value from system_metadata, clamped to [1, 10000].
+    /// Defaults to 100 if not set or invalid.
+    pub fn get_cleanup_interval(&self) -> Result<u64> {
+        match self.get_system_metadata("cleanup_interval")? {
+            Some(val) => {
+                let interval = val.parse::<u64>().unwrap_or(100);
+                Ok(interval.clamp(1, 10_000))
+            }
+            None => {
+                // Lazy init: set default on first access
+                self.set_system_metadata("cleanup_interval", "100")?;
+                Ok(100)
+            }
+        }
+    }
+
+    /// Set the cleanup interval (number of queries between cleanup sweeps).
+    ///
+    /// The value is clamped to [1, 10000]. Values outside this range
+    /// are silently clamped to prevent accidental misconfiguration.
+    pub fn set_cleanup_interval(&self, interval: u64) -> Result<()> {
+        let clamped = interval.clamp(1, 10_000);
+        self.set_system_metadata("cleanup_interval", &clamped.to_string())?;
+        Ok(())
+    }
+
     /// Get the current query count (used by lazy cleanup trigger).
     pub fn query_count(&self) -> usize {
         self.query_count.load(Ordering::Relaxed)
@@ -1144,18 +1251,22 @@ impl Storage {
     ) -> Result<Vec<StaleMemory>> {
         self.query_count.fetch_add(1, Ordering::Relaxed);
         let mut memories = Vec::new();
+        let now = Utc::now();
+        let prefilter_cutoff =
+            now - chrono::Duration::seconds(stale_prefilter_age_secs(threshold) as i64);
+        let prefilter_cutoff = prefilter_cutoff.to_rfc3339();
 
         // Query entities with TTL (Patterns never stale since they never decay)
         let mut stmt = self.conn.prepare(
             "SELECT id, name, memory_type, ttl_seconds, summary, created_at, metadata
              FROM entities
-             WHERE ttl_seconds IS NOT NULL AND ttl_seconds > 0
+             WHERE ttl_seconds IS NOT NULL AND ttl_seconds > 0 AND created_at < ?3
              ORDER BY created_at DESC
              LIMIT ?1 OFFSET ?2",
         )?;
 
         let entities: Vec<(String, String, String, Option<i64>, Option<String>, String, Option<String>)> = stmt
-            .query_map(params![limit as i64, offset as i64], |row| {
+            .query_map(params![limit as i64, offset as i64, &prefilter_cutoff], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -1177,10 +1288,10 @@ impl Storage {
 
             let created_at = parse_datetime(&created_at_str);
             let ttl = ttl_seconds.and_then(parse_ttl_seconds);
-            let decay_score = memory_type.decay_score(1.0, created_at, ttl);
+            let decay_score = memory_type.decay_score_at(1.0, created_at, ttl, now);
 
             if decay_score < threshold {
-                let age_days = (Utc::now() - created_at).num_days() as f64;
+                let age_days = (now - created_at).num_days() as f64;
                 let content = summary.clone().unwrap_or_else(|| name.clone());
                 let suggested_action = if decay_score > 0.7 {
                     StaleAction::Keep
@@ -1205,13 +1316,13 @@ impl Storage {
         let mut stmt = self.conn.prepare(
             "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact, recorded_at, metadata
              FROM edges
-             WHERE ttl_seconds IS NOT NULL AND ttl_seconds > 0
+             WHERE ttl_seconds IS NOT NULL AND ttl_seconds > 0 AND recorded_at < ?3
              ORDER BY recorded_at DESC
              LIMIT ?1 OFFSET ?2",
         )?;
 
         let edges: Vec<(String, String, String, String, String, Option<i64>, Option<String>, String, Option<String>)> = stmt
-            .query_map(params![limit as i64, offset as i64], |row| {
+            .query_map(params![limit as i64, offset as i64, &prefilter_cutoff], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -1235,10 +1346,10 @@ impl Storage {
 
             let recorded_at = parse_datetime(&recorded_at_str);
             let ttl = ttl_seconds.and_then(parse_ttl_seconds);
-            let decay_score = memory_type.decay_score(1.0, recorded_at, ttl);
+            let decay_score = memory_type.decay_score_at(1.0, recorded_at, ttl, now);
 
             if decay_score < threshold {
-                let age_days = (Utc::now() - recorded_at).num_days() as f64;
+                let age_days = (now - recorded_at).num_days() as f64;
                 let content = fact.clone().unwrap_or_else(|| format!("{} -> {}", source_id, relation));
                 let suggested_action = if decay_score > 0.7 {
                     StaleAction::Keep
@@ -1384,6 +1495,95 @@ impl Storage {
             .execute("DELETE FROM edges WHERE id = ?1", params![id])?;
 
         Ok(())
+    }
+
+    /// Mark a memory for deletion (soft expire).
+    ///
+    /// Sets `metadata.marked_for_deletion = true` and `metadata.soft_expired_at` timestamp.
+    /// The actual deletion happens during the next cleanup sweep.
+    /// Works on both entities and edges.
+    pub fn mark_for_deletion(&self, id: &str) -> Result<bool> {
+        // Try entity first
+        let updated = self.conn.execute(
+            "UPDATE entities SET metadata = json_set(
+                COALESCE(metadata, '{}'),
+                '$.marked_for_deletion', true,
+                '$.soft_expired_at', ?1
+             ) WHERE id = ?2",
+            params![Utc::now().to_rfc3339(), id],
+        )?;
+
+        if updated > 0 {
+            return Ok(true);
+        }
+
+        // Try edge
+        let updated = self.conn.execute(
+            "UPDATE edges SET metadata = json_set(
+                COALESCE(metadata, '{}'),
+                '$.marked_for_deletion', true,
+                '$.soft_expired_at', ?1
+             ) WHERE id = ?2",
+            params![Utc::now().to_rfc3339(), id],
+        )?;
+
+        Ok(updated > 0)
+    }
+
+    /// Expire all memories of a given type (bulk soft expire or hard delete).
+    ///
+    /// - If `hard` is false: marks all matching memories for deletion (soft expire)
+    /// - If `hard` is true: immediately deletes all matching memories
+    ///
+    /// Returns `(entities_affected, edges_affected)` counts.
+    ///
+    /// # Errors
+    /// Returns an error if `memory_type` is "pattern" (patterns never expire).
+    pub fn expire_memories_by_type(&self, memory_type: &str, hard: bool) -> Result<(u64, u64)> {
+        if memory_type.eq_ignore_ascii_case("pattern") {
+            return Err(CtxGraphError::InvalidInput(
+                "pattern memories never expire".to_string(),
+            ));
+        }
+
+        let type_lower = memory_type.to_lowercase();
+
+        if hard {
+            // Hard delete: delete edges first (FK integrity), then entities
+            let edges_deleted = self.conn.execute(
+                "DELETE FROM edges WHERE memory_type = ?1",
+                params![&type_lower],
+            )?;
+
+            let entities_deleted = self.conn.execute(
+                "DELETE FROM entities WHERE memory_type = ?1",
+                params![&type_lower],
+            )?;
+
+            Ok((entities_deleted as u64, edges_deleted as u64))
+        } else {
+            // Soft expire: mark entities
+            let entities_marked = self.conn.execute(
+                "UPDATE entities SET metadata = json_set(
+                    COALESCE(metadata, '{}'),
+                    '$.marked_for_deletion', true,
+                    '$.soft_expired_at', ?1
+                 ) WHERE memory_type = ?2",
+                params![Utc::now().to_rfc3339(), &type_lower],
+            )? as u64;
+
+            // Mark edges
+            let edges_marked = self.conn.execute(
+                "UPDATE edges SET metadata = json_set(
+                    COALESCE(metadata, '{}'),
+                    '$.marked_for_deletion', true,
+                    '$.soft_expired_at', ?1
+                 ) WHERE memory_type = ?2",
+                params![Utc::now().to_rfc3339(), &type_lower],
+            )? as u64;
+
+            Ok((entities_marked, edges_marked))
+        }
     }
 
     // ── Cleanup Expired (A6) ──────────────────────────────────────────────────
@@ -1797,7 +1997,9 @@ impl Storage {
         let before = Utc::now();
         let groups = self.get_compression_groups(before)?;
         let extractor = PatternExtractor::new();
-        Ok(extractor.extract(&groups, config))
+        // CompressionGroupData can be converted to episodes - for now, pass empty slices
+        // TODO: properly map CompressionGroupData to episodes/entities/edges
+        Ok(extractor.extract(&[], &[], &[], config))
     }
 
     /// Store a pattern candidate as a LearnedPattern entity.
@@ -2187,28 +2389,8 @@ impl Storage {
         }
 
         // A4b: Score and rank candidates
-        // Inline the ranking logic since rank_candidates is on Graph,
-        // but we don't have a Graph reference here. This is the same logic
-        // as Graph::rank_candidates but without the Graph dependency.
-        use crate::types::{score_candidate, ScoredCandidate};
-
-        let mut scored: Vec<ScoredCandidate> = candidates
-            .into_iter()
-            .map(|c| {
-                let composite_score = score_candidate(&c);
-                ScoredCandidate {
-                    candidate: c,
-                    composite_score,
-                }
-            })
-            .filter(|sc| sc.composite_score > 0.0)
-            .collect();
-
-        scored.sort_by(|a, b| {
-            b.composite_score
-                .partial_cmp(&a.composite_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        let now = Utc::now();
+        let scored = crate::types::rank_scored_candidates_at(candidates, now);
 
         // A4c: Enforce budget
         let (ranked, tokens_spent) = crate::types::enforce_budget(scored, budget_tokens);
@@ -2374,6 +2556,7 @@ impl Storage {
             ttl: entity.ttl,
             base_confidence: 1.0,
             usage_count: entity.usage_count,
+            last_recalled_at: entity.last_recalled_at,
         }
     }
 
@@ -2389,6 +2572,7 @@ impl Storage {
             ttl: edge.ttl,
             base_confidence: edge.confidence,
             usage_count: edge.usage_count,
+            last_recalled_at: edge.last_recalled_at,
         }
     }
 
@@ -2404,6 +2588,7 @@ impl Storage {
             ttl: episode.memory_type.default_ttl(),
             base_confidence: 1.0,
             usage_count: 0,
+            last_recalled_at: None,
         }
     }
 
@@ -2441,6 +2626,23 @@ impl Storage {
 }
 
 // ── Helper functions ──
+
+fn stale_prefilter_age_secs(threshold: f64) -> u64 {
+    const EXPERIENCE_TTL_SECS: f64 = 14.0 * 86_400.0;
+
+    if threshold >= 1.0 {
+        return 0;
+    }
+
+    if threshold <= 0.0 {
+        return EXPERIENCE_TTL_SECS as u64;
+    }
+
+    // Experience has the shortest TTL and fastest current decay. Using it as the
+    // cutoff is conservative: it may include extra rows, but it must not exclude
+    // any row that could be stale under another memory type's curve.
+    (EXPERIENCE_TTL_SECS * (1.0 - threshold)).max(0.0) as u64
+}
 
 fn parse_datetime(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s)
@@ -2573,5 +2775,326 @@ impl<T> OptionalExt<T> for std::result::Result<T, rusqlite::Error> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn new_test_storage() -> Storage {
+        Storage::open_in_memory().expect("failed to open in-memory storage")
+    }
+
+    #[test]
+    fn test_entity_candidate_uses_default_confidence() {
+        let entity = Entity {
+            id: "entity_confidence".to_string(),
+            name: "Entity Confidence".to_string(),
+            entity_type: "test".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(std::time::Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+
+        let candidate = Storage::entity_to_candidate(&entity, 0.8);
+
+        assert_eq!(candidate.base_confidence, 1.0);
+    }
+
+    #[test]
+    fn test_edge_candidate_uses_edge_confidence() {
+        let edge = Edge {
+            id: "edge_confidence".to_string(),
+            source_id: "source".to_string(),
+            target_id: "target".to_string(),
+            relation: "relates_to".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(std::time::Duration::from_secs(90 * 86400)),
+            fact: Some("source relates to target".to_string()),
+            valid_from: None,
+            valid_until: None,
+            recorded_at: Utc::now(),
+            confidence: 0.37,
+            episode_id: None,
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+
+        let candidate = Storage::edge_to_candidate(&edge, 0.8);
+
+        assert_eq!(candidate.base_confidence, edge.confidence);
+    }
+
+    // ── Query count since cleanup tests ──
+
+    #[test]
+    fn test_get_query_count_defaults_to_zero() {
+        let storage = new_test_storage();
+        assert_eq!(storage.get_query_count_since_cleanup().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_increment_query_count() {
+        let storage = new_test_storage();
+        assert_eq!(storage.get_query_count_since_cleanup().unwrap(), 0);
+
+        storage.increment_query_count_since_cleanup().unwrap();
+        assert_eq!(storage.get_query_count_since_cleanup().unwrap(), 1);
+
+        storage.increment_query_count_since_cleanup().unwrap();
+        assert_eq!(storage.get_query_count_since_cleanup().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_reset_query_count() {
+        let storage = new_test_storage();
+        storage.increment_query_count_since_cleanup().unwrap();
+        storage.increment_query_count_since_cleanup().unwrap();
+        assert_eq!(storage.get_query_count_since_cleanup().unwrap(), 2);
+
+        storage.reset_query_count_since_cleanup().unwrap();
+        assert_eq!(storage.get_query_count_since_cleanup().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_counter_survives_multiple_increments() {
+        let storage = new_test_storage();
+        for _ in 0..150 {
+            storage.increment_query_count_since_cleanup().unwrap();
+        }
+        assert_eq!(storage.get_query_count_since_cleanup().unwrap(), 150);
+    }
+
+    #[test]
+    fn test_counter_handles_invalid_metadata_value() {
+        let storage = new_test_storage();
+        // Manually set an invalid value
+        storage.set_system_metadata("query_count_since_cleanup", "not_a_number").unwrap();
+        // Should default to 0
+        assert_eq!(storage.get_query_count_since_cleanup().unwrap(), 0);
+    }
+
+    // ── Cleanup interval tests ──
+
+    #[test]
+    fn test_get_cleanup_interval_defaults_to_100() {
+        let storage = new_test_storage();
+        assert_eq!(storage.get_cleanup_interval().unwrap(), 100);
+    }
+
+    #[test]
+    fn test_get_cleanup_interval_persists_default() {
+        let storage = new_test_storage();
+        let _ = storage.get_cleanup_interval(); // triggers lazy init
+        let val = storage.get_system_metadata("cleanup_interval").unwrap();
+        assert_eq!(val, Some("100".to_string()));
+    }
+
+    #[test]
+    fn test_set_cleanup_interval() {
+        let storage = new_test_storage();
+        storage.set_cleanup_interval(50).unwrap();
+        assert_eq!(storage.get_cleanup_interval().unwrap(), 50);
+    }
+
+    #[test]
+    fn test_cleanup_interval_clamped_to_minimum() {
+        let storage = new_test_storage();
+        storage.set_cleanup_interval(0).unwrap();
+        assert_eq!(storage.get_cleanup_interval().unwrap(), 1);
+
+        storage.set_cleanup_interval(1).unwrap();
+        assert_eq!(storage.get_cleanup_interval().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_cleanup_interval_clamped_to_maximum() {
+        let storage = new_test_storage();
+        storage.set_cleanup_interval(20000).unwrap();
+        assert_eq!(storage.get_cleanup_interval().unwrap(), 10000);
+
+        storage.set_cleanup_interval(10000).unwrap();
+        assert_eq!(storage.get_cleanup_interval().unwrap(), 10000);
+    }
+
+    #[test]
+    fn test_cleanup_interval_handles_invalid_metadata() {
+        let storage = new_test_storage();
+        storage.set_system_metadata("cleanup_interval", "not_a_number").unwrap();
+        // Should default to 100 (invalid value → unwrap_or(100) → clamp → 100)
+        assert_eq!(storage.get_cleanup_interval().unwrap(), 100);
+    }
+
+    // ── Stats helper tests ──
+
+    #[test]
+    fn test_get_entity_counts_by_type_empty() {
+        let storage = new_test_storage();
+        let counts = storage.get_entity_counts_by_type().unwrap();
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn test_get_decayed_counts_by_type_empty() {
+        let storage = new_test_storage();
+        let counts = storage.get_decayed_counts_by_type(604800).unwrap();
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn test_stats_includes_cleanup_fields() {
+        let storage = new_test_storage();
+        let stats = storage.stats().unwrap();
+
+        // Verify all new cleanup fields are present
+        assert!(stats.last_cleanup_at.is_none()); // never cleaned
+        assert_eq!(stats.queries_since_cleanup, 0);
+        assert_eq!(stats.cleanup_interval, 100);
+        assert!(!stats.cleanup_in_progress);
+        assert!(stats.total_entities_by_type.is_empty());
+        assert!(stats.decayed_entities_by_type.is_empty());
+    }
+
+    #[test]
+    fn test_stats_shows_cleanup_state_after_operations() {
+        let storage = new_test_storage();
+
+        // Increment query count
+        storage.increment_query_count_since_cleanup().unwrap();
+        storage.increment_query_count_since_cleanup().unwrap();
+
+        // Set cleanup_in_progress
+        storage.set_system_metadata("cleanup_in_progress", "false").unwrap();
+
+        let stats = storage.stats().unwrap();
+        assert_eq!(stats.queries_since_cleanup, 2);
+        assert_eq!(stats.cleanup_interval, 100);
+        assert!(!stats.cleanup_in_progress);
+    }
+
+    // ── Mark for deletion tests ──
+
+    #[test]
+    fn test_mark_for_deletion_returns_false_for_nonexistent() {
+        let storage = new_test_storage();
+        let found = storage.mark_for_deletion("nonexistent_id").unwrap();
+        assert!(!found);
+    }
+
+    #[test]
+    fn test_mark_for_deletion_marks_entity() {
+        let storage = new_test_storage();
+
+        // Create an entity
+        let entity = crate::types::Entity {
+            id: "test_entity".to_string(),
+            name: "Test Entity".to_string(),
+            entity_type: "test".to_string(),
+            memory_type: crate::types::MemoryType::Fact,
+            ttl: Some(std::time::Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        storage.insert_entity(&entity).unwrap();
+
+        // Mark for deletion
+        let found = storage.mark_for_deletion("test_entity").unwrap();
+        assert!(found);
+
+        // Verify metadata was set
+        let (marked, soft_expired_at): (i64, Option<String>) = storage.conn.query_row(
+            "SELECT json_extract(metadata, '$.marked_for_deletion'),
+                    json_extract(metadata, '$.soft_expired_at')
+             FROM entities WHERE id = ?1",
+            rusqlite::params!["test_entity"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(marked, 1);
+        assert!(soft_expired_at.is_some());
+    }
+
+    // ── Bulk expire by type tests ──
+
+    #[test]
+    fn test_expire_memories_by_type_rejects_pattern() {
+        let storage = new_test_storage();
+        let result = storage.expire_memories_by_type("pattern", false);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            CtxGraphError::InvalidInput(msg) => assert!(msg.contains("never expire")),
+            _ => panic!("expected InvalidInput error"),
+        }
+    }
+
+    #[test]
+    fn test_expire_memories_by_type_soft_empty() {
+        let storage = new_test_storage();
+        let (entities, edges) = storage.expire_memories_by_type("fact", false).unwrap();
+        assert_eq!(entities, 0);
+        assert_eq!(edges, 0);
+    }
+
+    #[test]
+    fn test_expire_memories_by_type_hard_empty() {
+        let storage = new_test_storage();
+        let (entities, edges) = storage.expire_memories_by_type("fact", true).unwrap();
+        assert_eq!(entities, 0);
+        assert_eq!(edges, 0);
+    }
+
+    #[test]
+    fn test_expire_memories_by_type_soft_marks_entities() {
+        let storage = new_test_storage();
+
+        // Create 2 fact entities
+        let entity1 = crate::types::Entity {
+            id: "fact_1".to_string(),
+            name: "Fact 1".to_string(),
+            entity_type: "test".to_string(),
+            memory_type: crate::types::MemoryType::Fact,
+            ttl: Some(std::time::Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        let entity2 = crate::types::Entity {
+            id: "fact_2".to_string(),
+            name: "Fact 2".to_string(),
+            entity_type: "test".to_string(),
+            memory_type: crate::types::MemoryType::Fact,
+            ttl: Some(std::time::Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        storage.insert_entity(&entity1).unwrap();
+        storage.insert_entity(&entity2).unwrap();
+
+        // Bulk soft expire facts
+        let (entities, edges) = storage.expire_memories_by_type("fact", false).unwrap();
+        assert_eq!(entities, 2);
+        assert_eq!(edges, 0);
+
+        // Verify both are marked
+        let count: usize = storage.conn.query_row(
+            "SELECT COUNT(*) FROM entities WHERE memory_type = 'fact' AND json_extract(metadata, '$.marked_for_deletion') = true",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 2);
     }
 }

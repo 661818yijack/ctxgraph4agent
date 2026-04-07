@@ -67,8 +67,8 @@ fn load_episodes() -> Vec<BenchmarkEpisode> {
     serde_json::from_str(&data).expect("Failed to deserialize benchmark episodes")
 }
 
-#[test]
-fn test_fixture_loads_and_has_50_episodes() {
+#[tokio::test]
+async fn test_fixture_loads_and_has_50_episodes() {
     let episodes = load_episodes();
     assert_eq!(
         episodes.len(),
@@ -78,8 +78,8 @@ fn test_fixture_loads_and_has_50_episodes() {
     );
 }
 
-#[test]
-fn test_all_entity_types_covered() {
+#[tokio::test]
+async fn test_all_entity_types_covered() {
     let episodes = load_episodes();
     let required: HashSet<&str> = [
         "Person",
@@ -110,8 +110,8 @@ fn test_all_entity_types_covered() {
     );
 }
 
-#[test]
-fn test_all_relation_types_covered() {
+#[tokio::test]
+async fn test_all_relation_types_covered() {
     let episodes = load_episodes();
     let required: HashSet<&str> = [
         "chose",
@@ -141,8 +141,8 @@ fn test_all_relation_types_covered() {
     );
 }
 
-#[test]
-fn test_span_offsets_are_valid() {
+#[tokio::test]
+async fn test_span_offsets_are_valid() {
     let episodes = load_episodes();
     for (i, ep) in episodes.iter().enumerate() {
         for ent in &ep.expected_entities {
@@ -172,8 +172,8 @@ fn test_span_offsets_are_valid() {
     }
 }
 
-#[test]
-fn test_episode_entity_count_bounds() {
+#[tokio::test]
+async fn test_episode_entity_count_bounds() {
     let episodes = load_episodes();
     for (i, ep) in episodes.iter().enumerate() {
         let n_ent = ep.expected_entities.len();
@@ -193,8 +193,8 @@ fn test_episode_entity_count_bounds() {
     }
 }
 
-#[test]
-fn test_f1_perfect_match() {
+#[tokio::test]
+async fn test_f1_perfect_match() {
     let predicted = vec!["a".to_string(), "b".to_string(), "c".to_string()];
     let expected = vec!["a".to_string(), "b".to_string(), "c".to_string()];
     let (p, r, f1) = compute_f1(&predicted, &expected);
@@ -203,8 +203,8 @@ fn test_f1_perfect_match() {
     assert!((f1 - 1.0).abs() < f64::EPSILON);
 }
 
-#[test]
-fn test_f1_no_overlap() {
+#[tokio::test]
+async fn test_f1_no_overlap() {
     let predicted = vec!["a".to_string(), "b".to_string()];
     let expected = vec!["c".to_string(), "d".to_string()];
     let (p, r, f1) = compute_f1(&predicted, &expected);
@@ -213,8 +213,8 @@ fn test_f1_no_overlap() {
     assert!((f1 - 0.0).abs() < f64::EPSILON);
 }
 
-#[test]
-fn test_f1_partial_overlap() {
+#[tokio::test]
+async fn test_f1_partial_overlap() {
     // predicted: {a, b, c}, expected: {a, b, d}
     // TP=2, FP=1, FN=1 => P=2/3, R=2/3, F1=2/3
     let predicted = vec!["a".to_string(), "b".to_string(), "c".to_string()];
@@ -226,16 +226,16 @@ fn test_f1_partial_overlap() {
     assert!((f1 - expected_val).abs() < 1e-9);
 }
 
-#[test]
-fn test_f1_empty_inputs() {
+#[tokio::test]
+async fn test_f1_empty_inputs() {
     let (p, r, f1) = compute_f1(&[], &[]);
     assert!((p - 1.0).abs() < f64::EPSILON);
     assert!((r - 1.0).abs() < f64::EPSILON);
     assert!((f1 - 1.0).abs() < f64::EPSILON);
 }
 
-#[test]
-fn test_f1_predicted_empty_expected_nonempty() {
+#[tokio::test]
+async fn test_f1_predicted_empty_expected_nonempty() {
     let expected = vec!["a".to_string()];
     let (p, r, f1) = compute_f1(&[], &expected);
     assert!((p - 0.0).abs() < f64::EPSILON);
@@ -243,8 +243,8 @@ fn test_f1_predicted_empty_expected_nonempty() {
     assert!((f1 - 0.0).abs() < f64::EPSILON);
 }
 
-#[test]
-fn test_f1_high_precision_low_recall() {
+#[tokio::test]
+async fn test_f1_high_precision_low_recall() {
     // predicted: {a}, expected: {a, b, c, d}
     // TP=1, FP=0, FN=3 => P=1.0, R=0.25, F1=0.4
     let predicted = vec!["a".to_string()];
@@ -270,9 +270,9 @@ fn test_f1_high_precision_low_recall() {
 /// To run: download models, then `cargo test --test benchmark_test -- --ignored`
 ///
 /// Set `CTXGRAPH_MODELS_DIR` to point to your models directory.
-#[test]
+#[tokio::test]
 #[ignore]
-fn test_extraction_f1_against_benchmark() {
+async fn test_extraction_f1_against_benchmark() {
     use chrono::Utc;
     use ctxgraph_extract::pipeline::ExtractionPipeline;
     use ctxgraph_extract::schema::ExtractionSchema;
@@ -383,7 +383,7 @@ fn test_extraction_f1_against_benchmark() {
 }
 
 /// Debug test: show extracted entities and relations for specific episodes.
-#[test]
+#[tokio::test]
 #[ignore]
 fn debug_extraction_for_episodes() {
     use chrono::Utc;

@@ -26,7 +26,7 @@ const DEFAULT_URL: &str = "https://api.minimax.io/anthropic/chat/completions";
 /// - `CTXGRAPH_LLM_KEY`: API key (or `MINIMAX_API_KEY` for backward compat)
 /// - `CTXGRAPH_LLM_MODEL`: Model name (default: minimax-portal/MiniMax-M2.7-highspeed)
 pub struct LlmExtractor {
-    client: reqwest::blocking::Client,
+    client: reqwest::Client,
     api_key: String,
     model: String,
     url: String,
@@ -200,7 +200,7 @@ impl LlmExtractor {
             }
         };
 
-        let client = reqwest::blocking::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()
             .ok()?;
@@ -236,7 +236,7 @@ impl LlmExtractor {
         let model =
             std::env::var("CTXGRAPH_LLM_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
 
-        let client = reqwest::blocking::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()
             .ok()?;
@@ -253,7 +253,7 @@ impl LlmExtractor {
     ///
     /// Used as fallback when GLiNER confidence is low. Relations are handled
     /// by GLiREL locally — the LLM only needs to find entity spans.
-    pub fn extract_entities(
+    pub async fn extract_entities(
         &self,
         text: &str,
         schema: &ExtractionSchema,
@@ -341,15 +341,16 @@ RULES:
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&request)
-            .send()?;
+            .send()
+            .await?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().unwrap_or_default();
+            let body = response.text().await.unwrap_or_default();
             return Err(LlmError::Api(format!("{status}: {body}")));
         }
 
-        let chat_resp: ChatResponse = response.json()?;
+        let chat_resp: ChatResponse = response.json().await?;
         let content = chat_resp
             .choices
             .first()
@@ -392,18 +393,18 @@ RULES:
     ///
     /// Tries strict JSON schema first (works with large models like GPT-4o, Gemini).
     /// Falls back to prompt-based JSON (works with small models like Llama 3B, Qwen 3B).
-    pub fn extract(
+    pub async fn extract(
         &self,
         text: &str,
         schema: &ExtractionSchema,
     ) -> Result<LlmExtractionResult, LlmError> {
-        if let Ok(result) = self.extract_strict(text, schema) {
+        if let Ok(result) = self.extract_strict(text, schema).await {
             return Ok(result);
         }
-        self.extract_prompt_json(text, schema)
+        self.extract_prompt_json(text, schema).await
     }
 
-    fn extract_strict(
+    async fn extract_strict(
         &self,
         text: &str,
         schema: &ExtractionSchema,
@@ -441,15 +442,16 @@ RULES:
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&request)
-            .send()?;
+            .send()
+            .await?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().unwrap_or_default();
+            let body = response.text().await.unwrap_or_default();
             return Err(LlmError::Api(format!("{status}: {body}")));
         }
 
-        let chat_resp: ChatResponse = response.json()?;
+        let chat_resp: ChatResponse = response.json().await?;
         let content = chat_resp
             .choices
             .first()
@@ -488,7 +490,7 @@ RULES:
         })
     }
 
-    fn extract_prompt_json(
+    async fn extract_prompt_json(
         &self,
         text: &str,
         schema: &ExtractionSchema,
@@ -543,15 +545,16 @@ Text: "{text}"
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&request)
-            .send()?;
+            .send()
+            .await?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().unwrap_or_default();
+            let body = response.text().await.unwrap_or_default();
             return Err(LlmError::Api(format!("{status}: {body}")));
         }
 
-        let chat_resp: ChatResponse = response.json()?;
+        let chat_resp: ChatResponse = response.json().await?;
         let raw = chat_resp
             .choices
             .first()

@@ -181,12 +181,12 @@ impl Graph {
     ///
     /// If an extraction pipeline is loaded, entities and relations are automatically
     /// extracted from the episode content and stored in the graph.
-    pub fn add_episode(&self, episode: Episode) -> Result<EpisodeResult> {
+    pub async fn add_episode(&self, episode: Episode) -> Result<EpisodeResult> {
         self.storage.insert_episode(&episode)?;
 
         #[cfg(feature = "extract")]
         if let Some(ref pipeline) = self.pipeline {
-            return self.add_episode_with_extraction(&episode, pipeline);
+            return self.add_episode_with_extraction(&episode, pipeline).await;
         }
 
         Ok(EpisodeResult {
@@ -199,13 +199,14 @@ impl Graph {
 
     /// Internal: extract entities/relations and store them.
     #[cfg(feature = "extract")]
-    fn add_episode_with_extraction(
+    async fn add_episode_with_extraction(
         &self,
         episode: &Episode,
         pipeline: &ExtractionPipeline,
     ) -> Result<EpisodeResult> {
         let result = pipeline
             .extract(&episode.content, episode.recorded_at)
+            .await
             .map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
 
         let mut entities_extracted = 0;
@@ -548,27 +549,8 @@ impl Graph {
     /// - Expired memories (decay_score = 0.0) are filtered out
     /// - Patterns get a floor of 0.5 on their composite score
     pub fn rank_candidates(&self, candidates: Vec<RetrievalCandidate>) -> Vec<ScoredCandidate> {
-        // Score each candidate and filter out expired ones (score = 0.0)
-        let mut scored: Vec<ScoredCandidate> = candidates
-            .into_iter()
-            .map(|c| {
-                let composite_score = score_candidate(&c);
-                ScoredCandidate {
-                    candidate: c,
-                    composite_score,
-                }
-            })
-            .filter(|sc| sc.composite_score > 0.0)
-            .collect();
-
-        // Sort by composite_score descending
-        scored.sort_by(|a, b| {
-            b.composite_score
-                .partial_cmp(&a.composite_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        scored
+        let now = Utc::now();
+        rank_scored_candidates_at(candidates, now)
     }
 
     // ── Budget Enforcement (A4c) ───────────────────────────────────────────
@@ -596,10 +578,16 @@ impl Graph {
         agent_name: &str,
         budget_tokens: usize,
     ) -> Result<(Vec<RankedMemory>, usize)> {
-        // Trigger lazy cleanup check before retrieval
-        self.maybe_trigger_cleanup()?;
-        self.storage
-            .retrieve_for_context(query, agent_name, budget_tokens)
+        let result = self.storage
+            .retrieve_for_context(query, agent_name, budget_tokens);
+        
+        // Increment cleanup counter after retrieval (even if retrieval failed)
+        let _ = self.storage.increment_query_count_since_cleanup();
+        
+        // Trigger lazy cleanup check
+        let _ = self.maybe_trigger_cleanup();
+        
+        result
     }
 
     // ── Traversal ──
@@ -718,28 +706,43 @@ impl Graph {
         self.storage.expire_memory(id)
     }
 
+    /// Set the cleanup interval (number of queries between cleanup sweeps).
+    ///
+    /// The value is clamped to [1, 10000]. Default is 100 queries.
+    /// This affects when the lazy trigger in `retrieve_for_context` fires.
+    pub fn set_cleanup_interval(&self, interval: u64) -> Result<()> {
+        self.storage.set_cleanup_interval(interval)
+    }
+
+    /// Get the current cleanup interval.
+    ///
+    /// Returns the configured interval (default 100), clamped to [1, 10000].
+    pub fn get_cleanup_interval(&self) -> Result<u64> {
+        self.storage.get_cleanup_interval()
+    }
+
     /// Lazy cleanup trigger — runs cleanup if:
-    /// - query_count is a multiple of 100 (every 100 queries)
-    /// - last_cleanup_at is more than 24 hours ago
+    /// - query_count_since_cleanup >= cleanup_interval (default 100)
+    /// - cleanup is not already in progress
     ///
     /// Uses the agent policy's grace_period (default 7 days).
     fn maybe_trigger_cleanup(&self) -> Result<()> {
-        let count = self.storage.query_count();
-        if count % 100 == 0 {
-            // Check last_cleanup_at
-            if let Some(last_cleanup) = self.storage.get_system_metadata("last_cleanup_at")? {
-                if let Ok(last_dt) = DateTime::parse_from_rfc3339(&last_cleanup) {
-                    let elapsed = Utc::now()
-                        .signed_duration_since(last_dt.with_timezone(&Utc));
-                    if elapsed.num_hours() > 24 {
-                        let grace = AgentPolicy::default().grace_period_secs;
-                        let _ = self.storage.cleanup_expired(grace);
-                    }
-                }
-            } else {
-                // Never cleaned — run now
-                let grace = AgentPolicy::default().grace_period_secs;
-                let _ = self.storage.cleanup_expired(grace);
+        // Early exit: check if cleanup is already running
+        if let Some(val) = self.storage.get_system_metadata("cleanup_in_progress")? {
+            if val == "true" {
+                return Ok(()); // skip silently
+            }
+        }
+
+        let count = self.storage.get_query_count_since_cleanup()?;
+        let interval = self.storage.get_cleanup_interval()?;
+
+        if count >= interval {
+            let grace = AgentPolicy::default().grace_period_secs;
+            let result = self.storage.cleanup_expired(grace);
+            if result.is_ok() {
+                // Reset counter on successful cleanup
+                let _ = self.storage.reset_query_count_since_cleanup();
             }
         }
         Ok(())
@@ -960,11 +963,11 @@ impl Graph {
     /// 5. Supersede existing skills with overlapping entity types but different actions (D3)
     ///
     /// Returns a `LearningOutcome` summarizing what was found/created/updated.
-    pub fn run_learning_pipeline(
+    pub async fn run_learning_pipeline(
         &self,
         agent: &str,
         scope: SkillScope,
-        describer: &dyn BatchLabelDescriber,
+        describer: &impl BatchLabelDescriber,
         limit: usize,
     ) -> Result<LearningOutcome> {
         // Stage 1: Extract pattern candidates
@@ -1027,7 +1030,7 @@ impl Graph {
         }
 
         // Stage 6: One batch LLM call for all candidates
-        let label_pairs = describer.describe_batch(&candidates, &source_summaries)?;
+        let label_pairs = describer.describe_batch(&candidates, &source_summaries).await?;
         let descriptions: std::collections::HashMap<String, String> =
             label_pairs.into_iter().collect();
 
@@ -1124,5 +1127,143 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         0.0
     } else {
         dot / (mag_a * mag_b)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn new_test_graph() -> Graph {
+        Graph::in_memory().expect("failed to create in-memory graph")
+    }
+
+    // ── Lazy trigger tests ──
+
+    #[test]
+    fn test_trigger_skips_when_cleanup_in_progress() {
+        let graph = new_test_graph();
+        // Simulate cleanup in progress
+        graph
+            .storage
+            .set_system_metadata("cleanup_in_progress", "true")
+            .unwrap();
+
+        // Set counter above interval
+        for _ in 0..150 {
+            graph.storage.increment_query_count_since_cleanup().unwrap();
+        }
+
+        // Should NOT trigger cleanup
+        graph.maybe_trigger_cleanup().unwrap();
+        let count = graph.storage.get_query_count_since_cleanup().unwrap();
+        assert_eq!(count, 150, "counter should NOT have been reset");
+    }
+
+    #[test]
+    fn test_trigger_does_not_run_below_interval() {
+        let graph = new_test_graph();
+
+        // Set counter below default interval (100)
+        for _ in 0..50 {
+            graph.storage.increment_query_count_since_cleanup().unwrap();
+        }
+
+        graph.maybe_trigger_cleanup().unwrap();
+        let count = graph.storage.get_query_count_since_cleanup().unwrap();
+        assert_eq!(count, 50, "counter should NOT have been reset");
+    }
+
+    #[test]
+    fn test_trigger_resets_counter_at_interval() {
+        let graph = new_test_graph();
+
+        // Set counter at interval
+        for _ in 0..100 {
+            graph.storage.increment_query_count_since_cleanup().unwrap();
+        }
+
+        graph.maybe_trigger_cleanup().unwrap();
+        let count = graph.storage.get_query_count_since_cleanup().unwrap();
+        assert_eq!(count, 0, "counter should have been reset after cleanup");
+    }
+
+    #[test]
+    fn test_trigger_respects_custom_interval() {
+        let graph = new_test_graph();
+
+        // Set custom interval to 50
+        graph
+            .storage
+            .set_system_metadata("cleanup_interval", "50")
+            .unwrap();
+
+        // Set counter to 50
+        for _ in 0..50 {
+            graph.storage.increment_query_count_since_cleanup().unwrap();
+        }
+
+        graph.maybe_trigger_cleanup().unwrap();
+        let count = graph.storage.get_query_count_since_cleanup().unwrap();
+        assert_eq!(count, 0, "counter should have been reset at custom interval");
+    }
+
+    #[test]
+    fn test_set_cleanup_interval_via_graph() {
+        let graph = new_test_graph();
+        graph.set_cleanup_interval(200).unwrap();
+        assert_eq!(graph.get_cleanup_interval().unwrap(), 200);
+    }
+
+    #[test]
+    fn test_trigger_does_not_fire_when_below_custom_interval() {
+        let graph = new_test_graph();
+        graph.set_cleanup_interval(200).unwrap();
+
+        // Set counter to 150 (below interval of 200)
+        for _ in 0..150 {
+            graph.storage.increment_query_count_since_cleanup().unwrap();
+        }
+
+        graph.maybe_trigger_cleanup().unwrap();
+        let count = graph.storage.get_query_count_since_cleanup().unwrap();
+        assert_eq!(count, 150, "counter should NOT have been reset");
+    }
+
+    #[test]
+    fn test_trigger_proceeds_when_cleanup_in_progress_is_false() {
+        let graph = new_test_graph();
+
+        // Set cleanup_in_progress to false explicitly
+        graph
+            .storage
+            .set_system_metadata("cleanup_in_progress", "false")
+            .unwrap();
+
+        // Set counter at interval
+        for _ in 0..100 {
+            graph.storage.increment_query_count_since_cleanup().unwrap();
+        }
+
+        // Should proceed with cleanup and reset counter
+        graph.maybe_trigger_cleanup().unwrap();
+        let count = graph.storage.get_query_count_since_cleanup().unwrap();
+        assert_eq!(count, 0, "counter should have been reset");
+    }
+
+    #[test]
+    fn test_trigger_proceeds_when_cleanup_in_progress_key_missing() {
+        let graph = new_test_graph();
+
+        // Don't set cleanup_in_progress at all (key missing)
+        // Set counter at interval
+        for _ in 0..100 {
+            graph.storage.increment_query_count_since_cleanup().unwrap();
+        }
+
+        // Should proceed with cleanup (missing key = not in progress)
+        graph.maybe_trigger_cleanup().unwrap();
+        let count = graph.storage.get_query_count_since_cleanup().unwrap();
+        assert_eq!(count, 0, "counter should have been reset");
     }
 }

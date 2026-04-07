@@ -617,6 +617,7 @@ dependencies = [
  "strsim",
  "tempfile",
  "thiserror",
+ "tokio",
  "toml",
  "uuid",
 ]
@@ -670,6 +671,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokenizers 0.22.2",
+ "tokio",
  "toml",
 ]
 

@@ -94,9 +94,9 @@ fn load_cross_domain_episodes() -> Vec<CrossDomainEpisode> {
 /// Run with:
 ///   CTXGRAPH_MODELS_DIR=~/.cache/ctxgraph/models \
 ///     cargo test --package ctxgraph-extract --test cross_domain_test -- --ignored --nocapture
-#[test]
+#[tokio::test]
 #[ignore]
-fn test_cross_domain_extraction() {
+async fn test_cross_domain_extraction() {
     use chrono::Utc;
     use ctxgraph_extract::pipeline::ExtractionPipeline;
     use ctxgraph_extract::schema::ExtractionSchema;

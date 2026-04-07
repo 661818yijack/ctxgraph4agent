@@ -76,7 +76,7 @@ impl MemoryType {
     /// Returns a value in [0.0, 1.0] representing freshness:
     /// - `base_confidence` at age 0 (just created)
     /// - Decreasing over time according to the memory type's decay curve
-    /// - 0.0 if expired (age > ttl), except Pattern which never expires
+    /// - soft tail after TTL for Fact/Preference/Decision; Experience reaches 0.0 at TTL
     ///
     /// Decay formulas:
     /// - Exponential (Fact, Preference, Decision):
@@ -90,6 +90,37 @@ impl MemoryType {
         base_confidence: f64,
         created_at: DateTime<Utc>,
         ttl: Option<Duration>,
+    ) -> f64 {
+        self.decay_score_at(base_confidence, created_at, ttl, Utc::now())
+    }
+
+    /// Compute the decay score at a caller-provided timestamp.
+    ///
+    /// This is the deterministic variant used by tests and batch callers that
+    /// want one stable clock value across a whole ranking or stale-memory pass.
+    pub fn decay_score_at(
+        &self,
+        base_confidence: f64,
+        created_at: DateTime<Utc>,
+        ttl: Option<Duration>,
+        now: DateTime<Utc>,
+    ) -> f64 {
+        self.decay_score_with_usage_at(base_confidence, created_at, ttl, None, 0, now)
+    }
+
+    /// Compute a recall-aware decay score at a caller-provided timestamp.
+    ///
+    /// Recent recall resets the effective age origin, and repeated recall extends
+    /// the effective TTL with a bounded logarithmic boost. This is intended for
+    /// ranking, not cleanup.
+    pub fn decay_score_with_usage_at(
+        &self,
+        base_confidence: f64,
+        created_at: DateTime<Utc>,
+        ttl: Option<Duration>,
+        last_recalled_at: Option<DateTime<Utc>>,
+        usage_count: u32,
+        now: DateTime<Utc>,
     ) -> f64 {
         // Pattern never decays regardless of ttl
         if *self == MemoryType::Pattern {
@@ -108,23 +139,43 @@ impl MemoryType {
             return 0.0;
         }
 
-        let age_secs = (Utc::now() - created_at).num_seconds().max(0) as f64;
-
-        // Expired check (age strictly > ttl)
-        if age_secs > ttl_secs {
-            return 0.0;
-        }
+        let effective_origin = last_recalled_at
+            .filter(|recalled| *recalled > created_at && *recalled <= now)
+            .unwrap_or(created_at);
+        let age_secs = (now - effective_origin).num_seconds().max(0) as f64;
+        let recall_boost = (1.0 + 0.15 * (usage_count as f64).ln_1p()).min(1.75);
+        let ttl_secs = ttl_secs * recall_boost;
 
         match self {
-            MemoryType::Fact | MemoryType::Decision => {
+            MemoryType::Fact => {
                 let half_life = ttl_secs * 0.5;
+                if age_secs > ttl_secs {
+                    let ttl_score = base_confidence * decay_exponential(ttl_secs, half_life);
+                    return decay_soft_tail(age_secs, ttl_secs, ttl_score);
+                }
                 base_confidence * decay_exponential(age_secs, half_life)
+            }
+            MemoryType::Decision => {
+                if age_secs > ttl_secs {
+                    let ttl_score = base_confidence * decay_sigmoid(ttl_secs, ttl_secs);
+                    return decay_soft_tail(age_secs, ttl_secs, ttl_score);
+                }
+                base_confidence * decay_sigmoid(age_secs, ttl_secs)
             }
             MemoryType::Preference => {
                 let half_life = ttl_secs * 0.7;
+                if age_secs > ttl_secs {
+                    let ttl_score = base_confidence * decay_exponential(ttl_secs, half_life);
+                    return decay_soft_tail(age_secs, ttl_secs, ttl_score);
+                }
                 base_confidence * decay_exponential(age_secs, half_life)
             }
-            MemoryType::Experience => base_confidence * decay_linear(age_secs, ttl_secs),
+            MemoryType::Experience => {
+                if age_secs > ttl_secs {
+                    return 0.0;
+                }
+                base_confidence * decay_linear(age_secs, ttl_secs)
+            }
             MemoryType::Pattern => unreachable!(),
         }
     }
@@ -136,6 +187,23 @@ impl MemoryType {
 fn decay_exponential(age_secs: f64, half_life_secs: f64) -> f64 {
     let lambda = std::f64::consts::LN_2 / half_life_secs;
     (-lambda * age_secs).exp()
+}
+
+/// Sigmoid decay: stable plateau until the review window, then a sharp drop.
+///
+/// Uses a normalized age `t = age / ttl`, with the inflection point at 80% of
+/// TTL. The steepness is tuned so the score is near zero by the TTL boundary.
+fn decay_sigmoid(age_secs: f64, ttl_secs: f64) -> f64 {
+    let steepness = 20.0;
+    let inflection = 0.8;
+    let t = age_secs / ttl_secs;
+    1.0 / (1.0 + (steepness * (t - inflection)).exp())
+}
+
+/// Continue a curve beyond TTL with a fast exponential tail.
+fn decay_soft_tail(age_secs: f64, ttl_secs: f64, ttl_score: f64) -> f64 {
+    let overshoot = (age_secs - ttl_secs) / ttl_secs;
+    ttl_score * (-3.0 * overshoot).exp()
 }
 
 /// Linear decay: `max(0.0, 1.0 - age / ttl)`
@@ -156,6 +224,8 @@ pub struct Episode {
     pub metadata: Option<serde_json::Value>,
     /// Memory type for this episode, driving TTL and decay behavior.
     pub memory_type: MemoryType,
+    /// If this episode is a compression summary, this links to the compressed episodes.
+    pub compression_id: Option<String>,
 }
 
 /// Builder for constructing episodes with a fluent API.
@@ -212,6 +282,7 @@ impl EpisodeBuilder {
             recorded_at: Utc::now(),
             metadata,
             memory_type: self.memory_type,
+            compression_id: None,
         }
     }
 }
@@ -431,6 +502,19 @@ pub struct GraphStats {
     pub decayed_entities: usize,
     /// Edges past grace_period with decay_score=0 (eligible for cleanup).
     pub decayed_edges: usize,
+    // ── Cleanup visibility fields ──
+    /// Timestamp of the last cleanup run (RFC3339), or None if never cleaned.
+    pub last_cleanup_at: Option<String>,
+    /// Number of queries since the last cleanup.
+    pub queries_since_cleanup: u64,
+    /// Cleanup interval in queries (default 100).
+    pub cleanup_interval: u64,
+    /// Whether a cleanup is currently in progress.
+    pub cleanup_in_progress: bool,
+    /// Total entities by memory type (excludes archived).
+    pub total_entities_by_type: Vec<(String, usize)>,
+    /// Decayed entities by memory type (decay_score=0, past grace_period).
+    pub decayed_entities_by_type: Vec<(String, usize)>,
 }
 
 /// Result from a cleanup_expired operation.
@@ -473,7 +557,7 @@ pub struct StaleMemory {
     pub content: String,
     /// Age in days since creation.
     pub age_days: f64,
-    /// Current decay score (0.0 = expired).
+    /// Current decay score (0.0 = fully decayed).
     pub decay_score: f64,
     /// Suggested action based on decay_score.
     pub suggested_action: StaleAction,
@@ -556,6 +640,8 @@ pub struct RetrievalCandidate {
     pub base_confidence: f64,
     /// How many times this memory has been recalled.
     pub usage_count: u32,
+    /// When this memory was last recalled, if ever.
+    pub last_recalled_at: Option<DateTime<Utc>>,
 }
 
 /// A candidate with its composite score (A4b).
@@ -571,21 +657,30 @@ pub struct ScoredCandidate {
 
 /// Compute the composite score for a retrieval candidate.
 ///
-/// Formula: `decay_score * normalized_fts_score * (1.0 + 0.1 * ln(1 + usage_count))`
+/// Formula: `decay_score * confidence_weight * normalized_fts_score * (1.0 + 0.1 * ln(1 + usage_count))`
 ///
-/// - `decay_score`: freshness from MemoryType::decay_score (0.0 for expired)
+/// - `decay_score`: freshness from MemoryType::decay_score
+/// - `confidence_weight`: bounded source confidence in [0.5, 1.0]
 /// - `normalized_fts_score`: BM25 score clamped to [0.0, 1.0]
 /// - Usage bonus: `(1.0 + 0.1 * ln(1 + usage_count))` — 1.0 at usage_count=0
 ///
 /// Special cases:
-/// - Expired memories (decay_score = 0.0): returns 0.0
+/// - Zero-decay memories: returns 0.0
 /// - Patterns: score is `max(score, 0.5)` to ensure visibility
 pub fn score_candidate(candidate: &RetrievalCandidate) -> f64 {
+    score_candidate_at(candidate, Utc::now())
+}
+
+/// Compute the composite score for a retrieval candidate at a fixed timestamp.
+pub fn score_candidate_at(candidate: &RetrievalCandidate, now: DateTime<Utc>) -> f64 {
     // Compute decay score
-    let decay = candidate.memory_type.decay_score(
-        candidate.base_confidence,
+    let decay = candidate.memory_type.decay_score_with_usage_at(
+        1.0,
         candidate.created_at,
         candidate.ttl,
+        candidate.last_recalled_at,
+        candidate.usage_count,
+        now,
     );
 
     // Expired memories get score 0.0
@@ -597,17 +692,24 @@ pub fn score_candidate(candidate: &RetrievalCandidate) -> f64 {
     // BM25 can exceed 1.0 for very relevant results, so we clamp
     let normalized_fts = candidate.fts_score.clamp(0.0, 1.0);
 
+    // Confidence weight: demote low-confidence extractions without erasing them.
+    let confidence_weight = 0.5 + 0.5 * candidate.base_confidence.clamp(0.0, 1.0);
+
     // Usage bonus: (1.0 + 0.1 * ln(1 + usage_count))
     // usage_count=0 → bonus = 1.0
     // usage_count=100 → bonus ≈ 1.46
     let usage_bonus = 1.0 + 0.1 * (1.0 + candidate.usage_count as f64).ln();
 
     // NaN guard: if any component is NaN, return 0.0
-    if decay.is_nan() || normalized_fts.is_nan() || usage_bonus.is_nan() {
+    if decay.is_nan()
+        || confidence_weight.is_nan()
+        || normalized_fts.is_nan()
+        || usage_bonus.is_nan()
+    {
         return 0.0;
     }
 
-    let score = decay * normalized_fts * usage_bonus;
+    let score = decay * confidence_weight * normalized_fts * usage_bonus;
 
     // Patterns get a floor of 0.5
     if candidate.memory_type == MemoryType::Pattern {
@@ -615,6 +717,32 @@ pub fn score_candidate(candidate: &RetrievalCandidate) -> f64 {
     } else {
         score
     }
+}
+
+/// Score, filter, and sort retrieval candidates at a fixed timestamp.
+pub fn rank_scored_candidates_at(
+    candidates: Vec<RetrievalCandidate>,
+    now: DateTime<Utc>,
+) -> Vec<ScoredCandidate> {
+    let mut scored: Vec<ScoredCandidate> = candidates
+        .into_iter()
+        .map(|c| {
+            let composite_score = score_candidate_at(&c, now);
+            ScoredCandidate {
+                candidate: c,
+                composite_score,
+            }
+        })
+        .filter(|sc| sc.composite_score > 0.0)
+        .collect();
+
+    scored.sort_by(|a, b| {
+        b.composite_score
+            .partial_cmp(&a.composite_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    scored
 }
 
 // ── Budget Enforcement (A4c) ───────────────────────────────────────────────
@@ -775,6 +903,7 @@ mod tests {
             ttl: ttl_seconds.map(|s| Duration::seconds(s).to_std().unwrap()),
             base_confidence,
             usage_count,
+            last_recalled_at: None,
         }
     }
 
@@ -810,6 +939,84 @@ mod tests {
     }
 
     #[test]
+    fn test_recently_recalled_old_fact_scores_higher_than_unrecalled_old_fact() {
+        let now = Utc::now();
+        let unrecalled = make_candidate(
+            MemoryType::Fact,
+            now - Duration::days(80),
+            Some(90 * 86400),
+            1.0,
+            0,
+            0.8,
+        );
+        let mut recalled = unrecalled.clone();
+        recalled.last_recalled_at = Some(now - Duration::days(1));
+
+        let unrecalled_score = score_candidate_at(&unrecalled, now);
+        let recalled_score = score_candidate_at(&recalled, now);
+
+        assert!(
+            recalled_score > unrecalled_score,
+            "recently recalled fact should rank higher: recalled={recalled_score}, unrecalled={unrecalled_score}"
+        );
+    }
+
+    #[test]
+    fn test_usage_count_extends_decay_in_recall_aware_scoring() {
+        let now = Utc::now();
+        let low_usage = MemoryType::Fact.decay_score_with_usage_at(
+            1.0,
+            now - Duration::days(80),
+            Some(Duration::days(90).to_std().unwrap()),
+            None,
+            0,
+            now,
+        );
+        let high_usage = MemoryType::Fact.decay_score_with_usage_at(
+            1.0,
+            now - Duration::days(80),
+            Some(Duration::days(90).to_std().unwrap()),
+            None,
+            100,
+            now,
+        );
+
+        assert!(
+            high_usage > low_usage,
+            "usage count should slow ranking decay: high_usage={high_usage}, low_usage={low_usage}"
+        );
+    }
+
+    #[test]
+    fn test_base_confidence_weights_candidate_score() {
+        let now = Utc::now();
+        let low_confidence = make_candidate(
+            MemoryType::Fact,
+            now - Duration::days(1),
+            Some(90 * 86400),
+            0.3,
+            0,
+            0.8,
+        );
+        let high_confidence = make_candidate(
+            MemoryType::Fact,
+            now - Duration::days(1),
+            Some(90 * 86400),
+            0.9,
+            0,
+            0.8,
+        );
+
+        let low_score = score_candidate_at(&low_confidence, now);
+        let high_score = score_candidate_at(&high_confidence, now);
+
+        assert!(
+            high_score > low_score,
+            "higher confidence candidate should rank higher: high={high_score}, low={low_score}"
+        );
+    }
+
+    #[test]
     fn test_pattern_gets_minimum_0_5_floor() {
         // Pattern with very low FTS score
         let pattern = make_candidate(
@@ -826,9 +1033,9 @@ mod tests {
     }
 
     #[test]
-    fn test_expired_memory_gets_zero_score() {
-        // Fact created 100 days ago with 90d TTL (expired)
-        let expired = make_candidate(
+    fn test_post_ttl_fact_keeps_soft_tail_score() {
+        // Fact created 100 days ago with 90d TTL should retain a small soft-tail score.
+        let post_ttl = make_candidate(
             MemoryType::Fact,
             Utc::now() - Duration::days(100),
             Some(90 * 86400),
@@ -837,8 +1044,11 @@ mod tests {
             0.9,
         );
 
-        let score = score_candidate(&expired);
-        assert_eq!(score, 0.0, "expired memory should have score 0.0");
+        let score = score_candidate(&post_ttl);
+        assert!(
+            score > 0.0,
+            "post-TTL fact should retain a small soft-tail score"
+        );
     }
 
     #[test]
@@ -975,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rank_candidates_sorts_descending_and_filters_expired() {
+    fn test_rank_candidates_sorts_descending_and_keeps_soft_tail() {
         use crate::graph::Graph;
 
         let graph = Graph::in_memory().expect("in-memory graph should init");
@@ -997,7 +1207,7 @@ mod tests {
                 0,
                 0.9,
             ),
-            // Expired: 100 days old with 90d TTL
+            // Post-TTL: 100 days old with 90d TTL, still retained by soft tail
             make_candidate(
                 MemoryType::Fact,
                 Utc::now() - Duration::days(100),
@@ -1018,8 +1228,8 @@ mod tests {
 
         let ranked = graph.rank_candidates(candidates);
 
-        // Should have 3 candidates (expired one filtered out)
-        assert_eq!(ranked.len(), 3);
+        // Should have 4 candidates (post-TTL Fact is retained by soft tail)
+        assert_eq!(ranked.len(), 4);
 
         // Should be sorted descending by composite_score
         assert!(
@@ -1115,6 +1325,7 @@ mod tests {
                 ttl: Some(Duration::days(90).to_std().unwrap()),
                 base_confidence: 1.0,
                 usage_count: 0,
+                last_recalled_at: None,
             },
             composite_score: 0.5,
         };
@@ -1140,6 +1351,7 @@ mod tests {
                 ttl: Some(Duration::days(90).to_std().unwrap()),
                 base_confidence: 1.0,
                 usage_count: 0,
+                last_recalled_at: None,
             },
             composite_score: 0.5,
         };
@@ -1168,6 +1380,7 @@ mod tests {
                     ttl: Some(Duration::days(90).to_std().unwrap()),
                     base_confidence: 1.0,
                     usage_count: 0,
+                    last_recalled_at: None,
                 },
                 composite_score: 0.9, // highest score
             },
@@ -1182,6 +1395,7 @@ mod tests {
                     ttl: Some(Duration::days(90).to_std().unwrap()),
                     base_confidence: 1.0,
                     usage_count: 0,
+                    last_recalled_at: None,
                 },
                 composite_score: 0.8, // second highest
             },
@@ -1196,6 +1410,7 @@ mod tests {
                     ttl: Some(Duration::days(90).to_std().unwrap()),
                     base_confidence: 1.0,
                     usage_count: 0,
+                    last_recalled_at: None,
                 },
                 composite_score: 0.5, // lower score
             },
@@ -1231,6 +1446,7 @@ mod tests {
                     ttl: Some(Duration::days(90).to_std().unwrap()),
                     base_confidence: 1.0,
                     usage_count: 0,
+                    last_recalled_at: None,
                 },
                 composite_score: 0.9,
             },
@@ -1245,6 +1461,7 @@ mod tests {
                     ttl: Some(Duration::days(90).to_std().unwrap()),
                     base_confidence: 1.0,
                     usage_count: 0,
+                    last_recalled_at: None,
                 },
                 composite_score: 0.8,
             },
@@ -1273,6 +1490,7 @@ mod tests {
                     ttl: Some(Duration::days(90).to_std().unwrap()),
                     base_confidence: 1.0,
                     usage_count: 0,
+                    last_recalled_at: None,
                 },
                 composite_score: 0.7,
             },
@@ -1287,6 +1505,7 @@ mod tests {
                     ttl: Some(Duration::days(90).to_std().unwrap()),
                     base_confidence: 1.0,
                     usage_count: 0,
+                    last_recalled_at: None,
                 },
                 composite_score: 0.6,
             },
@@ -1382,6 +1601,7 @@ mod tests {
                 ttl: None,
                 base_confidence: 0.9,
                 usage_count: 10,
+                last_recalled_at: None,
             },
             composite_score: 0.75,
         };
@@ -1582,4 +1802,53 @@ pub struct LearningOutcome {
     pub skills_updated: usize,
     /// IDs of all skills created.
     pub skill_ids: Vec<String>,
+}
+
+// ── Compression Types (Phase B) ────────────────────────────────────────────
+
+/// Configuration for batch compression of old episodes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionConfig {
+    /// Episodes older than this (in days) are candidates for compression.
+    pub max_age_days: usize,
+    /// Maximum number of episodes to compress in a single batch.
+    pub batch_size: usize,
+    /// Optional threshold - only compress if uncompressed count >= this value.
+    pub size_threshold: Option<usize>,
+}
+
+impl Default for CompressionConfig {
+    fn default() -> Self {
+        Self {
+            max_age_days: 7,
+            batch_size: 10,
+            size_threshold: None,
+        }
+    }
+}
+
+/// Result from running batch compression.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CompressionResult {
+    /// Number of episode groups that were compressed.
+    pub groups_compressed: usize,
+    /// Total number of individual episodes compressed.
+    pub episodes_compressed: usize,
+    /// Number of episodes that were already compressed (skipped).
+    pub skipped_already_compressed: usize,
+    /// Any errors that occurred during compression.
+    pub errors: Vec<String>,
+}
+
+/// Data for a group of episodes that have been compressed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionGroupData {
+    /// ID of the compression summary episode.
+    pub compression_id: String,
+    /// IDs of original episodes that were compressed into this summary.
+    pub source_episode_ids: Vec<String>,
+    /// Entities from the original episodes.
+    pub entities: Vec<Entity>,
+    /// Edges connected to the original episodes.
+    pub edges: Vec<Edge>,
 }

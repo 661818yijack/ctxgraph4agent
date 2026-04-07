@@ -66,9 +66,9 @@ fn compute_f1_fuzzy(predicted: &[String], expected: &[String]) -> (f64, f64, f64
     (p, r, f1)
 }
 
-#[test]
+#[tokio::test]
 #[ignore]
-fn test_real_world_tech_extraction() {
+async fn test_real_world_tech_extraction() {
     use chrono::Utc;
     use ctxgraph_extract::pipeline::ExtractionPipeline;
     use ctxgraph_extract::schema::ExtractionSchema;

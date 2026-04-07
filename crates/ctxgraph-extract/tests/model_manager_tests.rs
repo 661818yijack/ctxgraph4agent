@@ -4,8 +4,8 @@ use std::io::Write;
 use ctxgraph_extract::model_manager::*;
 use sha2::{Digest, Sha256};
 
-#[test]
-fn test_model_spec_creation() {
+#[tokio::test]
+async fn test_model_spec_creation() {
     let spec = gliner_large_v21_int8();
     assert_eq!(spec.name, "gliner_large-v2.1/onnx/model_int8.onnx");
     assert!(!spec.url.is_empty());
@@ -22,8 +22,8 @@ fn test_model_spec_creation() {
     assert_eq!(spec3.name, "minilm-l6-v2.onnx");
 }
 
-#[test]
-fn test_cache_dir_creation() {
+#[tokio::test]
+async fn test_cache_dir_creation() {
     let tmp = tempfile::tempdir().unwrap();
     let cache_dir = tmp.path().join("test_cache");
 
@@ -39,8 +39,8 @@ fn test_cache_dir_creation() {
     );
 }
 
-#[test]
-fn test_is_cached_returns_false_for_missing_model() {
+#[tokio::test]
+async fn test_is_cached_returns_false_for_missing_model() {
     let tmp = tempfile::tempdir().unwrap();
     let mgr = ModelManager::with_cache_dir(tmp.path().to_path_buf()).unwrap();
 
@@ -48,8 +48,8 @@ fn test_is_cached_returns_false_for_missing_model() {
     assert!(!mgr.is_cached(&spec));
 }
 
-#[test]
-fn test_is_cached_returns_false_for_wrong_size() {
+#[tokio::test]
+async fn test_is_cached_returns_false_for_wrong_size() {
     let tmp = tempfile::tempdir().unwrap();
     let mgr = ModelManager::with_cache_dir(tmp.path().to_path_buf()).unwrap();
 
@@ -66,8 +66,8 @@ fn test_is_cached_returns_false_for_wrong_size() {
     assert!(!mgr.is_cached(&spec));
 }
 
-#[test]
-fn test_is_cached_returns_true_for_correct_size() {
+#[tokio::test]
+async fn test_is_cached_returns_true_for_correct_size() {
     let tmp = tempfile::tempdir().unwrap();
     let mgr = ModelManager::with_cache_dir(tmp.path().to_path_buf()).unwrap();
 
@@ -84,8 +84,8 @@ fn test_is_cached_returns_true_for_correct_size() {
     assert!(mgr.is_cached(&spec));
 }
 
-#[test]
-fn test_verify_on_small_file() {
+#[tokio::test]
+async fn test_verify_on_small_file() {
     let tmp = tempfile::tempdir().unwrap();
     let mgr = ModelManager::with_cache_dir(tmp.path().to_path_buf()).unwrap();
 
@@ -106,8 +106,8 @@ fn test_verify_on_small_file() {
     assert!(mgr.verify(&spec).unwrap());
 }
 
-#[test]
-fn test_verify_returns_false_on_mismatch() {
+#[tokio::test]
+async fn test_verify_returns_false_on_mismatch() {
     let tmp = tempfile::tempdir().unwrap();
     let mgr = ModelManager::with_cache_dir(tmp.path().to_path_buf()).unwrap();
 
@@ -124,8 +124,8 @@ fn test_verify_returns_false_on_mismatch() {
     assert!(!mgr.verify(&spec).unwrap());
 }
 
-#[test]
-fn test_verify_errors_on_missing_file() {
+#[tokio::test]
+async fn test_verify_errors_on_missing_file() {
     let tmp = tempfile::tempdir().unwrap();
     let mgr = ModelManager::with_cache_dir(tmp.path().to_path_buf()).unwrap();
 

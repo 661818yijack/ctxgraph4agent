@@ -96,6 +96,12 @@ enum Commands {
         action: ModelsAction,
     },
 
+    /// List and manage stale memories for re-verification
+    Reverify {
+        #[command(subcommand)]
+        action: ReverifyAction,
+    },
+
     /// Run the MCP server (JSON-RPC over stdio)
     Mcp {
         #[command(subcommand)]
@@ -117,6 +123,58 @@ enum McpAction {
 enum ModelsAction {
     /// Download ONNX models required for extraction
     Download,
+}
+
+#[derive(Subcommand)]
+enum ReverifyAction {
+    /// List stale memories for re-verification
+    List {
+        /// Decay score threshold (memories below this are shown)
+        #[arg(short, long, default_value = "0.7")]
+        threshold: f64,
+
+        /// Maximum results
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+
+        /// Offset for pagination
+        #[arg(long, default_value = "0")]
+        offset: usize,
+
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
+    /// Renew a specific memory (reset TTL)
+    Renew {
+        /// Memory ID
+        id: String,
+
+        /// Memory type (fact, experience, preference, decision)
+        #[arg(long)]
+        memory_type: String,
+    },
+
+    /// Update a memory's content and/or type
+    Update {
+        /// Memory ID
+        id: String,
+
+        /// New content
+        #[arg(long)]
+        content: Option<String>,
+
+        /// New memory type
+        #[arg(long)]
+        memory_type: Option<String>,
+    },
+
+    /// Immediately delete a memory
+    Expire {
+        /// Memory ID
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -163,13 +221,14 @@ enum DecisionsAction {
     },
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
 
     let result = match cli.command {
         Commands::Init { name } => commands::init::run(name),
-        Commands::Log { text, source, tags } => commands::log::run(text, source, tags),
+        Commands::Log { text, source, tags } => commands::log::run(text, source, tags).await,
         Commands::Query {
             text,
             limit,
@@ -208,13 +267,44 @@ fn main() {
                 limit,
                 agent,
                 format,
-            })
+            }).await
         }
         Commands::Models { action } => match action {
             ModelsAction::Download => commands::models::download(),
         },
+        Commands::Reverify { action } => match action {
+            ReverifyAction::List {
+                threshold,
+                limit,
+                offset,
+                format,
+            } => commands::reverify::list(commands::reverify::ReverifyListOptions {
+                threshold,
+                limit,
+                offset,
+                format,
+            }),
+            ReverifyAction::Renew { id, memory_type } => {
+                commands::reverify::renew(commands::reverify::ReverifyRenewOptions {
+                    id,
+                    memory_type,
+                })
+            }
+            ReverifyAction::Update {
+                id,
+                content,
+                memory_type,
+            } => commands::reverify::update(commands::reverify::ReverifyUpdateOptions {
+                id,
+                content,
+                memory_type,
+            }),
+            ReverifyAction::Expire { id } => {
+                commands::reverify::expire(commands::reverify::ReverifyExpireOptions { id })
+            }
+        },
         Commands::Mcp { action } => match action {
-            McpAction::Start { db } => commands::mcp::start(db),
+            McpAction::Start { db } => commands::mcp::start(db).await,
         },
     };
 
