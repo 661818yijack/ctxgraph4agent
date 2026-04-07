@@ -936,7 +936,7 @@ impl Storage {
         let mut result = CompressionResult::default();
 
         // Process each day, splitting into batches of batch_size
-        for (_, mut ep_ids) in day_groups {
+        for (_, ep_ids) in day_groups {
             // ep_ids are already in ASC order by recorded_at (oldest first)
             // Process in chunks of batch_size
             for chunk in ep_ids.chunks(config.batch_size) {
@@ -1339,7 +1339,7 @@ impl Storage {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        for (id, source_id, target_id, relation, memory_type_str, ttl_seconds, fact, recorded_at_str, _metadata) in edges {
+        for (id, source_id, _target_id, relation, memory_type_str, ttl_seconds, fact, recorded_at_str, _metadata) in edges {
             let memory_type = MemoryType::from_db(&memory_type_str);
             // Skip patterns
             if memory_type == MemoryType::Pattern {
@@ -1997,7 +1997,7 @@ impl Storage {
         config: &PatternExtractorConfig,
     ) -> Result<Vec<PatternCandidate>> {
         let before = Utc::now();
-        let groups = self.get_compression_groups(before)?;
+        let _groups = self.get_compression_groups(before)?;
         let extractor = PatternExtractor::new();
         // CompressionGroupData can be converted to episodes - for now, pass empty slices
         // TODO: properly map CompressionGroupData to episodes/entities/edges
@@ -2380,7 +2380,7 @@ impl Storage {
     pub fn retrieve_for_context(
         &self,
         query: &str,
-        agent_name: &str,
+        _agent_name: &str,
         budget_tokens: usize,
     ) -> crate::error::Result<(Vec<crate::types::RankedMemory>, usize)> {
         // A4a: Retrieve candidates (use default limit of 100, max_patterns 50)

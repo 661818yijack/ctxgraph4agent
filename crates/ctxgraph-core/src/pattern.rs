@@ -31,11 +31,11 @@ pub trait BatchLabelDescriber: Send + Sync {
     ///
     /// Returns a Vec of `(candidate_id, label)` pairs. May return fewer results
     /// than input if some candidates are skipped.
-    async fn describe_batch(
+    fn describe_batch(
         &self,
         candidates: &[PatternCandidate],
         source_summaries: &HashMap<String, Vec<String>>,
-    ) -> crate::error::Result<Vec<(String, String)>>;
+    ) -> impl std::future::Future<Output = crate::error::Result<Vec<(String, String)>>> + Send;
 }
 
 // ── Test implementations ──────────────────────────────────────────────────────

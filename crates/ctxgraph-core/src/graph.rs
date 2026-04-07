@@ -211,7 +211,6 @@ impl Graph {
 
         let mut entities_extracted = 0;
         let mut edges_created = 0;
-        let mut contradictions_found = 0;
 
         // Map extracted entity text → entity ID for edge creation
         let mut entity_id_map: std::collections::HashMap<String, String> =
@@ -280,7 +279,7 @@ impl Graph {
                 );
             }
         }
-        contradictions_found = contradictions.len();
+        let contradictions_found = contradictions.len();
 
         Ok(EpisodeResult {
             episode_id: episode.id.clone(),
