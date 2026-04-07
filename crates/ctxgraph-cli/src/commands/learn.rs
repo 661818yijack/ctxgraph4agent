@@ -22,11 +22,11 @@ impl RealBatchLabelDescriber {
         }
     }
 
-    fn call_llm(&self, prompt: &str, max_tokens: u32) -> Result<String> {
+    async fn call_llm(&self, prompt: &str, max_tokens: u32) -> Result<String> {
         let api_key = env::var("ZAI_API_KEY").ok();
         let minimax_key = env::var("MINIMAX_API_KEY").ok();
 
-        let client = reqwest::blocking::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()
             .map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
@@ -45,6 +45,7 @@ impl RealBatchLabelDescriber {
                 .header("Content-Type", "application/json")
                 .json(&body)
                 .send()
+                .await
         } else if let Some(key) = minimax_key {
             client
                 .post("https://api.minimax.io/anthropic")
@@ -52,6 +53,7 @@ impl RealBatchLabelDescriber {
                 .header("Content-Type", "application/json")
                 .json(&body)
                 .send()
+                .await
         } else {
             return Err(CtxGraphError::InvalidInput(
                 "ZAI_API_KEY or MINIMAX_API_KEY must be set for learn command".to_string(),
@@ -61,6 +63,7 @@ impl RealBatchLabelDescriber {
         let response = response.map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
         let json: serde_json::Value = response
             .json()
+            .await
             .map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
 
         json["choices"][0]["message"]["content"]
@@ -71,7 +74,7 @@ impl RealBatchLabelDescriber {
 }
 
 impl BatchLabelDescriber for RealBatchLabelDescriber {
-    fn describe_batch(
+    async fn describe_batch(
         &self,
         candidates: &[PatternCandidate],
         source_summaries: &HashMap<String, Vec<String>>,
@@ -127,7 +130,7 @@ impl BatchLabelDescriber for RealBatchLabelDescriber {
         );
 
         let max_tokens = (candidates.len() as u32) * 60 + 100;
-        let raw = self.call_llm(&prompt, max_tokens)?;
+        let raw = self.call_llm(&prompt, max_tokens).await?;
 
         // Parse JSON array response
         let parsed: serde_json::Value = serde_json::from_str(raw.trim()).map_err(|e| {
@@ -167,7 +170,7 @@ pub struct LearnOptions {
     pub format: String,
 }
 
-pub fn run(options: LearnOptions) -> Result<()> {
+pub async fn run(options: LearnOptions) -> Result<()> {
     let graph = open_graph()?;
     let describer = RealBatchLabelDescriber::new();
 
@@ -200,7 +203,7 @@ pub fn run(options: LearnOptions) -> Result<()> {
         options.scope,
         &describer,
         options.limit,
-    )?;
+    ).await?;
 
     match options.format.as_str() {
         "json" => {

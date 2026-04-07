@@ -6,6 +6,7 @@ pub mod log;
 pub mod mcp;
 pub mod models;
 pub mod query;
+pub mod reverify;
 pub mod stats;
 
 use std::env;

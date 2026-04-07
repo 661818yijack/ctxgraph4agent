@@ -42,50 +42,47 @@ fn find_models_dir(db_path: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
-pub fn start(db: Option<String>) -> ctxgraph::Result<()> {
-    let rt = tokio::runtime::Runtime::new().map_err(ctxgraph::CtxGraphError::Io)?;
-    rt.block_on(async {
-        let db_path = resolve_db_path(db);
-        eprintln!("ctxgraph mcp: using database at {}", db_path.display());
+pub async fn start(db: Option<String>) -> ctxgraph::Result<()> {
+    let db_path = resolve_db_path(db);
+    eprintln!("ctxgraph mcp: using database at {}", db_path.display());
 
-        let mut graph = match Graph::open_or_create(&db_path) {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("ctxgraph mcp: failed to open/create graph: {e}");
-                std::process::exit(1);
+    let mut graph = match Graph::open_or_create(&db_path) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("ctxgraph mcp: failed to open/create graph: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Load extraction pipeline if models are available
+    if let Some(models_dir) = find_models_dir(&db_path) {
+        match graph.load_extraction_pipeline(&models_dir) {
+            Ok(()) => eprintln!("ctxgraph mcp: extraction pipeline ready"),
+            Err(e) => eprintln!("ctxgraph mcp: extraction pipeline not loaded: {e}"),
+        }
+    }
+
+    // Load embed engine
+    let embed = if env::var("CTXGRAPH_NO_EMBED").as_deref() == Ok("1") {
+        eprintln!("ctxgraph mcp: embedding disabled (CTXGRAPH_NO_EMBED=1)");
+        None
+    } else {
+        eprintln!("ctxgraph mcp: loading embedding model...");
+        match EmbedEngine::new() {
+            Ok(e) => {
+                eprintln!("ctxgraph mcp: embedding model ready");
+                Some(e)
             }
-        };
-
-        // Load extraction pipeline if models are available
-        if let Some(models_dir) = find_models_dir(&db_path) {
-            match graph.load_extraction_pipeline(&models_dir) {
-                Ok(()) => eprintln!("ctxgraph mcp: extraction pipeline ready"),
-                Err(e) => eprintln!("ctxgraph mcp: extraction pipeline not loaded: {e}"),
+            Err(err) => {
+                eprintln!("ctxgraph mcp: warning: embedding unavailable: {err}");
+                None
             }
         }
+    };
 
-        // Load embed engine
-        let embed = if env::var("CTXGRAPH_NO_EMBED").as_deref() == Ok("1") {
-            eprintln!("ctxgraph mcp: embedding disabled (CTXGRAPH_NO_EMBED=1)");
-            None
-        } else {
-            eprintln!("ctxgraph mcp: loading embedding model...");
-            match EmbedEngine::new() {
-                Ok(e) => {
-                    eprintln!("ctxgraph mcp: embedding model ready");
-                    Some(e)
-                }
-                Err(err) => {
-                    eprintln!("ctxgraph mcp: warning: embedding unavailable: {err}");
-                    None
-                }
-            }
-        };
-
-        eprintln!("ctxgraph mcp: server starting on stdio");
-        let server = McpServer::new(graph, embed);
-        server.run().await;
-    });
+    eprintln!("ctxgraph mcp: server starting on stdio");
+    let server = McpServer::new(graph, embed);
+    server.run().await;
 
     Ok(())
 }

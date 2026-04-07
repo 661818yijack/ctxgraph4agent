@@ -201,6 +201,8 @@ These three cover the core lifecycle: learn (Phase D), forget (Phase A6 manual c
 
 **Compression is learn-internal, not a standalone tool.** The first `learn` run extracts patterns from raw episodes. The second `learn` run compresses old episodes first, then extracts from summaries — this is why compress exists: it's a hint about decision quality (compressed summaries have better signal-to-noise than raw episodes). The `learn` tool handles this automatically.
 
+**CLI commands are secondary to MCP tools.** Agent clients interact via MCP, so MCP tools are the primary interface. CLI commands exist only for debugging and manual override, not daily operation.
+
 ### What Stays the Same
 
 The extraction pipeline (GLiNER, GLiREL, heuristics, temporal parsing) — this is solid and doesn't need changes. The graph model (entities, edges, bi-temporal) — this already supports everything we need. SQLite storage — single file, zero deps, this is the right choice.
@@ -250,6 +252,23 @@ compress_after = "14d"
 All policies share the same **6-month hard cutoff** — no memory lives beyond 6 months regardless of policy. Budget caps ensure cost stays flat.
 
 **Note:** Finance agents and project agents are separate systems. ctxgraph4agent is not designed for 5-year time-series memory or single-ticket research workflows.
+
+## Design Philosophy: Auto Over Manual
+
+**Prioritize automatic behaviors over standalone commands.** The system should manage itself through lazy triggers, background sweeps, and self-tuning mechanisms. Manual CLI commands are secondary — they exist for debugging and emergency intervention, not daily operation.
+
+When building features:
+1. **First:** Make it automatic (lazy triggers, background jobs, self-regulating)
+2. **Second:** Add MCP tool visibility (for agent clients to monitor)
+3. **Third:** Add CLI commands only if needed for debugging/manual override
+
+Examples:
+- ✅ Good: Auto-cleanup every 100 queries via lazy trigger
+- ✅ Good: MCP stats tool showing cleanup health
+- ⚠️ Lower priority: `ctxgraph cleanup` standalone command (only for manual override)
+- ⚠️ Lower priority: `ctxgraph forget` standalone command (MCP tool is primary interface)
+
+This reduces standalone commands and keeps the system self-managing.
 
 ## Build Order
 

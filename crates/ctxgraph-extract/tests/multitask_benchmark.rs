@@ -97,9 +97,9 @@ fn load_cross_domain_episodes() -> Vec<(String, BenchmarkEpisode)> {
 }
 
 /// Benchmark: GLiNER multitask model (joint NER + RE) on tech episodes.
-#[test]
+#[tokio::test]
 #[ignore]
-fn test_multitask_tech_benchmark() {
+async fn test_multitask_tech_benchmark() {
     use ctxgraph_extract::rel::ModelBasedRelEngine;
     use ctxgraph_extract::schema::ExtractionSchema;
 
@@ -131,7 +131,7 @@ fn test_multitask_tech_benchmark() {
     let mut total_relation_f1 = 0.0;
 
     for (i, ep) in episodes.iter().enumerate() {
-        let result = engine.extract(&ep.text, &labels, &schema);
+        let result = engine.extract(&ep.text, &labels, &schema).await;
         let (entities, relations) = match result {
             Ok(r) => r,
             Err(e) => {
@@ -199,9 +199,9 @@ fn test_multitask_tech_benchmark() {
 }
 
 /// Benchmark: GLiNER multitask model (joint NER + RE) on cross-domain episodes.
-#[test]
+#[tokio::test]
 #[ignore]
-fn test_multitask_cross_domain_benchmark() {
+async fn test_multitask_cross_domain_benchmark() {
     use ctxgraph_extract::rel::ModelBasedRelEngine;
     use ctxgraph_extract::schema::ExtractionSchema;
 
@@ -232,7 +232,7 @@ fn test_multitask_cross_domain_benchmark() {
         std::collections::BTreeMap::new();
 
     for (domain, ep) in &episodes {
-        let result = engine.extract(&ep.text, &labels, &schema);
+        let result = engine.extract(&ep.text, &labels, &schema).await;
         let (entities, relations) = match result {
             Ok(r) => r,
             Err(e) => {

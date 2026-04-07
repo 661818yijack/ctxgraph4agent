@@ -2,7 +2,7 @@ use ctxgraph::Episode;
 
 use super::open_graph;
 
-pub fn run(text: String, source: Option<String>, tags: Option<String>) -> ctxgraph::Result<()> {
+pub async fn run(text: String, source: Option<String>, tags: Option<String>) -> ctxgraph::Result<()> {
     let graph = open_graph()?;
 
     let mut builder = Episode::builder(&text);
@@ -18,7 +18,7 @@ pub fn run(text: String, source: Option<String>, tags: Option<String>) -> ctxgra
     }
 
     let episode = builder.build();
-    let result = graph.add_episode(episode)?;
+    let result = graph.add_episode(episode).await?;
 
     println!("Episode stored: {}", &result.episode_id[..8]);
 

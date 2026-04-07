@@ -10,8 +10,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use std::collections::HashMap;
-
 use crate::types::{Edge, Entity, Episode, PatternCandidate, PatternExtractorConfig};
 
 /// Pure-logic pattern extractor.
@@ -33,7 +31,7 @@ pub trait BatchLabelDescriber: Send + Sync {
     ///
     /// Returns a Vec of `(candidate_id, label)` pairs. May return fewer results
     /// than input if some candidates are skipped.
-    fn describe_batch(
+    async fn describe_batch(
         &self,
         candidates: &[PatternCandidate],
         source_summaries: &HashMap<String, Vec<String>>,
@@ -47,7 +45,7 @@ pub trait BatchLabelDescriber: Send + Sync {
 pub struct MockBatchLabelDescriber;
 
 impl BatchLabelDescriber for MockBatchLabelDescriber {
-    fn describe_batch(
+    async fn describe_batch(
         &self,
         candidates: &[PatternCandidate],
         _source_summaries: &HashMap<String, Vec<String>>,
@@ -95,7 +93,7 @@ impl FailingBatchLabelDescriber {
 }
 
 impl BatchLabelDescriber for FailingBatchLabelDescriber {
-    fn describe_batch(
+    async fn describe_batch(
         &self,
         _candidates: &[PatternCandidate],
         _source_summaries: &HashMap<String, Vec<String>>,
@@ -422,13 +420,14 @@ mod tests {
             recorded_at: Utc::now(),
             metadata: None,
             memory_type: MemoryType::Experience,
+            compression_id: None,
         }
     }
 
     // ── Unit tests ──
 
-    #[test]
-    fn test_empty_episodes_returns_empty_candidates() {
+    #[tokio::test]
+    async fn test_empty_episodes_returns_empty_candidates() {
         let episodes: Vec<Episode> = Vec::new();
         let entities: Vec<Entity> = Vec::new();
         let edges: Vec<Edge> = Vec::new();
@@ -437,8 +436,8 @@ mod tests {
         assert!(candidates.is_empty());
     }
 
-    #[test]
-    fn test_two_episodes_below_threshold() {
+    #[tokio::test]
+    async fn test_two_episodes_below_threshold() {
         // Two episodes sharing the same entity pair but threshold is 3 → no candidates
         let episodes = vec![make_episode("ep1"), make_episode("ep2")];
         let entities = vec![
@@ -458,8 +457,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_four_episodes_sharing_entity_pair_finds_candidate() {
+    #[tokio::test]
+    async fn test_four_episodes_sharing_entity_pair_finds_candidate() {
         let episodes: Vec<Episode> = (1..=4).map(|i| make_episode(&format!("ep{i}"))).collect();
         let entities = vec![
             make_entity("e1", "Docker", "Component"),
@@ -493,8 +492,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_min_occurrence_count_one_returns_more_candidates() {
+    #[tokio::test]
+    async fn test_min_occurrence_count_one_returns_more_candidates() {
         let episodes = vec![make_episode("ep1"), make_episode("ep2")];
         let entities = vec![
             make_entity("e1", "Docker", "Component"),
@@ -526,8 +525,8 @@ mod tests {
         assert!(candidates1.len() > candidates3.len());
     }
 
-    #[test]
-    fn test_results_capped_at_max_patterns() {
+    #[tokio::test]
+    async fn test_results_capped_at_max_patterns() {
         // Create 5 episodes each with unique entity types to generate many candidates
         let episodes: Vec<Episode> = (1..=5).map(|i| make_episode(&format!("ep{i}"))).collect();
         let mut entities = Vec::new();
@@ -558,8 +557,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_confidence_is_normalized() {
+    #[tokio::test]
+    async fn test_confidence_is_normalized() {
         // 4 episodes, all sharing same pair → confidence should be 4/4 = 1.0
         let episodes: Vec<Episode> = (1..=4).map(|i| make_episode(&format!("ep{i}"))).collect();
         let entities = vec![
@@ -587,8 +586,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_source_groups_correctly_populated() {
+    #[tokio::test]
+    async fn test_source_groups_correctly_populated() {
         let episodes: Vec<Episode> = (1..=3).map(|i| make_episode(&format!("ep{i}"))).collect();
         let entities = vec![
             make_entity("e1", "Docker", "Component"),
@@ -615,8 +614,8 @@ mod tests {
         assert!(triplet.source_groups.contains(&"ep3".to_string()));
     }
 
-    #[test]
-    fn test_results_ranked_by_occurrence_count_descending() {
+    #[tokio::test]
+    async fn test_results_ranked_by_occurrence_count_descending() {
         // Create a scenario where one entity type appears in all episodes,
         // but another pair only appears in some.
         let episodes: Vec<Episode> = (1..=5).map(|i| make_episode(&format!("ep{i}"))).collect();
@@ -662,8 +661,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_entity_pair_canonical_ordering() {
+    #[tokio::test]
+    async fn test_entity_pair_canonical_ordering() {
         // Entity pair should be stored in sorted (canonical) order
         let episodes = vec![make_episode("ep1")];
         let entities = vec![
@@ -691,8 +690,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_batch_describer_returns_all() {
+    #[tokio::test]
+    async fn test_batch_describer_returns_all() {
         let episodes = vec![make_episode("ep1"), make_episode("ep2"), make_episode("ep3")];
         let entities = vec![
             make_entity("e1", "Docker", "Component"),
@@ -711,7 +710,7 @@ mod tests {
 
         let describer = MockBatchLabelDescriber;
         let summaries = HashMap::new();
-        let results = describer.describe_batch(&candidates, &summaries).unwrap();
+        let results = describer.describe_batch(&candidates, &summaries).await.unwrap();
 
         assert_eq!(results.len(), candidates.len(), "should return one label per candidate");
         for (id, label) in &results {
@@ -725,22 +724,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_batch_describer_empty() {
+    #[tokio::test]
+    async fn test_batch_describer_empty() {
         let describer = MockBatchLabelDescriber;
-        let results = describer.describe_batch(&[], &HashMap::new()).unwrap();
+        let results = describer.describe_batch(&[], &HashMap::new()).await.unwrap();
         assert!(results.is_empty(), "empty input should produce empty output");
     }
 
-    #[test]
-    fn test_failing_batch_describer_returns_error() {
+    #[tokio::test]
+    async fn test_failing_batch_describer_returns_error() {
         let describer = FailingBatchLabelDescriber::new("LLM unavailable");
-        let result = describer.describe_batch(&[], &HashMap::new());
+        let result = describer.describe_batch(&[], &HashMap::new()).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_description_always_none() {
+    #[tokio::test]
+    async fn test_description_always_none() {
         let episodes = vec![make_episode("ep1")];
         let entities = vec![
             make_entity("e1", "Docker", "Component"),
@@ -762,8 +761,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_entity_types_populated_on_pair_candidate() {
+    #[tokio::test]
+    async fn test_entity_types_populated_on_pair_candidate() {
         let episodes = vec![make_episode("ep1")];
         let entities = vec![
             make_entity("e1", "Docker", "Component"),

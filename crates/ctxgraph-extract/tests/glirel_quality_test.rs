@@ -2,9 +2,9 @@ use ctxgraph_extract::glirel::GlirelEngine;
 use ctxgraph_extract::ner::ExtractedEntity;
 use std::path::Path;
 
-#[test]
+#[tokio::test]
 #[ignore]
-fn test_glirel_standalone_quality() {
+async fn test_glirel_standalone_quality() {
     let dir = std::env::var("CTXGRAPH_MODELS_DIR").unwrap_or_else(|_| {
         dirs::cache_dir()
             .unwrap()

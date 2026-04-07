@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex as AsyncMutex;
 
 use ctxgraph::{Episode, Graph, MockBatchLabelDescriber, SkillScope};
 use ctxgraph_embed::EmbedEngine;
 use serde_json::{Value, json};
 
 pub struct ToolContext {
-    pub graph: Arc<Mutex<Graph>>,
+    pub graph: Arc<AsyncMutex<Graph>>,
     pub embed: Option<Arc<EmbedEngine>>,
     /// In-memory embedding cache: episode_id → 384-dim vector.
     ///
@@ -19,7 +20,7 @@ pub struct ToolContext {
 impl ToolContext {
     pub fn new(graph: Graph, embed: Option<EmbedEngine>) -> Self {
         Self {
-            graph: Arc::new(Mutex::new(graph)),
+            graph: Arc::new(AsyncMutex::new(graph)),
             embed: embed.map(Arc::new),
             embedding_cache: Mutex::new(None),
         }
@@ -27,10 +28,10 @@ impl ToolContext {
 
     /// Populate the in-memory embedding cache from SQLite if it hasn't been loaded yet.
     /// Subsequent calls return immediately — the Option acts as a once-flag.
-    fn warm_cache(&self) -> Result<(), String> {
+    async fn warm_cache(&self) -> Result<(), String> {
         let mut cache = self.embedding_cache.lock().map_err(|e| e.to_string())?;
         if cache.is_none() {
-            let graph = self.graph.lock().map_err(|e| e.to_string())?;
+            let graph = self.graph.lock().await;
             let rows = graph.get_embeddings().map_err(|e| e.to_string())?;
             *cache = Some(rows.into_iter().collect());
         }
@@ -63,15 +64,15 @@ impl ToolContext {
 
         // Store episode
         let result = {
-            let graph = self.graph.lock().map_err(|e| e.to_string())?;
-            graph.add_episode(episode).map_err(|e| e.to_string())?
+            let graph = self.graph.lock().await;
+            graph.add_episode(episode).await.map_err(|e| e.to_string())?
         };
 
         // Compute embedding and persist to SQLite (skipped if embed engine is unavailable)
         if let Some(ref embed) = self.embed {
             let embedding = embed.embed(&text).map_err(|e| e.to_string())?;
             {
-                let graph = self.graph.lock().map_err(|e| e.to_string())?;
+                let graph = self.graph.lock().await;
                 graph
                     .store_embedding(&episode_id, &embedding)
                     .map_err(|e| e.to_string())?;
@@ -108,7 +109,7 @@ impl ToolContext {
             // Fused FTS5 + semantic search via RRF
             let query_embedding = embed.embed(&query).map_err(|e| e.to_string())?;
             let results = {
-                let graph = self.graph.lock().map_err(|e| e.to_string())?;
+                let graph = self.graph.lock().await;
                 graph
                     .search_fused(&query, &query_embedding, limit)
                     .map_err(|e| e.to_string())?
@@ -128,7 +129,7 @@ impl ToolContext {
         } else {
             // FTS5-only search (embedding not available)
             let results = {
-                let graph = self.graph.lock().map_err(|e| e.to_string())?;
+                let graph = self.graph.lock().await;
                 graph.search(&query, limit).map_err(|e| e.to_string())?
             };
             results
@@ -156,7 +157,7 @@ impl ToolContext {
             .ok_or("missing required field: id")?
             .to_string();
 
-        let graph = self.graph.lock().map_err(|e| e.to_string())?;
+        let graph = self.graph.lock().await;
 
         let episode = graph
             .get_episode(&id)
@@ -180,7 +181,7 @@ impl ToolContext {
             .to_string();
         let max_depth = (args["max_depth"].as_u64().unwrap_or(2) as usize).min(5);
 
-        let graph = self.graph.lock().map_err(|e| e.to_string())?;
+        let graph = self.graph.lock().await;
 
         let entity = graph
             .get_entity_by_name(&entity_name)
@@ -233,7 +234,7 @@ impl ToolContext {
         let context_embedding = embed.embed(&context).map_err(|e| e.to_string())?;
 
         // Ensure the cache is warm (no-op after first call)
-        self.warm_cache()?;
+        self.warm_cache().await?;
 
         // Score entirely in RAM — no SQLite I/O
         let mut scored: Vec<(String, f32)> = {
@@ -253,7 +254,7 @@ impl ToolContext {
         let top: Vec<(String, f32)> = scored.into_iter().take(limit).collect();
 
         let mut results = Vec::new();
-        let graph = self.graph.lock().map_err(|e| e.to_string())?;
+        let graph = self.graph.lock().await;
         for (id, sim) in top {
             if let Ok(Some(ep)) = graph.get_episode(&id) {
                 results.push(json!({
@@ -276,7 +277,7 @@ impl ToolContext {
         let limit = args["limit"].as_u64().unwrap_or(100) as usize;
         let offset = args["offset"].as_u64().unwrap_or(0) as usize;
 
-        let graph = self.graph.lock().map_err(|e| e.to_string())?;
+        let graph = self.graph.lock().await;
 
         let entities = graph
             .list_entities(entity_type.as_deref(), limit)
@@ -302,7 +303,7 @@ impl ToolContext {
         let include_episodes = args["include_episodes"].as_bool().unwrap_or(false);
         let limit = args["limit"].as_u64().unwrap_or(10000) as usize;
 
-        let graph = self.graph.lock().map_err(|e| e.to_string())?;
+        let graph = self.graph.lock().await;
 
         let entities = graph
             .list_entities(entity_type.as_deref(), limit)
@@ -354,9 +355,16 @@ impl ToolContext {
 
     /// Tool: stats
     pub async fn stats(&self, _args: Value) -> Result<Value, String> {
-        let graph = self.graph.lock().map_err(|e| e.to_string())?;
+        let graph = self.graph.lock().await;
         let stats = graph.stats().map_err(|e| e.to_string())?;
-        Ok(json!({
+
+        // Convert Vec<(String, usize)> to JSON object
+        let total_by_type: serde_json::Value = serde_json::to_value(&stats.total_entities_by_type)
+            .unwrap_or(serde_json::Value::Null);
+        let decayed_by_type: serde_json::Value = serde_json::to_value(&stats.decayed_entities_by_type)
+            .unwrap_or(serde_json::Value::Null);
+
+        let mut result = json!({
             "episodes": stats.episode_count,
             "entities": stats.entity_count,
             "edges": stats.edge_count,
@@ -364,7 +372,34 @@ impl ToolContext {
             "decayed_edges": stats.decayed_edges,
             "db_size_bytes": stats.db_size_bytes,
             "sources": stats.sources
-        }))
+        });
+
+        // Add cleanup visibility fields
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert("total_entities_by_type".to_string(), total_by_type);
+            obj.insert("decayed_entities_by_type".to_string(), decayed_by_type);
+            obj.insert("last_cleanup_at".to_string(),
+                serde_json::Value::String(
+                    stats.last_cleanup_at.unwrap_or_else(|| "never".to_string())
+                )
+            );
+            obj.insert("queries_since_cleanup".to_string(),
+                serde_json::Value::Number(stats.queries_since_cleanup.into())
+            );
+            obj.insert("cleanup_interval".to_string(),
+                serde_json::Value::Number(stats.cleanup_interval.into())
+            );
+            obj.insert("cleanup_in_progress".to_string(),
+                serde_json::Value::Bool(stats.cleanup_in_progress)
+            );
+            // Convenience field
+            let next_in = stats.cleanup_interval.saturating_sub(stats.queries_since_cleanup);
+            obj.insert("next_cleanup_in".to_string(),
+                serde_json::Value::Number(next_in.into())
+            );
+        }
+
+        Ok(result)
     }
 
     /// Tool: learn
@@ -384,9 +419,10 @@ impl ToolContext {
 
         let describer = MockBatchLabelDescriber;
 
-        let graph = self.graph.lock().map_err(|e| e.to_string())?;
+        let graph = self.graph.lock().await;
         let result = graph
             .run_learning_pipeline(&agent, scope, &describer, limit)
+            .await
             .map_err(|e| e.to_string())?;
 
         Ok(json!({
@@ -397,16 +433,65 @@ impl ToolContext {
     }
 
     /// Tool: forget
-    /// Manually expire a memory (entity or edge) by ID. This bypasses TTL and immediately marks
-    /// the memory for cleanup. Use this when you know a memory is no longer relevant.
+    /// Manually expire memories by ID or by type.
+    ///
+    /// **By ID:**
+    /// - `hard: false` (default): marks the memory for deletion. It will be removed in the next cleanup sweep.
+    /// - `hard: true`: immediately deletes the memory from the database.
+    ///
+    /// **By type:**
+    /// - `type`: expire all memories of the given type (fact, experience, preference, decision).
+    /// - `hard: false` (default): marks all matching memories for deletion.
+    /// - `hard: true`: immediately deletes all matching memories.
+    /// - Pattern type is rejected (patterns never expire).
+    ///
+    /// Use this when you know memories are no longer relevant.
     pub async fn forget(&self, args: Value) -> Result<Value, String> {
-        let id = args.get("id")
-            .and_then(|v| v.as_str())
-            .ok_or("missing required field: id")?;
+        let id = args.get("id").and_then(|v| v.as_str());
+        let memory_type = args.get("type").and_then(|v| v.as_str());
+        let hard = args.get("hard")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
-        let graph = self.graph.lock().map_err(|e| e.to_string())?;
-        graph.expire_memory(id).map_err(|e| e.to_string())?;
-        Ok(json!({"ok": true, "id": id}))
+        // Validate: exactly one of id or type must be provided
+        match (id, memory_type) {
+            (Some(id), None) => {
+                // Single memory by ID
+                let graph = self.graph.lock().await;
+                if hard {
+                    graph.expire_memory(id).map_err(|e| e.to_string())?;
+                    Ok(json!({"ok": true, "id": id, "hard": true}))
+                } else {
+                    let found = graph.storage.mark_for_deletion(id).map_err(|e| e.to_string())?;
+                    if found {
+                        Ok(json!({"ok": true, "id": id, "hard": false, "note": "will be removed in next cleanup"}))
+                    } else {
+                        Err(format!("memory not found: {}", id))
+                    }
+                }
+            }
+            (None, Some(memory_type)) => {
+                // Bulk expire by type
+                let graph = self.graph.lock().await;
+                let (entities, edges) = graph.storage.expire_memories_by_type(memory_type, hard)
+                    .map_err(|e| e.to_string())?;
+                let action = if hard { "deleted" } else { "marked for cleanup" };
+                Ok(json!({
+                    "ok": true,
+                    "type": memory_type,
+                    "hard": hard,
+                    "entities_affected": entities,
+                    "edges_affected": edges,
+                    "note": format!("{} {} {} memories", entities + edges, action, memory_type)
+                }))
+            }
+            (Some(_), Some(_)) => {
+                Err("cannot specify both 'id' and 'type'. Use one or the other.".to_string())
+            }
+            (None, None) => {
+                Err("missing required field: either 'id' or 'type' must be provided".to_string())
+            }
+        }
     }
 
     /// Tool: traverse_batch
@@ -429,7 +514,7 @@ impl ToolContext {
 
         let max_depth = (args["max_depth"].as_u64().unwrap_or(2) as usize).min(5);
 
-        let graph = self.graph.lock().map_err(|e| e.to_string())?;
+        let graph = self.graph.lock().await;
 
         let mut all_entities: Vec<Value> = Vec::new();
         let mut all_edges: Vec<Value> = Vec::new();
@@ -606,13 +691,14 @@ pub fn tools_list() -> Value {
             },
             {
                 "name": "forget",
-                "description": "Manually expire a memory (entity or edge) by ID. This bypasses TTL and immediately marks the memory for cleanup. Use this when you know a memory is no longer relevant.",
+                "description": "Manually expire memories by ID or by type. By ID: soft expire (mark for cleanup, default) or hard delete. By type: bulk soft expire or hard delete of all memories of that type (fact, experience, preference, decision). Pattern type is rejected.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "id": {"type": "string", "description": "Memory ID to expire"}
-                    },
-                    "required": ["id"]
+                        "id": {"type": "string", "description": "Memory ID to expire (mutually exclusive with 'type')"},
+                        "type": {"type": "string", "description": "Memory type to bulk expire: fact, experience, preference, decision (mutually exclusive with 'id')"},
+                        "hard": {"type": "boolean", "description": "If true, immediately delete. If false (default), mark for cleanup.", "default": false}
+                    }
                 }
             }
         ]

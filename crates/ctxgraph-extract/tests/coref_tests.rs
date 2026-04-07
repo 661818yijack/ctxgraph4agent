@@ -13,8 +13,8 @@ fn make_entity(text: &str, entity_type: &str, start: usize, end: usize) -> Extra
 
 /// "Alice chose Postgres. She said it was faster."
 /// "She" → Alice (Person), "it" → Postgres (Component)
-#[test]
-fn test_person_and_neuter_pronoun_resolution() {
+#[tokio::test]
+async fn test_person_and_neuter_pronoun_resolution() {
     let text = "Alice chose Postgres. She said it was faster.";
     //           0123456789012345678901234567890123456789012345
     //           Alice=0..5, Postgres=12..20, She=22..25, it=30..32
@@ -50,8 +50,8 @@ fn test_person_and_neuter_pronoun_resolution() {
 /// "Bob and Carol reviewed the PR. He approved it."
 /// "He" → most recently preceding Person (Carol appears last alphabetically but Bob is first in text).
 /// The resolver picks the LAST Person before "He" which is Carol.
-#[test]
-fn test_plural_persons_he_resolves_to_most_recent() {
+#[tokio::test]
+async fn test_plural_persons_he_resolves_to_most_recent() {
     let text = "Bob and Carol reviewed the PR. He approved it.";
     //           Bob=0..3, Carol=8..13, He=31..33
 
@@ -78,8 +78,8 @@ fn test_plural_persons_he_resolves_to_most_recent() {
 }
 
 /// No entities → no coref output (must not crash).
-#[test]
-fn test_no_entities_returns_empty() {
+#[tokio::test]
+async fn test_no_entities_returns_empty() {
     let text = "She said it was faster.";
     let result = CorefResolver::resolve(text, &[]);
     assert!(
@@ -89,8 +89,8 @@ fn test_no_entities_returns_empty() {
 }
 
 /// Pronoun before entity → should NOT be resolved (no forward reference).
-#[test]
-fn test_pronoun_before_entity_not_resolved() {
+#[tokio::test]
+async fn test_pronoun_before_entity_not_resolved() {
     // "She" appears before "Alice" in text
     let text = "She approved the design. Alice came later.";
     //           She=0..3, Alice=25..30

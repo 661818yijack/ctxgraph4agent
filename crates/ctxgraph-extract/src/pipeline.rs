@@ -101,7 +101,7 @@ impl ExtractionPipeline {
     }
 
     /// Extract entities, relations, and temporal expressions from text.
-    pub fn extract(
+    pub async fn extract(
         &self,
         text: &str,
         reference_time: DateTime<Utc>,
