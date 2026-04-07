@@ -131,7 +131,7 @@ async fn test_multitask_tech_benchmark() {
     let mut total_relation_f1 = 0.0;
 
     for (i, ep) in episodes.iter().enumerate() {
-        let result = engine.extract(&ep.text, &labels, &schema).await;
+        let result = engine.extract(&ep.text, &labels, &schema);
         let (entities, relations) = match result {
             Ok(r) => r,
             Err(e) => {
@@ -232,7 +232,7 @@ async fn test_multitask_cross_domain_benchmark() {
         std::collections::BTreeMap::new();
 
     for (domain, ep) in &episodes {
-        let result = engine.extract(&ep.text, &labels, &schema).await;
+        let result = engine.extract(&ep.text, &labels, &schema);
         let (entities, relations) = match result {
             Ok(r) => r,
             Err(e) => {

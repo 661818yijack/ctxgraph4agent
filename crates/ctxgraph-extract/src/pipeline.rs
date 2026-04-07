@@ -257,7 +257,7 @@ impl ExtractionPipeline {
                 #[cfg(not(feature = "cloakpipe"))]
                 let llm_text = text;
 
-                let llm_result_try = llm.extract(llm_text, &self.schema);
+                let llm_result_try = llm.extract(llm_text, &self.schema).await;
                 if let Err(ref e) = llm_result_try {
                     llm_failed = true;
                     eprintln!("[ctxgraph] LLM escalation failed: {e}");
@@ -300,7 +300,7 @@ impl ExtractionPipeline {
             .rel
             .extract(text, &entities, &self.schema)
             .map_err(PipelineError::Rel)?;
-        let unfiltered_relations = relations.clone();
+        let unfiltered_relations = all_relations.clone();
 
         // Filter by confidence
         let mut relations: Vec<_> = all_relations

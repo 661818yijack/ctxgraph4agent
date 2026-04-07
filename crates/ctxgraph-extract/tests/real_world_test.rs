@@ -99,7 +99,7 @@ async fn test_real_world_tech_extraction() {
     let mut total_rel_f1 = 0.0;
 
     for (i, ep) in episodes.iter().enumerate() {
-        let result = pipeline.extract(&ep.text, Utc::now()).unwrap();
+        let result = pipeline.extract(&ep.text, Utc::now()).await.unwrap();
 
         let pred_ents: Vec<String> = result
             .entities
