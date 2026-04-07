@@ -189,6 +189,7 @@ impl ExtractionPipeline {
         // BOTH entities AND relations. The LLM understands cross-domain language
         // that local models miss. One call handles both.
         let mut llm_relations: Vec<ExtractedRelation> = Vec::new();
+        let mut llm_failed = false;
         if let Some(llm) = &self.llm {
             // Smart gate: call LLM when GLiNER output looks weak.
             // Tech text: GLiNER finds 4-6 entities with >0.5 confidence → skip LLM
@@ -258,6 +259,7 @@ impl ExtractionPipeline {
 
                 let llm_result_try = llm.extract(llm_text, &self.schema);
                 if let Err(ref e) = llm_result_try {
+                    llm_failed = true;
                     eprintln!("[ctxgraph] LLM escalation failed: {e}");
                 }
                 if let Ok(llm_result) = llm_result_try {
@@ -298,6 +300,7 @@ impl ExtractionPipeline {
             .rel
             .extract(text, &entities, &self.schema)
             .map_err(PipelineError::Rel)?;
+        let unfiltered_relations = relations.clone();
 
         // Filter by confidence
         let mut relations: Vec<_> = all_relations
@@ -319,6 +322,11 @@ impl ExtractionPipeline {
                 .filter(|r| r.confidence >= floor)
                 .cloned()
                 .collect();
+        }
+        if llm_failed && relations.is_empty() {
+            relations = unfiltered_relations;
+            relations.retain(|r| r.confidence >= 0.15);
+            eprintln!("[ctxgraph] LLM failed, using relaxed local threshold for this episode");
         }
 
         // Step 2b: Merge LLM relations (if gate fired) — LLM relations supplement
