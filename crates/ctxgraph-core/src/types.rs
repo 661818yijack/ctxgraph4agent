@@ -1244,7 +1244,6 @@ mod tests {
             ranked[1].composite_score,
             ranked[2].composite_score
         );
-
     }
 
     #[test]
@@ -1358,7 +1357,10 @@ mod tests {
 
         // Budget of 100 tokens should skip this candidate
         let (memories, tokens_spent) = enforce_budget(vec![candidate], 100);
-        assert!(memories.is_empty(), "candidate exceeding budget should be skipped");
+        assert!(
+            memories.is_empty(),
+            "candidate exceeding budget should be skipped"
+        );
         assert_eq!(tokens_spent, 0);
     }
 

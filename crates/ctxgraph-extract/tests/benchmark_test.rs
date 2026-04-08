@@ -297,6 +297,7 @@ async fn test_extraction_f1_against_benchmark() {
     for (i, ep) in episodes.iter().enumerate() {
         let result = pipeline
             .extract(&ep.text, Utc::now())
+            .await
             .unwrap_or_else(|e| panic!("Extraction failed on episode {i}: {e}"));
 
         // Compare entities (name:type format for strict matching)
@@ -385,7 +386,7 @@ async fn test_extraction_f1_against_benchmark() {
 /// Debug test: show extracted entities and relations for specific episodes.
 #[tokio::test]
 #[ignore]
-fn debug_extraction_for_episodes() {
+async fn debug_extraction_for_episodes() {
     use chrono::Utc;
     use ctxgraph_extract::pipeline::ExtractionPipeline;
     use ctxgraph_extract::schema::ExtractionSchema;
@@ -414,7 +415,7 @@ fn debug_extraction_for_episodes() {
             continue;
         }
         let ep = &episodes[i];
-        let result = pipeline.extract(&ep.text, Utc::now()).unwrap();
+        let result = pipeline.extract(&ep.text, Utc::now()).await.unwrap();
 
         eprintln!("=== Episode {i} ===");
         eprintln!("Text: {}", &ep.text[..ep.text.len().min(120)]);

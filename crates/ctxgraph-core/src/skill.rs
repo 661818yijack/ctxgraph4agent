@@ -116,10 +116,7 @@ impl SkillCreator {
                 "{} pattern ({} successes, {} failures)",
                 types_str, success_count, failure_count
             );
-            let description = descriptions
-                .get(&pattern.id)
-                .cloned()
-                .unwrap_or_default();
+            let description = descriptions.get(&pattern.id).cloned().unwrap_or_default();
             let trigger_condition = format!("When {} entities co-occur", types_str);
             let action = format!(
                 "When {} entities co-occur, apply {} approach",
@@ -133,12 +130,8 @@ impl SkillCreator {
             );
             let context_facts: Vec<String> = all_summaries;
 
-            let provenance = Skill::generate_provenance(
-                provenance_reasoning,
-                &context_facts,
-                180,
-                90,
-            );
+            let provenance =
+                Skill::generate_provenance(provenance_reasoning, &context_facts, 180, 90);
 
             let confidence = Skill::compute_confidence(success_count, failure_count);
 
@@ -298,7 +291,12 @@ mod tests {
         let (p, e, ss, desc, cfg, scope, agent) = default_args(&patterns, &edges);
         let skills = SkillCreator::create_skills(p, e, &ss, &desc, &cfg, scope, agent);
         assert!(
-            skills[0].provenance.as_ref().unwrap().reasoning.contains("episodes"),
+            skills[0]
+                .provenance
+                .as_ref()
+                .unwrap()
+                .reasoning
+                .contains("episodes"),
             "provenance should be template-based: {}",
             skills[0].provenance.as_ref().unwrap().reasoning
         );

@@ -263,9 +263,9 @@ impl Graph {
         // Step 3: Check for contradictions with existing edges (C1)
         // Use default contradiction threshold of 0.2
         let contradiction_threshold = 0.2;
-        let contradictions =
-            self.storage
-                .check_contradictions(&new_edges, contradiction_threshold)?;
+        let contradictions = self
+            .storage
+            .check_contradictions(&new_edges, contradiction_threshold)?;
 
         // Invalidate contradicted edges and count
         for contradiction in &contradictions {
@@ -577,15 +577,16 @@ impl Graph {
         agent_name: &str,
         budget_tokens: usize,
     ) -> Result<(Vec<RankedMemory>, usize)> {
-        let result = self.storage
+        let result = self
+            .storage
             .retrieve_for_context(query, agent_name, budget_tokens);
-        
+
         // Increment cleanup counter after retrieval (even if retrieval failed)
         let _ = self.storage.increment_query_count_since_cleanup();
-        
+
         // Trigger lazy cleanup check
         let _ = self.maybe_trigger_cleanup();
-        
+
         result
     }
 
@@ -673,8 +674,7 @@ impl Graph {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<StaleMemory>> {
-        self.storage
-            .get_stale_memories(threshold, limit, offset)
+        self.storage.get_stale_memories(threshold, limit, offset)
     }
 
     /// Renew a memory by resetting its TTL to the default for its memory_type.
@@ -764,7 +764,6 @@ impl Graph {
         self.storage.get_pattern_candidates(config)
     }
 
-
     /// List all stored patterns (LearnedPattern entities).
     ///
     /// Returns patterns with descriptions populated from the entity `summary` field.
@@ -802,9 +801,7 @@ impl Graph {
             return Ok(Vec::new());
         }
 
-        let placeholders: Vec<String> = (1..=episode_ids.len())
-            .map(|i| format!("?{i}"))
-            .collect();
+        let placeholders: Vec<String> = (1..=episode_ids.len()).map(|i| format!("?{i}")).collect();
         let in_clause = placeholders.join(", ");
         let sql = format!(
             "SELECT e.id, e.source_id, e.target_id, e.relation, e.memory_type,
@@ -830,7 +827,11 @@ impl Graph {
                 relation: row.get(3)?,
                 memory_type: MemoryType::from_db(&row.get::<_, String>(4)?),
                 ttl: row.get::<_, Option<i64>>(5)?.and_then(|s| {
-                    if s >= 0 { Some(Duration::from_secs(s as u64)) } else { None }
+                    if s >= 0 {
+                        Some(Duration::from_secs(s as u64))
+                    } else {
+                        None
+                    }
                 }),
                 fact: row.get(6)?,
                 valid_from: row.get::<_, Option<String>>(7)?.map(|s| {
@@ -1029,7 +1030,9 @@ impl Graph {
         }
 
         // Stage 6: One batch LLM call for all candidates
-        let label_pairs = describer.describe_batch(&candidates, &source_summaries).await?;
+        let label_pairs = describer
+            .describe_batch(&candidates, &source_summaries)
+            .await?;
         let descriptions: std::collections::HashMap<String, String> =
             label_pairs.into_iter().collect();
 
@@ -1040,7 +1043,10 @@ impl Graph {
             std::collections::HashMap::new();
         for eid in &all_episode_ids {
             if let Ok(Some(ep)) = self.storage.get_episode(eid) {
-                episode_summaries.entry(eid.clone()).or_default().push(ep.content);
+                episode_summaries
+                    .entry(eid.clone())
+                    .or_default()
+                    .push(ep.content);
             }
         }
 
@@ -1059,7 +1065,10 @@ impl Graph {
         // Store new skills
         for skill in &new_skills {
             if let Err(e) = self.storage.create_skill(skill) {
-                eprintln!("ctxgraph: warning: Failed to store skill {}: {}", skill.id, e);
+                eprintln!(
+                    "ctxgraph: warning: Failed to store skill {}: {}",
+                    skill.id, e
+                );
             }
         }
 
@@ -1204,7 +1213,10 @@ mod tests {
 
         graph.maybe_trigger_cleanup().unwrap();
         let count = graph.storage.get_query_count_since_cleanup().unwrap();
-        assert_eq!(count, 0, "counter should have been reset at custom interval");
+        assert_eq!(
+            count, 0,
+            "counter should have been reset at custom interval"
+        );
     }
 
     #[test]

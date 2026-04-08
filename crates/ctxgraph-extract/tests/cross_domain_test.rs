@@ -125,6 +125,7 @@ async fn test_cross_domain_extraction() {
     for (i, ep) in episodes.iter().enumerate() {
         let result = pipeline
             .extract(&ep.text, Utc::now())
+            .await
             .unwrap_or_else(|e| panic!("Extraction failed on episode {i} ({}): {e}", ep.domain));
 
         // Entity F1 (name only, case-insensitive)

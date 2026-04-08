@@ -7,21 +7,21 @@ fn test_graph() -> Graph {
 
 // ── Episode CRUD ──
 
-#[test]
-fn test_episode_insert_and_retrieve() {
+#[tokio::test]
+async fn test_episode_insert_and_retrieve() {
     let graph = test_graph();
     let episode = Episode::builder("Chose Postgres over SQLite for billing").build();
     let id = episode.id.clone();
 
-    let result = graph.add_episode(episode).unwrap();
+    let result = graph.add_episode(episode).await.unwrap();
     assert_eq!(result.episode_id, id);
 
     let retrieved = graph.get_episode(&id).unwrap().unwrap();
     assert_eq!(retrieved.content, "Chose Postgres over SQLite for billing");
 }
 
-#[test]
-fn test_episode_with_source_and_tags() {
+#[tokio::test]
+async fn test_episode_with_source_and_tags() {
     let graph = test_graph();
     let episode = Episode::builder("Priya approved the discount")
         .source("slack")
@@ -30,7 +30,7 @@ fn test_episode_with_source_and_tags() {
         .build();
     let id = episode.id.clone();
 
-    graph.add_episode(episode).unwrap();
+    graph.add_episode(episode).await.unwrap();
 
     let retrieved = graph.get_episode(&id).unwrap().unwrap();
     assert_eq!(retrieved.source.as_deref(), Some("slack"));
@@ -42,8 +42,8 @@ fn test_episode_with_source_and_tags() {
     assert_eq!(tags[0].as_str().unwrap(), "finance");
 }
 
-#[test]
-fn test_episode_with_metadata() {
+#[tokio::test]
+async fn test_episode_with_metadata() {
     let graph = test_graph();
     let episode = Episode::builder("Budget approved for Q3")
         .meta("author", "rohan")
@@ -51,20 +51,20 @@ fn test_episode_with_metadata() {
         .build();
     let id = episode.id.clone();
 
-    graph.add_episode(episode).unwrap();
+    graph.add_episode(episode).await.unwrap();
 
     let retrieved = graph.get_episode(&id).unwrap().unwrap();
     let meta = retrieved.metadata.unwrap();
     assert_eq!(meta.get("author").unwrap().as_str().unwrap(), "rohan");
 }
 
-#[test]
-fn test_list_episodes() {
+#[tokio::test]
+async fn test_list_episodes() {
     let graph = test_graph();
 
     for i in 0..5 {
         let ep = Episode::builder(&format!("Decision {i}")).build();
-        graph.add_episode(ep).unwrap();
+        graph.add_episode(ep).await.unwrap();
     }
 
     let episodes = graph.list_episodes(3, 0).unwrap();
@@ -221,13 +221,13 @@ fn test_invalidate_nonexistent_edge() {
 
 // ── Episode-Entity Links ──
 
-#[test]
-fn test_episode_entity_link() {
+#[tokio::test]
+async fn test_episode_entity_link() {
     let graph = test_graph();
 
     let episode = Episode::builder("Chose Postgres for billing").build();
     let ep_id = episode.id.clone();
-    graph.add_episode(episode).unwrap();
+    graph.add_episode(episode).await.unwrap();
 
     let entity = Entity::new("Postgres", "Component");
     let ent_id = entity.id.clone();
@@ -245,18 +245,21 @@ fn test_episode_entity_link() {
 
 // ── FTS5 Search ──
 
-#[test]
-fn test_fts5_search_episodes() {
+#[tokio::test]
+async fn test_fts5_search_episodes() {
     let graph = test_graph();
 
     graph
         .add_episode(Episode::builder("Chose Postgres over SQLite for billing").build())
+        .await
         .unwrap();
     graph
         .add_episode(Episode::builder("Switched from REST to gRPC for internal services").build())
+        .await
         .unwrap();
     graph
         .add_episode(Episode::builder("Priya approved the discount for Reliance").build())
+        .await
         .unwrap();
 
     let results = graph.search("Postgres", 10).unwrap();
@@ -267,11 +270,12 @@ fn test_fts5_search_episodes() {
     assert_eq!(results.len(), 2);
 }
 
-#[test]
-fn test_fts5_search_empty_results() {
+#[tokio::test]
+async fn test_fts5_search_empty_results() {
     let graph = test_graph();
     graph
         .add_episode(Episode::builder("Chose Postgres").build())
+        .await
         .unwrap();
 
     let results = graph.search("nonexistent_term_xyz", 10).unwrap();
@@ -330,18 +334,21 @@ fn test_entity_context() {
 
 // ── Stats ──
 
-#[test]
-fn test_stats() {
+#[tokio::test]
+async fn test_stats() {
     let graph = test_graph();
 
     graph
         .add_episode(Episode::builder("Decision 1").source("manual").build())
+        .await
         .unwrap();
     graph
         .add_episode(Episode::builder("Decision 2").source("manual").build())
+        .await
         .unwrap();
     graph
         .add_episode(Episode::builder("Slack message").source("slack").build())
+        .await
         .unwrap();
 
     let pg = Entity::new("Postgres", "Component");
@@ -389,12 +396,12 @@ fn test_graph_open_nonexistent() {
 
 // ── Embedding Storage ──
 
-#[test]
-fn test_store_and_retrieve_embedding() {
+#[tokio::test]
+async fn test_store_and_retrieve_embedding() {
     let graph = test_graph();
     let episode = Episode::builder("Embedding test episode").build();
     let ep_id = episode.id.clone();
-    graph.add_episode(episode).unwrap();
+    graph.add_episode(episode).await.unwrap();
 
     // Store a fake 384-dim embedding
     let embedding: Vec<f32> = (0..384).map(|i| i as f32 / 384.0).collect();
@@ -422,15 +429,17 @@ fn test_get_embeddings_empty() {
     assert!(embeddings.is_empty());
 }
 
-#[test]
-fn test_search_fused_no_embeddings() {
+#[tokio::test]
+async fn test_search_fused_no_embeddings() {
     let graph = test_graph();
 
     graph
         .add_episode(Episode::builder("Chose Postgres for billing").build())
+        .await
         .unwrap();
     graph
         .add_episode(Episode::builder("Switched from REST to gRPC").build())
+        .await
         .unwrap();
 
     // Fused search with a dummy query embedding — FTS5 results only
@@ -444,16 +453,16 @@ fn test_search_fused_no_embeddings() {
     assert!(results[0].episode.content.contains("Postgres"));
 }
 
-#[test]
-fn test_search_fused_with_embeddings() {
+#[tokio::test]
+async fn test_search_fused_with_embeddings() {
     let graph = test_graph();
 
     let ep1 = Episode::builder("Chose Postgres for billing").build();
     let ep2 = Episode::builder("Switched from REST to gRPC").build();
     let id1 = ep1.id.clone();
     let id2 = ep2.id.clone();
-    graph.add_episode(ep1).unwrap();
-    graph.add_episode(ep2).unwrap();
+    graph.add_episode(ep1).await.unwrap();
+    graph.add_episode(ep2).await.unwrap();
 
     // Synthetic embeddings: ep1 in direction [1, 0, ...], ep2 in direction [0, 1, ...]
     let mut emb1 = vec![0.0f32; 384];
@@ -1358,14 +1367,14 @@ fn test_episode_builder_with_memory_type() {
     assert_eq!(episode.memory_type, MemoryType::Pattern);
 }
 
-#[test]
-fn test_episode_persist_and_retrieve_with_new_fields() {
+#[tokio::test]
+async fn test_episode_persist_and_retrieve_with_new_fields() {
     let graph = test_graph();
 
     // Regular episode
     let episode = Episode::builder("Regular episode content").build();
     let id = episode.id.clone();
-    graph.add_episode(episode).unwrap();
+    graph.add_episode(episode).await.unwrap();
 
     let retrieved = graph.get_episode(&id).unwrap().unwrap();
     assert_eq!(retrieved.memory_type, MemoryType::Experience);
@@ -1375,20 +1384,20 @@ fn test_episode_persist_and_retrieve_with_new_fields() {
         .memory_type(MemoryType::Pattern)
         .build();
     let pid = pattern_episode.id.clone();
-    graph.add_episode(pattern_episode).unwrap();
+    graph.add_episode(pattern_episode).await.unwrap();
 
     let retrieved_pattern = graph.get_episode(&pid).unwrap().unwrap();
     assert_eq!(retrieved_pattern.memory_type, MemoryType::Pattern);
 }
 
-#[test]
-fn test_migration_006_columns_exist() {
+#[tokio::test]
+async fn test_migration_006_columns_exist() {
     let graph = test_graph();
 
     // Insert an episode and verify the new columns are readable
     let episode = Episode::builder("Migration 006 test").build();
     let id = episode.id.clone();
-    graph.add_episode(episode).unwrap();
+    graph.add_episode(episode).await.unwrap();
 
     let retrieved = graph.get_episode(&id).unwrap().unwrap();
     assert_eq!(retrieved.memory_type, MemoryType::Experience);
@@ -1399,14 +1408,18 @@ fn test_migration_006_columns_exist() {
 use ctxgraph::pattern::{BatchLabelDescriber, FailingBatchLabelDescriber, MockBatchLabelDescriber};
 use std::collections::HashMap as SummaryMap;
 
-#[test]
-fn test_mock_batch_describer_returns_label_per_candidate() {
+#[tokio::test]
+async fn test_mock_batch_describer_returns_label_per_candidate() {
     let candidates = vec![
         PatternCandidate {
             id: "c1".to_string(),
             entity_types: vec!["Docker".to_string()],
             entity_pair: None,
-            relation_triplet: Some(("Docker".to_string(), "depends_on".to_string(), "Network".to_string())),
+            relation_triplet: Some((
+                "Docker".to_string(),
+                "depends_on".to_string(),
+                "Network".to_string(),
+            )),
             occurrence_count: 4,
             source_groups: vec!["ep1".to_string()],
             confidence: 0.8,
@@ -1425,7 +1438,10 @@ fn test_mock_batch_describer_returns_label_per_candidate() {
     ];
 
     let describer = MockBatchLabelDescriber;
-    let results = describer.describe_batch(&candidates, &SummaryMap::new()).unwrap();
+    let results = describer
+        .describe_batch(&candidates, &SummaryMap::new())
+        .await
+        .unwrap();
 
     assert_eq!(results.len(), 2, "should return one label per candidate");
     let ids: Vec<&str> = results.iter().map(|(id, _)| id.as_str()).collect();
@@ -1435,27 +1451,38 @@ fn test_mock_batch_describer_returns_label_per_candidate() {
     }
 }
 
-#[test]
-fn test_mock_batch_describer_empty_input() {
+#[tokio::test]
+async fn test_mock_batch_describer_empty_input() {
     let describer = MockBatchLabelDescriber;
-    let results = describer.describe_batch(&[], &SummaryMap::new()).unwrap();
+    let results = describer
+        .describe_batch(&[], &SummaryMap::new())
+        .await
+        .unwrap();
     assert!(results.is_empty());
 }
 
-#[test]
-fn test_failing_batch_describer_returns_error() {
+#[tokio::test]
+async fn test_failing_batch_describer_returns_error() {
     let describer = FailingBatchLabelDescriber::new("LLM unavailable");
-    let result = describer.describe_batch(&[], &SummaryMap::new());
-    assert!(result.is_err(), "FailingBatchLabelDescriber should return error");
+    let summaries = SummaryMap::new();
+    let result = describer.describe_batch(&[], &summaries).await;
+    assert!(
+        result.is_err(),
+        "FailingBatchLabelDescriber should return error"
+    );
 }
 
-#[test]
-fn test_mock_batch_describer_triplet_label_mentions_entities() {
+#[tokio::test]
+async fn test_mock_batch_describer_triplet_label_mentions_entities() {
     let candidates = vec![PatternCandidate {
         id: "c1".to_string(),
         entity_types: vec!["Component".to_string()],
         entity_pair: Some(("User".to_string(), "Postgres".to_string())),
-        relation_triplet: Some(("User".to_string(), "connects_to".to_string(), "Postgres".to_string())),
+        relation_triplet: Some((
+            "User".to_string(),
+            "connects_to".to_string(),
+            "Postgres".to_string(),
+        )),
         occurrence_count: 5,
         source_groups: vec!["ep1".to_string()],
         confidence: 1.0,
@@ -1463,11 +1490,17 @@ fn test_mock_batch_describer_triplet_label_mentions_entities() {
     }];
 
     let describer = MockBatchLabelDescriber;
-    let results = describer.describe_batch(&candidates, &SummaryMap::new()).unwrap();
+    let results = describer
+        .describe_batch(&candidates, &SummaryMap::new())
+        .await
+        .unwrap();
     assert_eq!(results.len(), 1);
     let (_, label) = &results[0];
-    assert!(label.contains("User") || label.contains("connects_to") || label.contains("Postgres"),
-        "label should mention triplet entities: {}", label);
+    assert!(
+        label.contains("User") || label.contains("connects_to") || label.contains("Postgres"),
+        "label should mention triplet entities: {}",
+        label
+    );
     assert!(label.len() < 300, "label should be concise: {}", label);
 }
 
@@ -1629,7 +1662,6 @@ fn test_pattern_has_memory_type_pattern_and_no_ttl() {
     );
 }
 
-
 // ── D1a Integration Tests ──────────────────────────────────────────────────
 
 // ── Contradiction Detection (C1) Tests ───────────────────────────────────────
@@ -1669,7 +1701,12 @@ fn test_contradiction_detected_when_new_fact_conflicts() {
         .unwrap();
 
     // Should detect exactly one contradiction
-    assert_eq!(contradictions.len(), 1, "Expected 1 contradiction, got {}", contradictions.len());
+    assert_eq!(
+        contradictions.len(),
+        1,
+        "Expected 1 contradiction, got {}",
+        contradictions.len()
+    );
     assert_eq!(contradictions[0].old_edge_id, edge1_id);
     assert_eq!(contradictions[0].relation, "chose");
 }
@@ -1810,7 +1847,12 @@ fn test_get_current_edges_returns_only_newer_after_contradiction() {
         .unwrap();
 
     // edge1 should be invalidated, edge2 should be current
-    assert_eq!(current_edges.len(), 1, "Expected 1 current edge, got {}", current_edges.len());
+    assert_eq!(
+        current_edges.len(),
+        1,
+        "Expected 1 current edge, got {}",
+        current_edges.len()
+    );
     assert_eq!(current_edges[0].id, edge2_id);
     assert!(
         current_edges.iter().all(|e| e.id != edge1_id),
@@ -1900,10 +1942,7 @@ fn test_contradiction_check_empty_graph_returns_empty() {
     // Add edge and check again with same edge
     graph.add_edge(edge.clone()).unwrap();
 
-    let contradictions = graph
-        .storage
-        .check_contradictions(&[edge], 0.2)
-        .unwrap();
+    let contradictions = graph.storage.check_contradictions(&[edge], 0.2).unwrap();
 
     // Should still be empty since they're the same (same target_id)
     assert!(
@@ -1911,17 +1950,20 @@ fn test_contradiction_check_empty_graph_returns_empty() {
         "Expected no contradiction for identical edges, got {}",
         contradictions.len()
     );
+}
 
-#[test]
-fn test_fts5_search_with_question_mark() {
+#[tokio::test]
+async fn test_fts5_search_with_question_mark() {
     // T18: Query with ? character returns results without syntax error
     let graph = test_graph();
 
     graph
         .add_episode(Episode::builder("Chose JWT for auth over session cookies").build())
+        .await
         .unwrap();
     graph
         .add_episode(Episode::builder("Implemented OAuth2 flow with PKCE").build())
+        .await
         .unwrap();
 
     // This used to crash with "fts5: syntax error near '?'"
@@ -1930,21 +1972,24 @@ fn test_fts5_search_with_question_mark() {
     assert!(results[0].0.content.contains("JWT"));
 }
 
-#[test]
-fn test_fts5_search_with_and_or_not_keywords() {
+#[tokio::test]
+async fn test_fts5_search_with_and_or_not_keywords() {
     // T19: FTS5 keywords in content are searchable via quoted phrases or combined queries
     let graph = test_graph();
 
     graph
         .add_episode(Episode::builder("Using AND gate for signal processing logic").build())
+        .await
         .unwrap();
     graph
         .add_episode(
             Episode::builder("OR operator in search queries returns combined results").build(),
         )
+        .await
         .unwrap();
     graph
         .add_episode(Episode::builder("NOT NULL constraint added to user_id column").build())
+        .await
         .unwrap();
 
     // "AND gate" — search for "gate" (AND is a boolean op at query start, not content match).
@@ -1965,16 +2010,18 @@ fn test_fts5_search_with_and_or_not_keywords() {
     assert!(results[0].0.content.contains("NOT NULL"));
 }
 
-#[test]
-fn test_fts5_search_with_parentheses_and_quotes() {
+#[tokio::test]
+async fn test_fts5_search_with_parentheses_and_quotes() {
     // T20: Parentheses and quotes don't cause syntax errors
     let graph = test_graph();
 
     graph
         .add_episode(Episode::builder("Upgraded Express to v4.17 for better routing").build())
+        .await
         .unwrap();
     graph
         .add_episode(Episode::builder("Configured \"strict mode\" for TypeScript compiler").build())
+        .await
         .unwrap();
 
     // Parentheses in query — used to crash
@@ -1987,7 +2034,6 @@ fn test_fts5_search_with_parentheses_and_quotes() {
     assert_eq!(results.len(), 1);
     assert!(results[0].0.content.contains("strict mode"));
 }
-
 
 #[tokio::test]
 async fn test_decay_decision_uses_plateau_curve() {

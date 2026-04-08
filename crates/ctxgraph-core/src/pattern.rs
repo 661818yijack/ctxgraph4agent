@@ -186,7 +186,8 @@ impl PatternExtractor {
         // Track what we've already counted per episode to avoid overcounting
         let mut counted_entities_per_episode: HashMap<String, HashSet<String>> = HashMap::new();
         let mut counted_types_per_episode: HashMap<String, HashSet<String>> = HashMap::new();
-        let mut counted_pairs_per_episode: HashMap<String, HashSet<(String, String)>> = HashMap::new();
+        let mut counted_pairs_per_episode: HashMap<String, HashSet<(String, String)>> =
+            HashMap::new();
         let mut counted_triplets_per_episode: HashMap<String, HashSet<(String, String, String)>> =
             HashMap::new();
 
@@ -465,7 +466,15 @@ mod tests {
             make_entity("e2", "Network", "Component"),
         ];
         let edges: Vec<Edge> = (1..=4)
-            .map(|i| make_edge(&format!("edge{i}"), "e1", "e2", "depends_on", &format!("ep{i}")))
+            .map(|i| {
+                make_edge(
+                    &format!("edge{i}"),
+                    "e1",
+                    "e2",
+                    "depends_on",
+                    &format!("ep{i}"),
+                )
+            })
             .collect();
 
         let config = PatternExtractorConfig::default(); // min_occurrence_count = 3
@@ -532,8 +541,16 @@ mod tests {
         let mut entities = Vec::new();
         let mut edges = Vec::new();
         for i in 1..=5 {
-            entities.push(make_entity(&format!("e{i}a"), &format!("Entity{i}A"), "TypeA"));
-            entities.push(make_entity(&format!("e{i}b"), &format!("Entity{i}B"), "TypeB"));
+            entities.push(make_entity(
+                &format!("e{i}a"),
+                &format!("Entity{i}A"),
+                "TypeA",
+            ));
+            entities.push(make_entity(
+                &format!("e{i}b"),
+                &format!("Entity{i}B"),
+                "TypeB",
+            ));
             edges.push(make_edge(
                 &format!("edge{i}"),
                 &format!("e{i}a"),
@@ -566,7 +583,15 @@ mod tests {
             make_entity("e2", "Network", "Component"),
         ];
         let edges: Vec<Edge> = (1..=4)
-            .map(|i| make_edge(&format!("edge{i}"), "e1", "e2", "depends_on", &format!("ep{i}")))
+            .map(|i| {
+                make_edge(
+                    &format!("edge{i}"),
+                    "e1",
+                    "e2",
+                    "depends_on",
+                    &format!("ep{i}"),
+                )
+            })
             .collect();
 
         let config = PatternExtractorConfig {
@@ -594,7 +619,15 @@ mod tests {
             make_entity("e2", "Network", "Component"),
         ];
         let edges: Vec<Edge> = (1..=3)
-            .map(|i| make_edge(&format!("edge{i}"), "e1", "e2", "depends_on", &format!("ep{i}")))
+            .map(|i| {
+                make_edge(
+                    &format!("edge{i}"),
+                    "e1",
+                    "e2",
+                    "depends_on",
+                    &format!("ep{i}"),
+                )
+            })
             .collect();
 
         let config = PatternExtractorConfig {
@@ -692,13 +725,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_describer_returns_all() {
-        let episodes = vec![make_episode("ep1"), make_episode("ep2"), make_episode("ep3")];
+        let episodes = vec![
+            make_episode("ep1"),
+            make_episode("ep2"),
+            make_episode("ep3"),
+        ];
         let entities = vec![
             make_entity("e1", "Docker", "Component"),
             make_entity("e2", "Network", "Infrastructure"),
         ];
         let edges: Vec<Edge> = (1..=3)
-            .map(|i| make_edge(&format!("edge{i}"), "e1", "e2", "depends_on", &format!("ep{i}")))
+            .map(|i| {
+                make_edge(
+                    &format!("edge{i}"),
+                    "e1",
+                    "e2",
+                    "depends_on",
+                    &format!("ep{i}"),
+                )
+            })
             .collect();
 
         let config = PatternExtractorConfig {
@@ -710,25 +755,42 @@ mod tests {
 
         let describer = MockBatchLabelDescriber;
         let summaries = HashMap::new();
-        let results = describer.describe_batch(&candidates, &summaries).await.unwrap();
+        let results = describer
+            .describe_batch(&candidates, &summaries)
+            .await
+            .unwrap();
 
-        assert_eq!(results.len(), candidates.len(), "should return one label per candidate");
+        assert_eq!(
+            results.len(),
+            candidates.len(),
+            "should return one label per candidate"
+        );
         for (id, label) in &results {
             assert!(!id.is_empty());
             assert!(!label.is_empty());
         }
         // Every returned id must correspond to a real candidate id
-        let candidate_ids: std::collections::HashSet<_> = candidates.iter().map(|c| &c.id).collect();
+        let candidate_ids: std::collections::HashSet<_> =
+            candidates.iter().map(|c| &c.id).collect();
         for (id, _) in &results {
-            assert!(candidate_ids.contains(id), "returned id {id} not in candidates");
+            assert!(
+                candidate_ids.contains(id),
+                "returned id {id} not in candidates"
+            );
         }
     }
 
     #[tokio::test]
     async fn test_batch_describer_empty() {
         let describer = MockBatchLabelDescriber;
-        let results = describer.describe_batch(&[], &HashMap::new()).await.unwrap();
-        assert!(results.is_empty(), "empty input should produce empty output");
+        let results = describer
+            .describe_batch(&[], &HashMap::new())
+            .await
+            .unwrap();
+        assert!(
+            results.is_empty(),
+            "empty input should produce empty output"
+        );
     }
 
     #[tokio::test]

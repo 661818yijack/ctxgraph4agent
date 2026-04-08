@@ -257,40 +257,41 @@ impl ExtractionPipeline {
                 #[cfg(not(feature = "cloakpipe"))]
                 let llm_text = text;
 
-                let llm_result_try = llm.extract(llm_text, &self.schema);
-                if let Err(ref e) = llm_result_try {
-                    llm_failed = true;
-                    eprintln!("[ctxgraph] LLM escalation failed: {e}");
-                }
-                if let Ok(llm_result) = llm_result_try {
-                    // Rehydrate PII in entity names when CloakPipe is active
-                    #[cfg(feature = "cloakpipe")]
-                    {
-                        llm_result.entities = crate::llm_extract::rehydrate_entities(
-                            llm_result.entities,
-                            &pii_mappings,
-                        );
-                        // Also rehydrate relation head/tail names
-                        for rel in &mut llm_result.relations {
-                            if let Some(orig) = pii_mappings.get(&rel.head) {
-                                rel.head = orig.clone();
-                            }
-                            if let Some(orig) = pii_mappings.get(&rel.tail) {
-                                rel.tail = orig.clone();
+                match llm.extract(llm_text, &self.schema).await {
+                    Err(ref e) => {
+                        llm_failed = true;
+                        eprintln!("[ctxgraph] LLM escalation failed: {e}");
+                    }
+                    Ok(llm_result) => {
+                        // Rehydrate PII in entity names when CloakPipe is active
+                        #[cfg(feature = "cloakpipe")]
+                        {
+                            llm_result.entities = crate::llm_extract::rehydrate_entities(
+                                llm_result.entities,
+                                &pii_mappings,
+                            );
+                            // Also rehydrate relation head/tail names
+                            for rel in &mut llm_result.relations {
+                                if let Some(orig) = pii_mappings.get(&rel.head) {
+                                    rel.head = orig.clone();
+                                }
+                                if let Some(orig) = pii_mappings.get(&rel.tail) {
+                                    rel.tail = orig.clone();
+                                }
                             }
                         }
-                    }
-                    // Merge LLM entities not already found locally
-                    let existing_names: std::collections::HashSet<String> =
-                        entities.iter().map(|e| e.text.to_lowercase()).collect();
-                    for ent in llm_result.entities {
-                        if !existing_names.contains(&ent.text.to_lowercase()) {
-                            entities.push(ent);
+                        // Merge LLM entities not already found locally
+                        let existing_names: std::collections::HashSet<String> =
+                            entities.iter().map(|e| e.text.to_lowercase()).collect();
+                        for ent in llm_result.entities {
+                            if !existing_names.contains(&ent.text.to_lowercase()) {
+                                entities.push(ent);
+                            }
                         }
-                    }
 
-                    // Store LLM relations — will merge with GLiREL after step 2
-                    llm_relations = llm_result.relations;
+                        // Store LLM relations — will merge with GLiREL after step 2
+                        llm_relations = llm_result.relations;
+                    }
                 }
             }
         }
@@ -300,7 +301,7 @@ impl ExtractionPipeline {
             .rel
             .extract(text, &entities, &self.schema)
             .map_err(PipelineError::Rel)?;
-        let unfiltered_relations = relations.clone();
+        let unfiltered_relations = all_relations.clone();
 
         // Filter by confidence
         let mut relations: Vec<_> = all_relations

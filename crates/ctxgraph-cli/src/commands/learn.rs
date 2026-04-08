@@ -198,12 +198,9 @@ pub async fn run(options: LearnOptions) -> Result<()> {
         return Ok(());
     }
 
-    let outcome = graph.run_learning_pipeline(
-        &options.agent,
-        options.scope,
-        &describer,
-        options.limit,
-    ).await?;
+    let outcome = graph
+        .run_learning_pipeline(&options.agent, options.scope, &describer, options.limit)
+        .await?;
 
     match options.format.as_str() {
         "json" => {

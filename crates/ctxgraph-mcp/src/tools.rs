@@ -65,7 +65,10 @@ impl ToolContext {
         // Store episode
         let result = {
             let graph = self.graph.lock().await;
-            graph.add_episode(episode).await.map_err(|e| e.to_string())?
+            graph
+                .add_episode(episode)
+                .await
+                .map_err(|e| e.to_string())?
         };
 
         // Compute embedding and persist to SQLite (skipped if embed engine is unavailable)
@@ -359,10 +362,11 @@ impl ToolContext {
         let stats = graph.stats().map_err(|e| e.to_string())?;
 
         // Convert Vec<(String, usize)> to JSON object
-        let total_by_type: serde_json::Value = serde_json::to_value(&stats.total_entities_by_type)
-            .unwrap_or(serde_json::Value::Null);
-        let decayed_by_type: serde_json::Value = serde_json::to_value(&stats.decayed_entities_by_type)
-            .unwrap_or(serde_json::Value::Null);
+        let total_by_type: serde_json::Value =
+            serde_json::to_value(&stats.total_entities_by_type).unwrap_or(serde_json::Value::Null);
+        let decayed_by_type: serde_json::Value =
+            serde_json::to_value(&stats.decayed_entities_by_type)
+                .unwrap_or(serde_json::Value::Null);
 
         let mut result = json!({
             "episodes": stats.episode_count,
@@ -378,24 +382,31 @@ impl ToolContext {
         if let Some(obj) = result.as_object_mut() {
             obj.insert("total_entities_by_type".to_string(), total_by_type);
             obj.insert("decayed_entities_by_type".to_string(), decayed_by_type);
-            obj.insert("last_cleanup_at".to_string(),
+            obj.insert(
+                "last_cleanup_at".to_string(),
                 serde_json::Value::String(
-                    stats.last_cleanup_at.unwrap_or_else(|| "never".to_string())
-                )
+                    stats.last_cleanup_at.unwrap_or_else(|| "never".to_string()),
+                ),
             );
-            obj.insert("queries_since_cleanup".to_string(),
-                serde_json::Value::Number(stats.queries_since_cleanup.into())
+            obj.insert(
+                "queries_since_cleanup".to_string(),
+                serde_json::Value::Number(stats.queries_since_cleanup.into()),
             );
-            obj.insert("cleanup_interval".to_string(),
-                serde_json::Value::Number(stats.cleanup_interval.into())
+            obj.insert(
+                "cleanup_interval".to_string(),
+                serde_json::Value::Number(stats.cleanup_interval.into()),
             );
-            obj.insert("cleanup_in_progress".to_string(),
-                serde_json::Value::Bool(stats.cleanup_in_progress)
+            obj.insert(
+                "cleanup_in_progress".to_string(),
+                serde_json::Value::Bool(stats.cleanup_in_progress),
             );
             // Convenience field
-            let next_in = stats.cleanup_interval.saturating_sub(stats.queries_since_cleanup);
-            obj.insert("next_cleanup_in".to_string(),
-                serde_json::Value::Number(next_in.into())
+            let next_in = stats
+                .cleanup_interval
+                .saturating_sub(stats.queries_since_cleanup);
+            obj.insert(
+                "next_cleanup_in".to_string(),
+                serde_json::Value::Number(next_in.into()),
             );
         }
 
@@ -405,17 +416,21 @@ impl ToolContext {
     /// Tool: learn
     /// Run the learning pipeline: extract patterns from recent experiences and create or update skills.
     pub async fn learn(&self, args: Value) -> Result<Value, String> {
-        let agent = args.get("agent")
+        let agent = args
+            .get("agent")
             .and_then(|v| v.as_str())
             .unwrap_or("assistant")
             .to_string();
-        let scope_str = args.get("scope")
+        let scope_str = args
+            .get("scope")
             .and_then(|v| v.as_str())
             .unwrap_or("private");
-        let scope = if scope_str == "shared" { SkillScope::Shared } else { SkillScope::Private };
-        let limit = args.get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(50) as usize;
+        let scope = if scope_str == "shared" {
+            SkillScope::Shared
+        } else {
+            SkillScope::Private
+        };
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
         let describer = MockBatchLabelDescriber;
 
@@ -449,9 +464,7 @@ impl ToolContext {
     pub async fn forget(&self, args: Value) -> Result<Value, String> {
         let id = args.get("id").and_then(|v| v.as_str());
         let memory_type = args.get("type").and_then(|v| v.as_str());
-        let hard = args.get("hard")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let hard = args.get("hard").and_then(|v| v.as_bool()).unwrap_or(false);
 
         // Validate: exactly one of id or type must be provided
         match (id, memory_type) {
@@ -462,9 +475,14 @@ impl ToolContext {
                     graph.expire_memory(id).map_err(|e| e.to_string())?;
                     Ok(json!({"ok": true, "id": id, "hard": true}))
                 } else {
-                    let found = graph.storage.mark_for_deletion(id).map_err(|e| e.to_string())?;
+                    let found = graph
+                        .storage
+                        .mark_for_deletion(id)
+                        .map_err(|e| e.to_string())?;
                     if found {
-                        Ok(json!({"ok": true, "id": id, "hard": false, "note": "will be removed in next cleanup"}))
+                        Ok(
+                            json!({"ok": true, "id": id, "hard": false, "note": "will be removed in next cleanup"}),
+                        )
                     } else {
                         Err(format!("memory not found: {}", id))
                     }
@@ -473,9 +491,15 @@ impl ToolContext {
             (None, Some(memory_type)) => {
                 // Bulk expire by type
                 let graph = self.graph.lock().await;
-                let (entities, edges) = graph.storage.expire_memories_by_type(memory_type, hard)
+                let (entities, edges) = graph
+                    .storage
+                    .expire_memories_by_type(memory_type, hard)
                     .map_err(|e| e.to_string())?;
-                let action = if hard { "deleted" } else { "marked for cleanup" };
+                let action = if hard {
+                    "deleted"
+                } else {
+                    "marked for cleanup"
+                };
                 Ok(json!({
                     "ok": true,
                     "type": memory_type,

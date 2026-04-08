@@ -267,7 +267,8 @@ async fn main() {
                 limit,
                 agent,
                 format,
-            }).await
+            })
+            .await
         }
         Commands::Models { action } => match action {
             ModelsAction::Download => commands::models::download(),
