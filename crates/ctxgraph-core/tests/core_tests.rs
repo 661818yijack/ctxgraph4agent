@@ -862,9 +862,9 @@ fn test_decay_preference_exponential() {
         "Preference at age=0 should score ~1.0, got {score}"
     );
 
-    // At age=half_life (ttl*0.7) should score ~0.5
+    // At age=half_life (ttl*0.5, same as Fact) should score ~0.5
     let ttl_secs = 30u64 * 86400;
-    let half_life = (ttl_secs as f64 * 0.7) as i64;
+    let half_life = (ttl_secs as f64 * 0.5) as i64;
     let created_at2 = Utc::now() - chrono::Duration::seconds(half_life);
     let ttl2 = Some(std::time::Duration::from_secs(ttl_secs));
     let score2 = MemoryType::Preference.decay_score(1.0, created_at2, ttl2);
@@ -891,22 +891,45 @@ fn test_decay_decision_same_as_fact() {
 
 #[test]
 fn test_decay_expired_returns_zero() {
-    // Age > ttl should return 0.0
+    // CLAUDE.md: "When TTL expires, the node isn't immediately deleted. It enters a decay phase."
+    // Exponential types (Fact, Preference, Decision) have soft tails past TTL.
+    // Experience uses linear decay with hard cutoff at TTL (no soft tail).
     let ttl_secs = 90u64 * 86400;
     let ttl = Some(std::time::Duration::from_secs(ttl_secs));
     // Create 91 days ago — one day past ttl
     let created_at = Utc::now() - chrono::Duration::days(91);
 
-    assert_eq!(MemoryType::Fact.decay_score(1.0, created_at, ttl), 0.0);
+    // Experience: linear decay, hard cutoff → exactly 0.0 past TTL
     assert_eq!(
         MemoryType::Experience.decay_score(1.0, created_at, ttl),
         0.0
     );
-    assert_eq!(
-        MemoryType::Preference.decay_score(1.0, created_at, ttl),
-        0.0
+
+    // Fact: exponential + soft tail → non-zero past TTL
+    let fact_score = MemoryType::Fact.decay_score(1.0, created_at, ttl);
+    assert!(
+        fact_score > 0.0,
+        "Fact should have non-zero soft tail past TTL, got {fact_score}"
     );
-    assert_eq!(MemoryType::Decision.decay_score(1.0, created_at, ttl), 0.0);
+    // But significantly decayed (less than at TTL boundary which is ~0.25)
+    assert!(
+        fact_score < 0.25,
+        "Fact soft tail should be lower than TTL-boundary score, got {fact_score}"
+    );
+
+    // Decision: same exponential as Fact → identical score
+    let decision_score = MemoryType::Decision.decay_score(1.0, created_at, ttl);
+    assert!(
+        (fact_score - decision_score).abs() < 1e-10,
+        "Decision should have same decay as Fact past TTL: fact={fact_score}, decision={decision_score}"
+    );
+
+    // Preference: same exponential as Fact → identical score
+    let pref_score = MemoryType::Preference.decay_score(1.0, created_at, ttl);
+    assert!(
+        (fact_score - pref_score).abs() < 1e-10,
+        "Preference should have same decay as Fact past TTL: fact={fact_score}, preference={pref_score}"
+    );
 }
 
 #[test]
@@ -2036,8 +2059,9 @@ async fn test_fts5_search_with_parentheses_and_quotes() {
 }
 
 #[tokio::test]
-async fn test_decay_decision_uses_plateau_curve() {
-    // Decision should stay trusted longer than Fact during most of its TTL.
+async fn test_decay_decision_uses_same_exponential_as_fact() {
+    // Decision uses same exponential decay as Fact (half_life = TTL/2) per CLAUDE.md.
+    // At any age, Decision and Fact should produce identical decay scores.
     let ttl_secs = 90u64 * 86400;
     let ttl = Some(std::time::Duration::from_secs(ttl_secs));
 
@@ -2046,8 +2070,8 @@ async fn test_decay_decision_uses_plateau_curve() {
     let fact_score = MemoryType::Fact.decay_score_at(1.0, created_at, ttl, now);
     let decision_score = MemoryType::Decision.decay_score_at(1.0, created_at, ttl, now);
     assert!(
-        decision_score > fact_score,
-        "Decision should retain more confidence than Fact during the plateau: fact={fact_score}, decision={decision_score}"
+        (fact_score - decision_score).abs() < 1e-10,
+        "Decision should have same exponential decay as Fact: fact={fact_score}, decision={decision_score}"
     );
 }
 
@@ -2071,6 +2095,8 @@ async fn test_decay_post_ttl_soft_tail_for_long_lived_types() {
 
 #[tokio::test]
 async fn test_decay_preference_soft_tail_is_continuous_at_ttl() {
+    // Preference uses same exponential as Fact (half_life = TTL/2).
+    // At TTL boundary, score ≈ 0.25. Soft tail continues smoothly.
     let ttl_secs = 30u64 * 86400;
     let ttl = Some(std::time::Duration::from_secs(ttl_secs));
     let now = Utc::now();
@@ -2081,9 +2107,10 @@ async fn test_decay_preference_soft_tail_is_continuous_at_ttl() {
     let score_after_ttl =
         MemoryType::Preference.decay_score_at(1.0, one_second_after_ttl, ttl, now);
 
+    // At TTL boundary with half_life = TTL/2, score ≈ 0.25
     assert!(
-        score_at_ttl > 0.35,
-        "Preference should score from its own TTL boundary, not Fact's 0.25 boundary: {score_at_ttl}"
+        score_at_ttl > 0.2 && score_at_ttl < 0.3,
+        "Preference at TTL boundary should score ~0.25 (same as Fact): {score_at_ttl}"
     );
     assert!(
         (score_at_ttl - score_after_ttl).abs() < 0.001,
