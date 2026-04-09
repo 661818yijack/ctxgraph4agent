@@ -156,14 +156,17 @@ impl MemoryType {
                 base_confidence * decay_exponential(age_secs, half_life)
             }
             MemoryType::Decision => {
+                // Decision uses same exponential decay as Fact (half_life = TTL/2)
+                let half_life = ttl_secs * 0.5;
                 if age_secs > ttl_secs {
-                    let ttl_score = base_confidence * decay_sigmoid(ttl_secs, ttl_secs);
+                    let ttl_score = base_confidence * decay_exponential(ttl_secs, half_life);
                     return decay_soft_tail(age_secs, ttl_secs, ttl_score);
                 }
-                base_confidence * decay_sigmoid(age_secs, ttl_secs)
+                base_confidence * decay_exponential(age_secs, half_life)
             }
             MemoryType::Preference => {
-                let half_life = ttl_secs * 0.7;
+                // Preference uses same exponential decay as Fact (half_life = TTL/2)
+                let half_life = ttl_secs * 0.5;
                 if age_secs > ttl_secs {
                     let ttl_score = base_confidence * decay_exponential(ttl_secs, half_life);
                     return decay_soft_tail(age_secs, ttl_secs, ttl_score);
