@@ -9,7 +9,7 @@ pub fn run(
     _source: Option<String>,
 ) -> ctxgraph::Result<()> {
     let graph = open_graph()?;
-    let results = graph.search(&text, limit)?;
+    let results = graph.search(&text, limit, None)?;
 
     if results.is_empty() {
         println!("No results found for '{text}'");

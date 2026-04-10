@@ -432,11 +432,15 @@ impl Graph {
     ///
     /// `query_embedding` should be the pre-computed embedding for `query`.
     /// Returns episodes ranked by combined RRF score.
+    ///
+    /// When `source` is `Some(s)`, only episodes from that source are included
+    /// in the FTS5 leg. Semantic results are post-filtered by source.
     pub fn search_fused(
         &self,
         query: &str,
         query_embedding: &[f32],
         limit: usize,
+        source: Option<&str>,
     ) -> Result<Vec<FusedEpisodeResult>> {
         const K: f64 = 60.0;
 
@@ -448,7 +452,7 @@ impl Graph {
         // --- FTS5 ranked list ---
         // Fetch a generous pool for RRF (up to 10x limit or 200)
         let fts_pool = (limit * 10).max(200);
-        let fts_results = self.storage.search_episodes(query, fts_pool);
+        let fts_results = self.storage.search_episodes(query, fts_pool, source);
         if let Ok(fts) = fts_results {
             for (rank, (episode, _)) in fts.into_iter().enumerate() {
                 let rrf = 1.0 / (K + rank as f64 + 1.0);
@@ -472,14 +476,24 @@ impl Graph {
             semantic.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
             for (rank, (ep_id, _sim)) in semantic.into_iter().enumerate() {
-                let rrf = 1.0 / (K + rank as f64 + 1.0);
-                *scores.entry(ep_id.clone()).or_insert(0.0) += rrf;
                 // Fetch episode if not already cached
-                if let std::collections::hash_map::Entry::Vacant(e) = episodes_map.entry(ep_id)
-                    && let Ok(Some(ep)) = self.storage.get_episode(e.key())
+                let ep = if let Some(ep) = episodes_map.get(&ep_id) {
+                    ep.source.clone()
+                } else if let Ok(Some(ep)) = self.storage.get_episode(&ep_id) {
+                    let src = ep.source.clone();
+                    episodes_map.insert(ep_id.clone(), ep);
+                    src
+                } else {
+                    continue;
+                };
+                // Skip if source filter is set and doesn't match
+                if let Some(filter_src) = source
+                    && ep.as_deref() != Some(filter_src)
                 {
-                    e.insert(ep);
+                    continue;
                 }
+                let rrf = 1.0 / (K + rank as f64 + 1.0);
+                *scores.entry(ep_id).or_insert(0.0) += rrf;
             }
         }
 
@@ -503,8 +517,15 @@ impl Graph {
     // ── Search ──
 
     /// Search episodes via FTS5 full-text search.
-    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<(Episode, f64)>> {
-        self.storage.search_episodes(query, limit)
+    ///
+    /// When `source` is `Some(s)`, only episodes from that source are returned.
+    pub fn search(
+        &self,
+        query: &str,
+        limit: usize,
+        source: Option<&str>,
+    ) -> Result<Vec<(Episode, f64)>> {
+        self.storage.search_episodes(query, limit, source)
     }
 
     /// Search entities via FTS5.

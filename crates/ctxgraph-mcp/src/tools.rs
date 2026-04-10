@@ -107,6 +107,7 @@ impl ToolContext {
             .ok_or("missing required field: query")?
             .to_string();
         let limit = args["limit"].as_u64().unwrap_or(10) as usize;
+        let source = args["source"].as_str();
 
         let items: Vec<Value> = if let Some(ref embed) = self.embed {
             // Fused FTS5 + semantic search via RRF
@@ -114,7 +115,7 @@ impl ToolContext {
             let results = {
                 let graph = self.graph.lock().await;
                 graph
-                    .search_fused(&query, &query_embedding, limit)
+                    .search_fused(&query, &query_embedding, limit, source)
                     .map_err(|e| e.to_string())?
             };
             results
@@ -133,7 +134,7 @@ impl ToolContext {
             // FTS5-only search (embedding not available)
             let results = {
                 let graph = self.graph.lock().await;
-                graph.search(&query, limit).map_err(|e| e.to_string())?
+                graph.search(&query, limit, source).map_err(|e| e.to_string())?
             };
             results
                 .into_iter()
