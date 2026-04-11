@@ -29,10 +29,14 @@ impl ToolContext {
     /// Populate the in-memory embedding cache from SQLite if it hasn't been loaded yet.
     /// Subsequent calls return immediately — the Option acts as a once-flag.
     async fn warm_cache(&self) -> Result<(), String> {
-        let mut cache = self.embedding_cache.lock().map_err(|e| e.to_string())?;
-        if cache.is_none() {
+        let needs_load = {
+            let cache = self.embedding_cache.lock().map_err(|e| e.to_string())?;
+            cache.is_none()
+        };
+        if needs_load {
             let graph = self.graph.lock().await;
             let rows = graph.get_embeddings().map_err(|e| e.to_string())?;
+            let mut cache = self.embedding_cache.lock().map_err(|e| e.to_string())?;
             *cache = Some(rows.into_iter().collect());
         }
         Ok(())

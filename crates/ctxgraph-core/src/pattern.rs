@@ -213,8 +213,8 @@ impl PatternExtractor {
                 .unwrap_or_else(|| edge.target_id.clone());
 
             // Count entity types for source
-            if let Some(src_type) = entity_type_map.get(&edge.source_id) {
-                if entities_entry.insert(edge.source_id.clone())
+            if let Some(src_type) = entity_type_map.get(&edge.source_id)
+                && entities_entry.insert(edge.source_id.clone())
                     && types_entry.insert(src_type.clone())
                 {
                     type_counts
@@ -222,11 +222,10 @@ impl PatternExtractor {
                         .and_modify(|e| e.increment(&eid))
                         .or_insert_with(|| OccurrenceEntry::new(&eid));
                 }
-            }
 
             // Count entity types for target
-            if let Some(tgt_type) = entity_type_map.get(&edge.target_id) {
-                if entities_entry.insert(edge.target_id.clone())
+            if let Some(tgt_type) = entity_type_map.get(&edge.target_id)
+                && entities_entry.insert(edge.target_id.clone())
                     && types_entry.insert(tgt_type.clone())
                 {
                     type_counts
@@ -234,7 +233,6 @@ impl PatternExtractor {
                         .and_modify(|e| e.increment(&eid))
                         .or_insert_with(|| OccurrenceEntry::new(&eid));
                 }
-            }
 
             // Count the entity pair (sorted by name for canonical ordering)
             let pair_key = if source_name <= target_name {
@@ -288,13 +286,11 @@ impl PatternExtractor {
             if entry.count >= min_count {
                 let mut pair_entity_types: Vec<String> = Vec::new();
                 for (eid, ename) in &entity_name_map {
-                    if ename == a || ename == b {
-                        if let Some(et) = entity_type_map.get(eid) {
-                            if !pair_entity_types.contains(et) {
+                    if (ename == a || ename == b)
+                        && let Some(et) = entity_type_map.get(eid)
+                            && !pair_entity_types.contains(et) {
                                 pair_entity_types.push(et.clone());
                             }
-                        }
-                    }
                 }
 
                 candidates.push(PatternCandidate {
@@ -315,13 +311,11 @@ impl PatternExtractor {
             if entry.count >= min_count {
                 let mut triplet_entity_types: Vec<String> = Vec::new();
                 for (eid, ename) in &entity_name_map {
-                    if ename == a || ename == b {
-                        if let Some(et) = entity_type_map.get(eid) {
-                            if !triplet_entity_types.contains(et) {
+                    if (ename == a || ename == b)
+                        && let Some(et) = entity_type_map.get(eid)
+                            && !triplet_entity_types.contains(et) {
                                 triplet_entity_types.push(et.clone());
                             }
-                        }
-                    }
                 }
 
                 candidates.push(PatternCandidate {

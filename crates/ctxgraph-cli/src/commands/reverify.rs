@@ -105,8 +105,8 @@ pub fn expire(options: ReverifyExpireOptions) -> ctxgraph::Result<()> {
 fn print_stale_table(memories: &[StaleMemory]) {
     // Header
     println!(
-        "{:<12} {:<12} {:<8} {:<10} {:<12} {}",
-        "ID", "TYPE", "AGE", "DECAY", "ACTION", "CONTENT"
+        "{:<12} {:<12} {:<8} {:<10} {:<12} CONTENT",
+        "ID", "TYPE", "AGE", "DECAY", "ACTION"
     );
     println!("{}", "-".repeat(100));
 
