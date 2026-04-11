@@ -727,11 +727,10 @@ impl Graph {
     /// Uses the agent policy's grace_period (default 7 days).
     fn maybe_trigger_cleanup(&self) -> Result<()> {
         // Early exit: check if cleanup is already running
-        if let Some(val) = self.storage.get_system_metadata("cleanup_in_progress")? {
-            if val == "true" {
+        if let Some(val) = self.storage.get_system_metadata("cleanup_in_progress")?
+            && val == "true" {
                 return Ok(()); // skip silently
             }
-        }
 
         let count = self.storage.get_query_count_since_cleanup()?;
         let interval = self.storage.get_cleanup_interval()?;
@@ -994,7 +993,7 @@ impl Graph {
         // Stage 4: Inter-pattern dedup — filter out candidates already stored as patterns
         let existing_patterns = self.storage.get_patterns()?;
         let existing_keys: std::collections::HashSet<String> =
-            existing_patterns.iter().map(|p| pattern_key(p)).collect();
+            existing_patterns.iter().map(pattern_key).collect();
         candidates.retain(|c| !existing_keys.contains(&pattern_key(c)));
 
         let patterns_found = candidates.len();
