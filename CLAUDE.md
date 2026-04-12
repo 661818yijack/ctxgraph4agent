@@ -11,7 +11,7 @@ This is NOT a general-purpose agent memory. We explicitly do NOT target:
 The differentiator is the **memory lifecycle**:
 
 ```
-Store → TTL → Forget → Decay → Re-verify → Compress → Budget → Learn
+Store → TTL → Forget → Decay → Re-verify → Budget → Learn
 ```
 
 ## Why Not Just Use Hindsight?
@@ -96,7 +96,7 @@ Age > 6 months → candidate for deletion or archival
 - Expanded window: last 6 months (on demand, ask user to expand)
 - Beyond 6 months: manual/explicit query only
 
-**Why 3 months:** Facts, decisions, and preferences have 90-day TTLs. At 3 months, the system should re-verify stale memories (Phase C). After re-verification, TTL resets if still valid.
+**Why 3 months:** Facts, decisions, and preferences have 90-day TTLs. At 3 months, the system should re-verify stale memories (Phase B). After re-verification, TTL resets if still valid.
 
 **Why 6 months:** The cleanup sweep (Phase A6) purges memories that survived decay but were never re-verified. Experiences (14d TTL) and preferences (30d TTL) are long gone by 6 months.
 
@@ -104,7 +104,7 @@ Age > 6 months → candidate for deletion or archival
 | Age | Phase | Action |
 |-----|-------|--------|
 | 0-3 months | Normal | Full retrieval, normal decay |
-| 3 months | Phase C (Re-verify) | Surface stale memories for re-verification |
+| 3 months | Phase B (Re-verify) | Surface stale memories for re-verification |
 | 3-6 months | Post-re-verify | Only re-verified + Pattern memories survive |
 | 6 months | Phase A6 (Cleanup) | Sweep expired/unverified memories |
 | > 6 months | Archive | Manual query only or deleted |
@@ -122,19 +122,7 @@ Approaches (pick based on agent type and cost tolerance):
 
 **Key insight:** If something is important enough to remember forever, it's important enough to re-verify. A "permanent" memory that's wrong is worse than no memory.
 
-### 6. Compress (to build)
-Old memories get summarized before decay:
-
-```
-14 daily standup episodes (14 nodes)
-  → compress after 7 days
-  → 1 summary node: "Week of March 24: focused on auth migration, resolved 3 bugs"
-  → original episodes decay normally
-```
-
-This keeps the graph small while preserving patterns. The summary inherits relationships from the compressed nodes.
-
-### 7. Budget (to build)
+### 6. Budget (to build)
 Fixed token budget for memory injection per query:
 
 ```
@@ -153,7 +141,7 @@ Within the 20k budget, the retrieval engine fills slots by priority:
 
 **This is the cost control mechanism.** Without a budget, memory cost grows linearly with age. With a budget, cost is bounded forever.
 
-### 8. Learn (to build)
+### 7. Learn (to build)
 The skills layer — what makes the agent genuinely better over time:
 
 ```
@@ -170,7 +158,7 @@ Skills are NOT facts. They're behavioral knowledge:
 - **What was efficient** → prefer this approach
 
 Skills have their own lifecycle:
-- Created from compressed experience patterns
+- Created from raw experience patterns (co-occurrence analysis)
 - Never expire (they're proven behaviors)
 - Can be superseded (new better pattern replaces old)
 - Shared across sessions and agents (if configured)
@@ -184,22 +172,18 @@ Skills have their own lifecycle:
 - `decay_score: f64` — computed freshness (not stored, calculated at query time)
 - `usage_count: u32` — how often this node has been recalled
 - `last_recalled_at: Option<DateTime>` — for implicit re-verification
-- `compression_id: Option<Uuid>` — link compressed nodes to their summary
 - `MemoryBudget` config — per-agent token limits
 
 **ctxgraph-core/storage** — Add:
 - Background TTL sweep (can be lazy — check at query time, not a daemon)
-- Compression pipeline (batch compress old episodes into summaries)
 - Budget-aware retrieval (rank by freshness * relevance * budget_remaining)
 
-**ctxgraph-mcp** — New tools (must-have for the memory lifecycle):
-- `stats` — memory health (nodes by type, decayed counts, budget usage) — **needs MCP implementation**
-- `learn` — extract patterns from recent experiences — **needs MCP implementation**
-- `forget` — manually expire a memory by ID — **needs MCP implementation**
+**ctxgraph-mcp** — Lifecycle tools:
+- `stats` — memory health (nodes by type, decayed counts, budget usage)
+- `learn` — extract patterns from recent experiences
+- `forget` — manually expire a memory by ID
 
-These three cover the core lifecycle: learn (Phase D), forget (Phase A6 manual complement), and visibility (health checks).
-
-**Compression is learn-internal, not a standalone tool.** The first `learn` run extracts patterns from raw episodes. The second `learn` run compresses old episodes first, then extracts from summaries — this is why compress exists: it's a hint about decision quality (compressed summaries have better signal-to-noise than raw episodes). The `learn` tool handles this automatically.
+These three cover the core lifecycle: learn (Phase C), forget (Phase A6 manual complement), and visibility (health checks).
 
 **CLI commands are secondary to MCP tools.** Agent clients interact via MCP, so MCP tools are the primary interface. CLI commands exist only for debugging and manual override, not daily operation.
 
@@ -229,7 +213,6 @@ experiences_ttl = "7d"
 patterns_ttl = "never"
 decisions_ttl = "30d"
 memory_budget_tokens = 8000
-compress_after = "7d"
 
 [policies.production]
 facts_ttl = "90d"
@@ -237,7 +220,6 @@ experiences_ttl = "14d"
 patterns_ttl = "never"
 decisions_ttl = "90d"
 memory_budget_tokens = 20000
-compress_after = "14d"
 
 [policies.assistant]  # general assistant (Hermes/Apex)
 facts_ttl = "90d"
@@ -246,7 +228,6 @@ patterns_ttl = "never"
 decisions_ttl = "never"
 preferences_ttl = "30d"
 memory_budget_tokens = 15000
-compress_after = "14d"
 ```
 
 All policies share the same **6-month hard cutoff** — no memory lives beyond 6 months regardless of policy. Budget caps ensure cost stays flat.
@@ -279,18 +260,13 @@ Phase A: TTL + Decay (foundation)
   - Budget-aware retrieval ranking
   - Tests for decay behavior
 
-Phase B: Compress (size control)
-  - Batch compression pipeline
-  - Episode → summary with relationship inheritance
-  - Compression triggers (time-based, size-based)
-
-Phase C: Re-verify (quality maintenance)
+Phase B: Re-verify (quality maintenance)
   - Passive re-verification (contradiction detection)
   - Implicit renewal (usage-based TTL refresh)
   - Optional active re-verification (surface stale memories)
 
-Phase D: Learn (the differentiator)
-  - Pattern extraction from compressed experiences
+Phase C: Learn (the differentiator)
+  - Pattern extraction from raw experiences (co-occurrence)
   - Skill creation and evolution
   - Cross-session skill persistence
 ```
