@@ -521,7 +521,7 @@ pub struct GraphStats {
 }
 
 /// Result from a cleanup_expired operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CleanupResult {
     /// Entities deleted (Facts/Experiences with decay_score=0 past grace_period).
     pub entities_deleted: usize,
@@ -533,18 +533,6 @@ pub struct CleanupResult {
     pub edges_archived: usize,
     /// Errors encountered during cleanup.
     pub errors: Vec<String>,
-}
-
-impl Default for CleanupResult {
-    fn default() -> Self {
-        Self {
-            entities_deleted: 0,
-            edges_deleted: 0,
-            entities_archived: 0,
-            edges_archived: 0,
-            errors: Vec::new(),
-        }
-    }
 }
 
 /// A memory that has become stale (decay_score below threshold).

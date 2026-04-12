@@ -11,6 +11,9 @@ use crate::pattern::PatternExtractor;
 use crate::storage::migrations::run_migrations;
 use crate::types::*;
 
+type StaleEntityRow = (String, String, String, Option<i64>, Option<String>, String, Option<String>);
+type StaleEdgeRow = (String, String, String, String, String, Option<i64>, Option<String>, String, Option<String>);
+
 pub struct Storage {
     pub(crate) conn: Connection,
     /// Counter for public query methods (used by lazy cleanup trigger).
@@ -510,7 +513,7 @@ impl Storage {
             .and_then(|s| {
                 serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&s).ok()
             })
-            .unwrap_or(serde_json::Map::new());
+            .unwrap_or_default();
 
         metadata.insert(
             "contradicted_by".to_string(),
@@ -975,7 +978,7 @@ impl Storage {
             // ep_ids are already in ASC order by recorded_at (oldest first)
             // Process in chunks of batch_size
             for chunk in ep_ids.chunks(config.batch_size) {
-                let chunk_ids: Vec<String> = chunk.iter().cloned().collect();
+                let chunk_ids: Vec<String> = chunk.to_vec();
 
                 // Check if any episode in this chunk is already compressed
                 // (shouldn't happen since we filtered compression_id IS NULL,
@@ -1302,15 +1305,7 @@ impl Storage {
              LIMIT ?1 OFFSET ?2",
         )?;
 
-        let entities: Vec<(
-            String,
-            String,
-            String,
-            Option<i64>,
-            Option<String>,
-            String,
-            Option<String>,
-        )> = stmt
+        let entities: Vec<StaleEntityRow> = stmt
             .query_map(
                 params![limit as i64, offset as i64, &prefilter_cutoff],
                 |row| {
@@ -1370,17 +1365,7 @@ impl Storage {
              LIMIT ?1 OFFSET ?2",
         )?;
 
-        let edges: Vec<(
-            String,
-            String,
-            String,
-            String,
-            String,
-            Option<i64>,
-            Option<String>,
-            String,
-            Option<String>,
-        )> = stmt
+        let edges: Vec<StaleEdgeRow> = stmt
             .query_map(
                 params![limit as i64, offset as i64, &prefilter_cutoff],
                 |row| {
@@ -1528,18 +1513,18 @@ impl Storage {
         }
 
         // If content was not provided but memory_type was, update just the type
-        if memory_type.is_some() {
-            let new_ttl = memory_type.and_then(|mt| mt.default_ttl_seconds());
+        if let Some(mt) = &memory_type {
+            let new_ttl = mt.default_ttl_seconds();
             let entity_updated = self.conn.execute(
                 "UPDATE entities SET memory_type = ?1, ttl_seconds = ?2 WHERE id = ?3",
-                params![memory_type.unwrap().to_string(), new_ttl, id],
+                params![mt.to_string(), new_ttl, id],
             )?;
             if entity_updated > 0 {
                 return Ok(true);
             }
             let edge_updated = self.conn.execute(
                 "UPDATE edges SET memory_type = ?1, ttl_seconds = ?2 WHERE id = ?3",
-                params![memory_type.unwrap().to_string(), new_ttl, id],
+                params![mt.to_string(), new_ttl, id],
             )?;
             if edge_updated > 0 {
                 return Ok(true);
@@ -2383,8 +2368,7 @@ impl Storage {
         // Collect all FTS5-matched entity IDs for graph traversal
         let fts_entity_ids: Vec<String> = cand_map
             .values()
-            .filter(|c| c.entity_id.is_some())
-            .map(|c| c.entity_id.clone().unwrap())
+            .filter_map(|c| c.entity_id.clone())
             .collect();
 
         // ── FTS5: Edge relations ─────────────────────────────────────────────
@@ -2421,8 +2405,8 @@ impl Storage {
             // Get 1-hop neighbors (entities and edges) for this entity
             let neighbors = self.get_1hop_candidates(entity_id, DEFAULT_GRAPH_SCORE)?;
             for neighbor in neighbors {
-                let key = if neighbor.entity_id.is_some() {
-                    format!("entity:{}", neighbor.entity_id.as_ref().unwrap())
+                let key = if let Some(eid) = &neighbor.entity_id {
+                    format!("entity:{}", eid)
                 } else {
                     format!("edge:{}", neighbor.edge_id.as_ref().unwrap())
                 };
