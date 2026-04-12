@@ -555,40 +555,70 @@ impl Storage {
 
     // ── FTS5 Search ──
 
-    pub fn search_episodes(&self, query: &str, limit: usize) -> Result<Vec<(Episode, f64)>> {
+    /// FTS5 search over episodes. Optionally filter by source.
+    ///
+    /// When `source` is `Some(s)`, only episodes whose `source` column equals `s`
+    /// are returned. When `None`, all episodes matching the text query are returned
+    /// (backward-compatible default).
+    pub fn search_episodes(
+        &self,
+        query: &str,
+        limit: usize,
+        source: Option<&str>,
+    ) -> Result<Vec<(Episode, f64)>> {
         let safe_query = escape_fts5_query(query);
-        let mut stmt = self.conn.prepare(
-            "SELECT e.id, e.content, e.source, e.recorded_at, e.metadata,
-                    e.compression_id, e.memory_type,
-                    rank
-             FROM episodes_fts fts
-             JOIN episodes e ON e.rowid = fts.rowid
-             WHERE episodes_fts MATCH ?1
-             ORDER BY rank
-             LIMIT ?2",
-        )?;
-
-        let results = stmt
-            .query_map(params![safe_query, limit as i64], |row| {
-                let episode = Episode {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    source: row.get(2)?,
-                    recorded_at: parse_datetime(&row.get::<_, String>(3)?),
-                    metadata: row
-                        .get::<_, Option<String>>(4)?
-                        .and_then(|s| parse_metadata(&s)),
-                    compression_id: row.get(5)?,
-                    memory_type: MemoryType::from_db(&row.get::<_, String>(6)?),
-                };
-                let rank: f64 = row.get(7)?;
-                Ok((episode, -rank)) // FTS5 rank is negative (lower = better)
+        let results = if let Some(src) = source {
+            let mut stmt = self.conn.prepare(
+                "SELECT e.id, e.content, e.source, e.recorded_at, e.metadata,
+                        e.compression_id, e.memory_type,
+                        rank
+                 FROM episodes_fts fts
+                 JOIN episodes e ON e.rowid = fts.rowid
+                 WHERE episodes_fts MATCH ?1 AND e.source = ?3
+                 ORDER BY rank
+                 LIMIT ?2",
+            )?;
+            stmt.query_map(params![safe_query, limit as i64, src], |row| {
+                Self::row_to_episode(row)
             })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        } else {
+            let mut stmt = self.conn.prepare(
+                "SELECT e.id, e.content, e.source, e.recorded_at, e.metadata,
+                        e.compression_id, e.memory_type,
+                        rank
+                 FROM episodes_fts fts
+                 JOIN episodes e ON e.rowid = fts.rowid
+                 WHERE episodes_fts MATCH ?1
+                 ORDER BY rank
+                 LIMIT ?2",
+            )?;
+            stmt.query_map(params![safe_query, limit as i64], |row| {
+                Self::row_to_episode(row)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        };
 
         Ok(results)
     }
 
+    /// Map an FTS5 search result row to (Episode, negative_rank).
+    fn row_to_episode(row: &rusqlite::Row<'_>) -> std::result::Result<(Episode, f64), rusqlite::Error> {
+        let episode = Episode {
+            id: row.get(0)?,
+            content: row.get(1)?,
+            source: row.get(2)?,
+            recorded_at: parse_datetime(&row.get::<_, String>(3)?),
+            metadata: row
+                .get::<_, Option<String>>(4)?
+                .as_deref()
+                .and_then(parse_metadata),
+            compression_id: row.get(5)?,
+            memory_type: MemoryType::from_db(&row.get::<_, String>(6)?),
+        };
+        let rank: f64 = row.get(7)?;
+        Ok((episode, -rank)) // FTS5 rank is negative (lower = better)
+    }
     pub fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<(Entity, f64)>> {
         let safe_query = escape_fts5_query(query);
         let mut stmt = self.conn.prepare(

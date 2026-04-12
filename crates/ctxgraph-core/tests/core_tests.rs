@@ -262,11 +262,11 @@ async fn test_fts5_search_episodes() {
         .await
         .unwrap();
 
-    let results = graph.search("Postgres", 10).unwrap();
+    let results = graph.search("Postgres", 10, None).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].0.content.contains("Postgres"));
 
-    let results = graph.search("billing OR discount", 10).unwrap();
+    let results = graph.search("billing OR discount", 10, None).unwrap();
     assert_eq!(results.len(), 2);
 }
 
@@ -278,7 +278,7 @@ async fn test_fts5_search_empty_results() {
         .await
         .unwrap();
 
-    let results = graph.search("nonexistent_term_xyz", 10).unwrap();
+    let results = graph.search("nonexistent_term_xyz", 10, None).unwrap();
     assert!(results.is_empty());
 }
 
@@ -300,6 +300,70 @@ fn test_fts5_search_entities() {
 
     let results = graph.search_entities("Component", 10).unwrap();
     assert_eq!(results.len(), 2);
+}
+
+// ── Source filter tests ──
+
+#[tokio::test]
+async fn test_search_episodes_source_filter_returns_matching_only() {
+    // T4: search_episodes with source filter returns only matching episodes
+    let graph = test_graph();
+
+    graph
+        .add_episode(Episode::builder("Deployed auth service to staging").source("slack").build())
+        .await
+        .unwrap();
+    graph
+        .add_episode(Episode::builder("Discussed auth design in weekly sync").source("meeting").build())
+        .await
+        .unwrap();
+    graph
+        .add_episode(Episode::builder("Auth JWT token rotation completed").build())
+        .await
+        .unwrap();
+
+    // Filter by source="slack" — only the slack episode matches
+    let results = graph.search("auth", 10, Some("slack")).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0.source.as_deref(), Some("slack"));
+
+    // Filter by source="meeting" — only the meeting episode matches
+    let results = graph.search("auth", 10, Some("meeting")).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0.source.as_deref(), Some("meeting"));
+}
+
+#[tokio::test]
+async fn test_search_episodes_no_source_filter_returns_all() {
+    // T5: search_episodes without source filter returns all matching episodes
+    let graph = test_graph();
+
+    graph
+        .add_episode(Episode::builder("Postgres migration complete").source("slack").build())
+        .await
+        .unwrap();
+    graph
+        .add_episode(Episode::builder("Postgres backup strategy decided").source("meeting").build())
+        .await
+        .unwrap();
+
+    // No source filter — all matching episodes returned
+    let results = graph.search("Postgres", 10, None).unwrap();
+    assert_eq!(results.len(), 2);
+}
+
+#[tokio::test]
+async fn test_search_episodes_source_filter_nonexistent_returns_empty() {
+    // T9: source filter with non-existent source returns empty results
+    let graph = test_graph();
+
+    graph
+        .add_episode(Episode::builder("Deployed service").source("slack").build())
+        .await
+        .unwrap();
+
+    let results = graph.search("Deployed", 10, Some("nonexistent")).unwrap();
+    assert!(results.is_empty());
 }
 
 // ── Entity Context ──
@@ -445,7 +509,7 @@ async fn test_search_fused_no_embeddings() {
     // Fused search with a dummy query embedding — FTS5 results only
     let query_embedding = vec![0.0f32; 384];
     let results = graph
-        .search_fused("Postgres", &query_embedding, 10)
+        .search_fused("Postgres", &query_embedding, 10, None)
         .unwrap();
 
     // Should still return FTS5 hits even with zero-magnitude query embedding
@@ -476,7 +540,7 @@ async fn test_search_fused_with_embeddings() {
     // Query in direction of ep1
     let query_embedding = emb1.clone();
     let results = graph
-        .search_fused("Postgres", &query_embedding, 10)
+        .search_fused("Postgres", &query_embedding, 10, None)
         .unwrap();
 
     // ep1 should rank first (matches both FTS5 and semantic)
@@ -591,7 +655,7 @@ fn test_empty_database_operations() {
     // All operations should succeed on empty db
     assert!(graph.list_episodes(10, 0).unwrap().is_empty());
     assert!(graph.list_entities(None, 10).unwrap().is_empty());
-    assert!(graph.search("anything", 10).unwrap().is_empty());
+    assert!(graph.search("anything", 10, None).unwrap().is_empty());
 
     let stats = graph.stats().unwrap();
     assert_eq!(stats.episode_count, 0);
@@ -1990,7 +2054,7 @@ async fn test_fts5_search_with_question_mark() {
         .unwrap();
 
     // This used to crash with "fts5: syntax error near '?'"
-    let results = graph.search("JWT?", 10).unwrap();
+    let results = graph.search("JWT?", 10, None).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].0.content.contains("JWT"));
 }
@@ -2017,18 +2081,18 @@ async fn test_fts5_search_with_and_or_not_keywords() {
 
     // "AND gate" — search for "gate" (AND is a boolean op at query start, not content match).
     // Users searching for content containing AND should use phrase matching.
-    let results = graph.search("signal AND gate", 10).unwrap();
+    let results = graph.search("signal AND gate", 10, None).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].0.content.contains("AND gate"));
 
     // "OR operator" — search with boolean OR
-    let results = graph.search("operator OR constraint", 10).unwrap();
+    let results = graph.search("operator OR constraint", 10, None).unwrap();
     assert_eq!(results.len(), 2);
 
     // "NOT NULL" — search for "NOT" as boolean op + "NULL"
     // Since NOT at query start is valid FTS5: "NOT NULL" means "without NULL"
     // Let's search for the full content instead
-    let results = graph.search("constraint NULL", 10).unwrap();
+    let results = graph.search("constraint NULL", 10, None).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].0.content.contains("NOT NULL"));
 }
@@ -2048,12 +2112,12 @@ async fn test_fts5_search_with_parentheses_and_quotes() {
         .unwrap();
 
     // Parentheses in query — used to crash
-    let results = graph.search("(v4.17)", 10).unwrap();
+    let results = graph.search("(v4.17)", 10, None).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].0.content.contains("v4.17"));
 
     // Quotes in content and query
-    let results = graph.search("strict mode", 10).unwrap();
+    let results = graph.search("strict mode", 10, None).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].0.content.contains("strict mode"));
 }
