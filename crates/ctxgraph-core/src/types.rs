@@ -192,17 +192,6 @@ fn decay_exponential(age_secs: f64, half_life_secs: f64) -> f64 {
     (-lambda * age_secs).exp()
 }
 
-/// Sigmoid decay: stable plateau until the review window, then a sharp drop.
-///
-/// Uses a normalized age `t = age / ttl`, with the inflection point at 80% of
-/// TTL. The steepness is tuned so the score is near zero by the TTL boundary.
-fn decay_sigmoid(age_secs: f64, ttl_secs: f64) -> f64 {
-    let steepness = 20.0;
-    let inflection = 0.8;
-    let t = age_secs / ttl_secs;
-    1.0 / (1.0 + (steepness * (t - inflection)).exp())
-}
-
 /// Continue a curve beyond TTL with a fast exponential tail.
 fn decay_soft_tail(age_secs: f64, ttl_secs: f64, ttl_score: f64) -> f64 {
     let overshoot = (age_secs - ttl_secs) / ttl_secs;
