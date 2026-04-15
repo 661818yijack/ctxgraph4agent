@@ -50,7 +50,10 @@ pub fn run() -> ctxgraph::Result<()> {
         "  Last cleanup:    {}",
         stats.last_cleanup_at.as_deref().unwrap_or("never")
     );
-    println!("  Cleanup interval: every {} queries", stats.cleanup_interval);
+    println!(
+        "  Cleanup interval: every {} queries",
+        stats.cleanup_interval
+    );
     println!("  Queries since:   {}", stats.queries_since_cleanup);
     let next_in = stats
         .cleanup_interval

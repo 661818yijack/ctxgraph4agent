@@ -11,8 +11,26 @@ use crate::pattern::PatternExtractor;
 use crate::storage::migrations::run_migrations;
 use crate::types::*;
 
-type StaleEntityRow = (String, String, String, Option<i64>, Option<String>, String, Option<String>);
-type StaleEdgeRow = (String, String, String, String, String, Option<i64>, Option<String>, String, Option<String>);
+type StaleEntityRow = (
+    String,
+    String,
+    String,
+    Option<i64>,
+    Option<String>,
+    String,
+    Option<String>,
+);
+type StaleEdgeRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<i64>,
+    Option<String>,
+    String,
+    Option<String>,
+);
 
 pub struct Storage {
     pub(crate) conn: Connection,
@@ -606,7 +624,9 @@ impl Storage {
     }
 
     /// Map an FTS5 search result row to (Episode, negative_rank).
-    fn row_to_episode(row: &rusqlite::Row<'_>) -> std::result::Result<(Episode, f64), rusqlite::Error> {
+    fn row_to_episode(
+        row: &rusqlite::Row<'_>,
+    ) -> std::result::Result<(Episode, f64), rusqlite::Error> {
         let episode = Episode {
             id: row.get(0)?,
             content: row.get(1)?,
@@ -1699,10 +1719,11 @@ impl Storage {
         };
 
         // Default TTLs in seconds:
-        // Fact: 90d = 7776000s, Experience: 14d = 1209600s
-        // Preference: 30d = 2592000s, Decision: 90d = 7776000s
+        // TTL defaults per type: Fact=90d, Experience=180d, Preference=30d, Decision=90d
+        // Note: Experience TTL is 180d (6 months) because raw experiences are the
+        // evidence chain behind skills (see CLAUDE.md "Why no compression").
         let fact_cutoff = make_cutoff(7776000); // 90d + grace
-        let experience_cutoff = make_cutoff(1209600); // 14d + grace
+        let experience_cutoff = make_cutoff(15552000); // 180d + grace
         let preference_cutoff = make_cutoff(2592000); // 30d + grace
         let decision_cutoff = make_cutoff(7776000); // 90d + grace
 
@@ -2772,7 +2793,7 @@ fn escape_fts5_query(query: &str) -> String {
 }
 
 fn stale_prefilter_age_secs(threshold: f64) -> u64 {
-    const EXPERIENCE_TTL_SECS: f64 = 14.0 * 86_400.0;
+    const EXPERIENCE_TTL_SECS: f64 = 180.0 * 86_400.0;
 
     if threshold >= 1.0 {
         return 0;

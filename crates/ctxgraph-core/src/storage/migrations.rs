@@ -258,6 +258,18 @@ const MIGRATIONS: &[(&str, &str)] = &[
     -- Implemented via Rust-side idempotent path (below) for safe partial-migration recovery.
     "#,
     ),
+    (
+        "010_experience_ttl_180d",
+        r#"
+    -- Experience TTL changed from 14d to 180d (6 months) per design decision:
+    -- raw experiences are the evidence chain behind skills (CLAUDE.md "Why no compression").
+    -- Update existing entities and edges that still have the old 14d TTL.
+    UPDATE entities SET ttl_seconds = 15552000
+        WHERE LOWER(memory_type) = 'experience' AND ttl_seconds = 1209600;
+    UPDATE edges SET ttl_seconds = 15552000
+        WHERE LOWER(memory_type) = 'experience' AND ttl_seconds = 1209600;
+    "#,
+    ),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {

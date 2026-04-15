@@ -138,7 +138,9 @@ impl ToolContext {
             // FTS5-only search (embedding not available)
             let results = {
                 let graph = self.graph.lock().await;
-                graph.search(&query, limit, source).map_err(|e| e.to_string())?
+                graph
+                    .search(&query, limit, source)
+                    .map_err(|e| e.to_string())?
             };
             results
                 .into_iter()
