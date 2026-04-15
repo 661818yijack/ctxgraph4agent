@@ -6,7 +6,7 @@ use std::time::Duration;
 /// Classification of a memory's type, driving TTL and decay behavior.
 /// - Fact: stable knowledge (90d default TTL)
 /// - Pattern: recurring observation (never expires)
-/// - Experience: one-time event (14d default TTL)
+/// - Experience: one-time event (180d default TTL, 6-month evidence chain for skills)
 /// - Preference: user preference (30d default TTL)
 /// - Decision: architectural choice (90d default TTL)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,7 +37,7 @@ impl MemoryType {
         match self {
             MemoryType::Fact => Some(Duration::from_secs(90 * 86400)),
             MemoryType::Pattern => None,
-            MemoryType::Experience => Some(Duration::from_secs(14 * 86400)),
+            MemoryType::Experience => Some(Duration::from_secs(180 * 86400)),
             MemoryType::Preference => Some(Duration::from_secs(30 * 86400)),
             MemoryType::Decision => Some(Duration::from_secs(90 * 86400)),
         }
@@ -1107,8 +1107,8 @@ mod tests {
             ),
             make_candidate(
                 MemoryType::Experience,
-                Utc::now() - Duration::days(7),
-                Some(14 * 86400),
+                Utc::now() - Duration::days(90),
+                Some(180 * 86400),
                 1.0,
                 50,
                 0.5,

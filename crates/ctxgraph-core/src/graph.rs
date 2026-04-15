@@ -749,9 +749,10 @@ impl Graph {
     fn maybe_trigger_cleanup(&self) -> Result<()> {
         // Early exit: check if cleanup is already running
         if let Some(val) = self.storage.get_system_metadata("cleanup_in_progress")?
-            && val == "true" {
-                return Ok(()); // skip silently
-            }
+            && val == "true"
+        {
+            return Ok(()); // skip silently
+        }
 
         let count = self.storage.get_query_count_since_cleanup()?;
         let interval = self.storage.get_cleanup_interval()?;

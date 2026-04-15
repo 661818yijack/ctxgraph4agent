@@ -152,9 +152,11 @@ impl BatchLabelDescriber for RealBatchLabelDescriber {
 
             // Map 1-based index back to candidate id
             if let Ok(idx) = id_str.parse::<usize>()
-                && idx >= 1 && idx <= candidates.len() {
-                    results.push((candidates[idx - 1].id.clone(), label));
-                }
+                && idx >= 1
+                && idx <= candidates.len()
+            {
+                results.push((candidates[idx - 1].id.clone(), label));
+            }
         }
 
         Ok(results)

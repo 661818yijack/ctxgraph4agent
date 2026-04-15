@@ -51,7 +51,7 @@ Every memory node gets a time-to-live based on its type:
 ```
 facts:         90d   (expire and re-verify)
 patterns:      never (learned behaviors, keep forever)
-experiences:   14d   (conversation details, drop after 2 weeks)
+experiences:   180d  (raw evidence chain for skills, 6-month window)
 preferences:   30d   (re-verify with user monthly)
 decisions:     90d   (archive after 3 months, keep summary)
 ```
@@ -209,21 +209,21 @@ Only software engineering agents use ctxgraph4agent. Different engineering conte
 
 [policies.prototype]
 facts_ttl = "14d"
-experiences_ttl = "7d"
+experiences_ttl = "30d"
 patterns_ttl = "never"
 decisions_ttl = "30d"
 memory_budget_tokens = 8000
 
 [policies.production]
 facts_ttl = "90d"
-experiences_ttl = "14d"
+experiences_ttl = "180d"
 patterns_ttl = "never"
 decisions_ttl = "90d"
 memory_budget_tokens = 20000
 
 [policies.assistant]  # general assistant (Hermes/Apex)
 facts_ttl = "90d"
-experiences_ttl = "14d"
+experiences_ttl = "180d"
 patterns_ttl = "never"
 decisions_ttl = "never"
 preferences_ttl = "30d"

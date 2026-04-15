@@ -310,11 +310,19 @@ async fn test_search_episodes_source_filter_returns_matching_only() {
     let graph = test_graph();
 
     graph
-        .add_episode(Episode::builder("Deployed auth service to staging").source("slack").build())
+        .add_episode(
+            Episode::builder("Deployed auth service to staging")
+                .source("slack")
+                .build(),
+        )
         .await
         .unwrap();
     graph
-        .add_episode(Episode::builder("Discussed auth design in weekly sync").source("meeting").build())
+        .add_episode(
+            Episode::builder("Discussed auth design in weekly sync")
+                .source("meeting")
+                .build(),
+        )
         .await
         .unwrap();
     graph
@@ -339,11 +347,19 @@ async fn test_search_episodes_no_source_filter_returns_all() {
     let graph = test_graph();
 
     graph
-        .add_episode(Episode::builder("Postgres migration complete").source("slack").build())
+        .add_episode(
+            Episode::builder("Postgres migration complete")
+                .source("slack")
+                .build(),
+        )
         .await
         .unwrap();
     graph
-        .add_episode(Episode::builder("Postgres backup strategy decided").source("meeting").build())
+        .add_episode(
+            Episode::builder("Postgres backup strategy decided")
+                .source("meeting")
+                .build(),
+        )
         .await
         .unwrap();
 
@@ -706,7 +722,7 @@ fn test_memory_type_default_ttl_experience() {
     use std::time::Duration;
     assert_eq!(
         MemoryType::Experience.default_ttl(),
-        Some(Duration::from_secs(14 * 86400))
+        Some(Duration::from_secs(180 * 86400))
     );
 }
 
@@ -892,7 +908,7 @@ fn test_decay_pattern_never_decays() {
 #[test]
 fn test_decay_experience_linear_halfway() {
     // Experience at age=ttl/2 should score 0.5
-    let ttl_secs = 14u64 * 86400;
+    let ttl_secs = 180u64 * 86400; // 180d (6 months)
     let ttl = Some(std::time::Duration::from_secs(ttl_secs));
     let created_at = Utc::now() - chrono::Duration::seconds((ttl_secs / 2) as i64);
     let score = MemoryType::Experience.decay_score(1.0, created_at, ttl);
@@ -905,7 +921,7 @@ fn test_decay_experience_linear_halfway() {
 #[test]
 fn test_decay_experience_at_ttl_scores_zero() {
     // Experience linear decay hits 0.0 at age=ttl
-    let ttl_secs = 14u64 * 86400;
+    let ttl_secs = 180u64 * 86400; // 180d (6 months)
     let ttl = Some(std::time::Duration::from_secs(ttl_secs));
     let created_at = Utc::now() - chrono::Duration::seconds(ttl_secs as i64);
     let score = MemoryType::Experience.decay_score(1.0, created_at, ttl);
