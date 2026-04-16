@@ -650,6 +650,7 @@ impl Storage {
              FROM entities_fts fts
              JOIN entities e ON e.rowid = fts.rowid
              WHERE entities_fts MATCH ?1
+               AND COALESCE(json_extract(e.metadata, '$.marked_for_deletion'), 0) = 0
              ORDER BY rank
              LIMIT ?2",
         )?;
@@ -1727,6 +1728,80 @@ impl Storage {
         let preference_cutoff = make_cutoff(2592000); // 30d + grace
         let decision_cutoff = make_cutoff(7776000); // 90d + grace
 
+        // Step 1.5: Delete soft-expired (marked_for_deletion) memories
+        // These were marked via forget(hard=false) and should be deleted regardless of TTL.
+        let marked_entity_ids: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id FROM entities WHERE COALESCE(json_extract(metadata, '$.marked_for_deletion'), 0) = 1",
+            )?;
+            stmt.query_map([], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        if !marked_entity_ids.is_empty() {
+            // Delete edges referencing soft-expired entities (FK safety)
+            let placeholders: Vec<String> = marked_entity_ids
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect();
+            let params: Vec<&dyn rusqlite::ToSql> = marked_entity_ids
+                .iter()
+                .map(|s| s as &dyn rusqlite::ToSql)
+                .collect();
+
+            let edge_sql = format!(
+                "DELETE FROM edges WHERE source_id IN ({}) OR target_id IN ({})",
+                placeholders.join(", "),
+                placeholders.join(", ")
+            );
+            result.edges_deleted += self
+                .conn
+                .execute(&edge_sql, rusqlite::params_from_iter(params.iter()))?;
+
+            let ep_sql = format!(
+                "DELETE FROM episode_entities WHERE entity_id IN ({})",
+                placeholders.join(", ")
+            );
+            let _ = self
+                .conn
+                .execute(&ep_sql, rusqlite::params_from_iter(params.iter()));
+        }
+
+        for id in &marked_entity_ids {
+            match self
+                .conn
+                .execute("DELETE FROM entities WHERE id = ?1", params![id])
+            {
+                Ok(_) => result.entities_deleted += 1,
+                Err(e) => result.errors.push(format!(
+                    "failed to delete soft-expired entity {}: {}",
+                    id, e
+                )),
+            }
+        }
+
+        // Also delete soft-expired edges directly (edges marked_for_deletion themselves)
+        let marked_edge_ids: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id FROM edges WHERE COALESCE(json_extract(metadata, '$.marked_for_deletion'), 0) = 1",
+            )?;
+            stmt.query_map([], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        for id in &marked_edge_ids {
+            match self
+                .conn
+                .execute("DELETE FROM edges WHERE id = ?1", params![id])
+            {
+                Ok(_) => result.edges_deleted += 1,
+                Err(e) => result
+                    .errors
+                    .push(format!("failed to delete soft-expired edge {}: {}", id, e)),
+            }
+        }
+
         // Step 2 & 3: Collect expired Fact/Experience entity IDs for edge cleanup
         // Query with age > TTL + grace (using pre-computed cutoff timestamps)
         let expired_fact_entity_ids: Vec<String> = {
@@ -2536,6 +2611,7 @@ impl Storage {
              FROM entities_fts fts
              JOIN entities e ON e.rowid = fts.rowid
              WHERE entities_fts MATCH ?1
+               AND COALESCE(json_extract(e.metadata, '$.marked_for_deletion'), 0) = 0
              ORDER BY rank
              LIMIT ?2",
         )?;
@@ -2574,6 +2650,7 @@ impl Storage {
              FROM edges_fts fts
              JOIN edges e ON e.rowid = fts.rowid
              WHERE edges_fts MATCH ?1
+               AND COALESCE(json_extract(e.metadata, '$.marked_for_deletion'), 0) = 0
              ORDER BY rank
              LIMIT ?2",
         )?;
@@ -2658,6 +2735,16 @@ impl Storage {
         // Collect neighbor entity IDs while building edge candidates
         let mut neighbor_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         for edge in &edges {
+            // Skip soft-expired edges
+            if edge
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("marked_for_deletion"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                continue;
+            }
             candidates.push(Self::edge_to_candidate(edge, default_score));
             if edge.source_id == entity_id {
                 neighbor_ids.insert(edge.target_id.clone());
@@ -2668,6 +2755,16 @@ impl Storage {
 
         for nid in neighbor_ids {
             if let Some(entity) = self.get_entity(&nid)? {
+                // Skip soft-expired entities
+                if entity
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("marked_for_deletion"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
                 candidates.push(Self::entity_to_candidate(&entity, default_score));
             }
         }
@@ -3270,5 +3367,211 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
         assert_eq!(count, 2);
+    }
+
+    // ── Soft-expire (marked_for_deletion) filtering tests ──
+
+    /// Helper: create a minimal Entity for tests.
+    fn make_test_entity(id: &str, name: &str, entity_type: &str) -> crate::types::Entity {
+        crate::types::Entity {
+            id: id.to_string(),
+            name: name.to_string(),
+            entity_type: entity_type.to_string(),
+            memory_type: crate::types::MemoryType::Fact,
+            ttl: Some(std::time::Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        }
+    }
+
+    /// Helper: create a minimal Edge for tests.
+    fn make_test_edge(
+        id: &str,
+        source_id: &str,
+        target_id: &str,
+        relation: &str,
+    ) -> crate::types::Edge {
+        crate::types::Edge {
+            id: id.to_string(),
+            source_id: source_id.to_string(),
+            target_id: target_id.to_string(),
+            relation: relation.to_string(),
+            memory_type: crate::types::MemoryType::Fact,
+            ttl: Some(std::time::Duration::from_secs(90 * 86400)),
+            fact: Some(format!("{} {} {}", source_id, relation, target_id)),
+            valid_from: None,
+            valid_until: None,
+            recorded_at: Utc::now(),
+            confidence: 0.8,
+            episode_id: None,
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        }
+    }
+
+    #[test]
+    fn test_soft_expired_entity_excluded_from_search_entities() {
+        // T4: Soft-expired entity excluded from FTS5 entity search
+        let storage = new_test_storage();
+
+        let entity_a = make_test_entity("ent_a", "Docker Server", "technology");
+        let entity_b = make_test_entity("ent_b", "Redis Cache", "technology");
+        storage.insert_entity(&entity_a).unwrap();
+        storage.insert_entity(&entity_b).unwrap();
+
+        // Soft-expire entity_a
+        storage.mark_for_deletion("ent_a").unwrap();
+
+        // Search for "technology" should only return entity_b
+        let results = storage.search_entities("technology", 10).unwrap();
+        let ids: Vec<&str> = results.iter().map(|(e, _)| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["ent_b"]);
+    }
+
+    #[test]
+    fn test_non_expired_entities_still_visible_after_soft_expire_of_others() {
+        // T8: Non-expired memories still visible after soft-expire of others
+        let storage = new_test_storage();
+
+        let entity_a = make_test_entity("ent_a", "Kubernetes Cluster", "technology");
+        let entity_b = make_test_entity("ent_b", "Kubernetes Pod", "technology");
+        storage.insert_entity(&entity_a).unwrap();
+        storage.insert_entity(&entity_b).unwrap();
+
+        // Soft-expire only entity_a
+        storage.mark_for_deletion("ent_a").unwrap();
+
+        // Search should return entity_b but NOT entity_a
+        let results = storage.search_entities("Kubernetes", 10).unwrap();
+        let ids: Vec<&str> = results.iter().map(|(e, _)| e.id.as_str()).collect();
+        assert!(ids.contains(&"ent_b"));
+        assert!(!ids.contains(&"ent_a"));
+    }
+
+    #[test]
+    fn test_soft_expired_edge_excluded_from_fts_search() {
+        // T5: Soft-expired edge excluded from FTS5 edge search
+        let storage = new_test_storage();
+
+        // Need source/target entities for FTS to pick up the edge
+        let src = make_test_edge_src("src_ent", "Source Node");
+        let tgt = make_test_edge_src("tgt_ent", "Target Node");
+        storage.insert_entity(&src).unwrap();
+        storage.insert_entity(&tgt).unwrap();
+
+        let edge = make_test_edge("edge_1", "src_ent", "tgt_ent", "connects to");
+        storage.insert_edge(&edge).unwrap();
+
+        // Soft-expire the edge
+        storage.mark_for_deletion("edge_1").unwrap();
+
+        // FTS search for "connects" should not return the edge
+        let results = storage.fts_search_edges("connects", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    fn make_test_edge_src(id: &str, name: &str) -> crate::types::Entity {
+        crate::types::Entity {
+            id: id.to_string(),
+            name: name.to_string(),
+            entity_type: "component".to_string(),
+            memory_type: crate::types::MemoryType::Fact,
+            ttl: Some(std::time::Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        }
+    }
+
+    #[test]
+    fn test_soft_expired_memories_excluded_from_retrieve_candidates() {
+        // T6: Soft-expired memories excluded from retrieve_candidates
+        let storage = new_test_storage();
+
+        let entity_a = make_test_entity("cand_a", "Rust Language", "technology");
+        let entity_b = make_test_entity("cand_b", "Rust Compiler", "technology");
+        storage.insert_entity(&entity_a).unwrap();
+        storage.insert_entity(&entity_b).unwrap();
+
+        // Soft-expire entity_a
+        storage.mark_for_deletion("cand_a").unwrap();
+
+        let candidates = storage.retrieve_candidates("Rust", 100, 50).unwrap();
+        let entity_ids: Vec<&str> = candidates
+            .iter()
+            .filter_map(|c| c.entity_id.as_deref())
+            .collect();
+
+        assert!(
+            !entity_ids.contains(&"cand_a"),
+            "soft-expired entity should be excluded"
+        );
+        assert!(
+            entity_ids.contains(&"cand_b"),
+            "non-expired entity should be included"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_deletes_soft_expired_memories_regardless_of_age() {
+        // T7: Cleanup sweep deletes soft-expired memories regardless of age
+        let storage = new_test_storage();
+
+        // Create freshly created (well within TTL) entities
+        let entity = make_test_entity("fresh_soft", "Fresh Soft Expired", "test");
+        storage.insert_entity(&entity).unwrap();
+
+        let edge = make_test_edge("fresh_edge", "fresh_soft", "some_other", "uses");
+        storage
+            .insert_entity(&make_test_entity("some_other", "Other", "test"))
+            .unwrap();
+        storage.insert_edge(&edge).unwrap();
+
+        // Soft-expire them
+        storage.mark_for_deletion("fresh_soft").unwrap();
+        storage.mark_for_deletion("fresh_edge").unwrap();
+
+        // Run cleanup with 0 grace period
+        let result = storage.cleanup_expired(0).unwrap();
+
+        // Both should be deleted
+        assert_eq!(
+            result.entities_deleted, 1,
+            "soft-expired entity should be deleted"
+        );
+        assert!(
+            result.edges_deleted >= 1,
+            "soft-expired edge should be deleted"
+        );
+        assert!(
+            result.errors.is_empty(),
+            "no errors expected: {:?}",
+            result.errors
+        );
+
+        // Verify they're gone
+        assert!(storage.get_entity("fresh_soft").unwrap().is_none());
+        assert!(storage.get_edge("fresh_edge").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_cleanup_does_not_delete_non_soft_expired_memories() {
+        // Verify cleanup doesn't delete fresh, non-marked entities
+        let storage = new_test_storage();
+
+        let entity = make_test_entity("fresh_ok", "Fresh OK", "test");
+        storage.insert_entity(&entity).unwrap();
+
+        let result = storage.cleanup_expired(0).unwrap();
+
+        // Entity should NOT be deleted (it's fresh and not marked)
+        assert_eq!(result.entities_deleted, 0);
+        assert!(storage.get_entity("fresh_ok").unwrap().is_some());
     }
 }
