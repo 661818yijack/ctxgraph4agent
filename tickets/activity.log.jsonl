@@ -1,0 +1,31 @@
+{"ts": "2026-04-11T02:03:16.231804+00:00", "action": "created", "ticket_id": "C9", "agent": null}
+{"ts": "2026-04-11T02:03:19.019560+00:00", "action": "created", "ticket_id": "C10", "agent": null}
+{"ts": "2026-04-11T02:03:22.012428+00:00", "action": "created", "ticket_id": "C11", "agent": null}
+{"ts": "2026-04-11T02:03:25.279974+00:00", "action": "created", "ticket_id": "C12", "agent": null}
+{"ts": "2026-04-11T02:08:31.304449+00:00", "action": "updated", "ticket_id": "C9", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-04-11T02:08:32.549886+00:00", "action": "updated", "ticket_id": "C10", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-04-11T02:08:33.809250+00:00", "action": "updated", "ticket_id": "C11", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-04-11T02:08:35.074246+00:00", "action": "updated", "ticket_id": "C12", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-04-11T02:08:40.351778+00:00", "action": "updated", "ticket_id": "B1", "agent": null, "fields": {"description": "STALE: ctxgraph-cli/Cargo.toml already uses rustls-tls (reqwest = { features = [\"blocking\", \"json\", \"rustls-tls\"] }). Build works without OpenSSL dev headers. No fix needed.", "status": "closed"}}
+{"ts": "2026-04-11T02:08:41.647945+00:00", "action": "updated", "ticket_id": "B2", "agent": null, "fields": {"description": "STALE: Parent B1 resolved \u2014 reqwest already uses rustls-tls in ctxgraph-cli/Cargo.toml.", "status": "closed"}}
+{"ts": "2026-04-11T02:08:42.916049+00:00", "action": "updated", "ticket_id": "B3", "agent": null, "fields": {"description": "STALE: Parent B1 resolved \u2014 cargo build --release succeeds without OpenSSL.", "status": "closed"}}
+{"ts": "2026-04-13T02:04:41.421755+00:00", "action": "created", "ticket_id": "C13", "agent": null}
+{"ts": "2026-04-13T02:04:53.863119+00:00", "action": "created", "ticket_id": "C14", "agent": null}
+{"ts": "2026-04-13T02:04:55.173209+00:00", "action": "created", "ticket_id": "C15", "agent": null}
+{"ts": "2026-04-13T02:04:56.528185+00:00", "action": "created", "ticket_id": "C16", "agent": null}
+{"ts": "2026-04-13T02:05:17.490825+00:00", "action": "updated", "ticket_id": "C16", "agent": null, "fields": {"description": "DEFRERED: Contradictions are not persisted to a table \u2014 they are computed on-the-fly by check_contradictions(). Adding a count would require either persisting contradictions or scanning all edges at stats time, both over-engineering for current needs. Revisit if contradiction tracking is needed for re-verify workflow (B1).", "status": "closed"}}
+{"ts": "2026-04-13T02:05:29.378079+00:00", "action": "created", "ticket_id": "T4", "agent": null}
+{"ts": "2026-04-13T02:05:30.731056+00:00", "action": "created", "ticket_id": "T5", "agent": null}
+{"ts": "2026-04-13T02:05:32.017028+00:00", "action": "created", "ticket_id": "T6", "agent": null}
+{"ts": "2026-04-13T02:05:34.556880+00:00", "action": "created", "ticket_id": "T7", "agent": null}
+{"ts": "2026-04-13T02:05:35.829854+00:00", "action": "created", "ticket_id": "T8", "agent": null}
+{"ts": "2026-04-13T02:05:42.068531+00:00", "action": "updated", "ticket_id": "C15", "agent": null, "fields": {"status": "in_progress"}}
+{"ts": "2026-04-13T02:05:43.393037+00:00", "action": "updated", "ticket_id": "C14", "agent": null, "fields": {"status": "in_progress"}}
+{"ts": "2026-04-13T02:09:34.849410+00:00", "action": "updated", "ticket_id": "C13", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-04-13T02:09:36.113250+00:00", "action": "updated", "ticket_id": "C14", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-04-13T02:09:37.406433+00:00", "action": "updated", "ticket_id": "C15", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-04-13T02:09:38.682768+00:00", "action": "updated", "ticket_id": "T4", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-04-13T02:09:39.975825+00:00", "action": "updated", "ticket_id": "T5", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-04-13T02:09:41.228625+00:00", "action": "updated", "ticket_id": "T6", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-04-13T02:09:42.501823+00:00", "action": "updated", "ticket_id": "T7", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-04-13T02:09:43.775889+00:00", "action": "updated", "ticket_id": "T8", "agent": null, "fields": {"status": "closed"}}

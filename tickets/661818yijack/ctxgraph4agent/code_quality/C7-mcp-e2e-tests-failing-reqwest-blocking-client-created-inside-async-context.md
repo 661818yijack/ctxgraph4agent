@@ -4,11 +4,11 @@ title: 'MCP e2e tests failing: reqwest blocking client created inside async cont
 repo: 661818yijack/ctxgraph4agent
 category: code_quality
 severity: critical
-status: open
+status: closed
 owner: 661818yijack
 file: crates/ctxgraph-extract/src/llm_extract.rs
 created_at: '2026-04-06T02:04:45.529201Z'
-updated_at: '2026-04-06T02:04:45.529201Z'
+updated_at: '2026-04-15T02:10:57.224274Z'
 tags:
 - bug
 - mcp
@@ -17,4 +17,4 @@ tags:
 ---
 
 <!-- DESCRIPTION -->
-MCP e2e tests panic with 'Cannot drop a runtime in a context where blocking is not allowed'. Root cause: LlmExtractor::from_env() uses reqwest::blocking::Client but is called from Graph::load_extraction_pipeline() inside async fn main(). The blocking client creation (and HTTP calls) must be non-blocking/async.
+RESOLVED: LlmExtractor was already converted to async reqwest::Client. The MCP server uses tokio async runtime throughout. No reqwest::blocking calls exist in the async path. The only reqwest::blocking usage is in model_manager.rs download() which is only called by ctxgraph models download CLI command, never during MCP operation.
