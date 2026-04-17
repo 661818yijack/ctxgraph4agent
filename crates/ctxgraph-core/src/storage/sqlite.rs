@@ -210,37 +210,30 @@ impl Storage {
     }
 
     pub fn list_entities(&self, entity_type: Option<&str>, limit: usize) -> Result<Vec<Entity>> {
-        let (sql, type_param);
+        let soft_expire_filter =
+            "AND COALESCE(json_extract(metadata, '$.marked_for_deletion'), 0) = 0";
+
         if let Some(et) = entity_type {
-            sql = "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata, usage_count, last_recalled_at
-                   FROM entities WHERE entity_type = ?1 ORDER BY created_at DESC LIMIT ?2";
-            type_param = Some(et.to_string());
-        } else {
-            sql = "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata, usage_count, last_recalled_at
-                   FROM entities ORDER BY created_at DESC LIMIT ?2";
-            type_param = None;
-        }
-
-        let mut stmt = self.conn.prepare(sql)?;
-
-        let rows = if let Some(ref tp) = type_param {
-            stmt.query_map(params![tp, limit as i64], map_entity_row)?
-        } else {
-            // For the no-filter case, use a placeholder for ?1 that matches nothing
-            // Actually, we need different SQL. Let's handle this properly.
-            drop(stmt);
-            let mut stmt2 = self.conn.prepare(
+            let sql = format!(
                 "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata, usage_count, last_recalled_at
-                 FROM entities ORDER BY created_at DESC LIMIT ?1",
-            )?;
-            let entities = stmt2
+                 FROM entities WHERE entity_type = ?1 {soft_expire_filter} ORDER BY created_at DESC LIMIT ?2"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let entities = stmt
+                .query_map(params![et, limit as i64], map_entity_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(entities)
+        } else {
+            let sql = format!(
+                "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata, usage_count, last_recalled_at
+                 FROM entities WHERE 1=1 {soft_expire_filter} ORDER BY created_at DESC LIMIT ?1"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let entities = stmt
                 .query_map(params![limit as i64], map_entity_row)?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
-            return Ok(entities);
-        };
-
-        let entities = rows.collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(entities)
+            Ok(entities)
+        }
     }
 
     // ── Entity Deduplication ──
@@ -347,7 +340,8 @@ impl Storage {
             "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds, fact,
                     valid_from, valid_until, recorded_at, confidence, episode_id, metadata,
                     usage_count, last_recalled_at
-             FROM edges WHERE source_id = ?1 OR target_id = ?1
+             FROM edges WHERE (source_id = ?1 OR target_id = ?1)
+               AND COALESCE(json_extract(metadata, '$.marked_for_deletion'), 0) = 0
              ORDER BY recorded_at DESC",
         )?;
 
@@ -365,6 +359,7 @@ impl Storage {
                     usage_count, last_recalled_at
              FROM edges
              WHERE (source_id = ?1 OR target_id = ?1) AND valid_until IS NULL
+               AND COALESCE(json_extract(metadata, '$.marked_for_deletion'), 0) = 0
              ORDER BY recorded_at DESC",
         )?;
 
@@ -1064,7 +1059,8 @@ impl Storage {
     pub fn get_entity_counts_by_type(&self) -> Result<Vec<(String, usize)>> {
         let mut stmt = self.conn.prepare(
             "SELECT memory_type, COUNT(*) as cnt FROM entities
-             WHERE metadata IS NULL OR json_extract(metadata, '$.archived') IS NOT TRUE
+             WHERE (metadata IS NULL OR json_extract(metadata, '$.archived') IS NOT TRUE)
+               AND COALESCE(json_extract(metadata, '$.marked_for_deletion'), 0) = 0
              GROUP BY memory_type ORDER BY cnt DESC",
         )?;
         let result = stmt
@@ -1090,6 +1086,7 @@ impl Storage {
                AND ttl_seconds > 0
                AND (strftime('%s', 'now') - strftime('%s', created_at)) > (?1 + ttl_seconds)
                AND (metadata IS NULL OR json_extract(metadata, '$.archived') IS NOT TRUE)
+               AND COALESCE(json_extract(metadata, '$.marked_for_deletion'), 0) = 0
              GROUP BY memory_type ORDER BY cnt DESC",
         )?;
         let result = stmt
@@ -1101,15 +1098,22 @@ impl Storage {
     }
 
     pub fn stats(&self) -> Result<GraphStats> {
+        let soft_expire_filter =
+            "AND COALESCE(json_extract(metadata, '$.marked_for_deletion'), 0) = 0";
+
         let episode_count: usize =
             self.conn
                 .query_row("SELECT COUNT(*) FROM episodes", [], |row| row.get(0))?;
-        let entity_count: usize =
-            self.conn
-                .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))?;
-        let edge_count: usize = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))?;
+        let entity_count: usize = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM entities WHERE 1=1 {soft_expire_filter}"),
+            [],
+            |row| row.get(0),
+        )?;
+        let edge_count: usize = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM edges WHERE 1=1 {soft_expire_filter}"),
+            [],
+            |row| row.get(0),
+        )?;
 
         let mut stmt = self.conn.prepare(
             "SELECT COALESCE(source, 'unknown'), COUNT(*)
@@ -1135,26 +1139,32 @@ impl Storage {
         let grace_period_for_stats: i64 = 604800; // 7 days default
 
         let decayed_entities: usize = self.conn.query_row(
-            "SELECT COUNT(*) FROM entities
-             WHERE memory_type IN ('fact', 'experience', 'preference', 'decision')
-               AND ttl_seconds IS NOT NULL
-               AND ttl_seconds > 0
-               AND (
-                   -- age > grace_period + ttl_seconds
-                   (strftime('%s', 'now') - strftime('%s', created_at)) > (?1 + ttl_seconds)
-               )",
+            &format!(
+                "SELECT COUNT(*) FROM entities
+                 WHERE memory_type IN ('fact', 'experience', 'preference', 'decision')
+                   AND ttl_seconds IS NOT NULL
+                   AND ttl_seconds > 0
+                   AND (
+                       -- age > grace_period + ttl_seconds
+                       (strftime('%s', 'now') - strftime('%s', created_at)) > (?1 + ttl_seconds)
+                   )
+                   {soft_expire_filter}"
+            ),
             [grace_period_for_stats],
             |row| row.get(0),
         )?;
 
         let decayed_edges: usize = self.conn.query_row(
-            "SELECT COUNT(*) FROM edges
-             WHERE memory_type IN ('fact', 'experience', 'preference', 'decision')
-               AND ttl_seconds IS NOT NULL
-               AND ttl_seconds > 0
-               AND (
-                   (strftime('%s', 'now') - strftime('%s', recorded_at)) > (?1 + ttl_seconds)
-               )",
+            &format!(
+                "SELECT COUNT(*) FROM edges
+                 WHERE memory_type IN ('fact', 'experience', 'preference', 'decision')
+                   AND ttl_seconds IS NOT NULL
+                   AND ttl_seconds > 0
+                   AND (
+                       (strftime('%s', 'now') - strftime('%s', recorded_at)) > (?1 + ttl_seconds)
+                   )
+                   {soft_expire_filter}"
+            ),
             [grace_period_for_stats],
             |row| row.get(0),
         )?;
@@ -3270,5 +3280,290 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
         assert_eq!(count, 2);
+    }
+
+    // ── Soft-expire filtering: list_entities, get_edges_for_entity, stats ──
+
+    #[test]
+    fn test_soft_expired_entity_excluded_from_list_entities() {
+        let storage = new_test_storage();
+
+        let entity1 = crate::types::Entity {
+            id: "entity_active".to_string(),
+            name: "Active Entity".to_string(),
+            entity_type: "component".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        let entity2 = crate::types::Entity {
+            id: "entity_expired".to_string(),
+            name: "Expired Entity".to_string(),
+            entity_type: "component".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        storage.insert_entity(&entity1).unwrap();
+        storage.insert_entity(&entity2).unwrap();
+
+        // Soft-expire entity2
+        assert!(storage.mark_for_deletion("entity_expired").unwrap());
+
+        // list_entities should only return entity1
+        let all = storage.list_entities(None, 100).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, "entity_active");
+
+        // Filtered by type should also exclude
+        let by_type = storage.list_entities(Some("component"), 100).unwrap();
+        assert_eq!(by_type.len(), 1);
+        assert_eq!(by_type[0].id, "entity_active");
+    }
+
+    #[test]
+    fn test_soft_expired_edges_excluded_from_get_edges_for_entity() {
+        let storage = new_test_storage();
+
+        // Create two entities
+        let e1 = crate::types::Entity {
+            id: "src_entity".to_string(),
+            name: "Source".to_string(),
+            entity_type: "component".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        let e2 = crate::types::Entity {
+            id: "tgt_entity".to_string(),
+            name: "Target".to_string(),
+            entity_type: "component".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        storage.insert_entity(&e1).unwrap();
+        storage.insert_entity(&e2).unwrap();
+
+        // Create two edges between them
+        let edge1 = crate::types::Edge {
+            id: "edge_active".to_string(),
+            source_id: "src_entity".to_string(),
+            target_id: "tgt_entity".to_string(),
+            relation: "uses".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            fact: None,
+            valid_from: None,
+            valid_until: None,
+            recorded_at: Utc::now(),
+            confidence: 0.9,
+            episode_id: None,
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        let edge2 = crate::types::Edge {
+            id: "edge_expired".to_string(),
+            source_id: "src_entity".to_string(),
+            target_id: "tgt_entity".to_string(),
+            relation: "depends_on".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            fact: None,
+            valid_from: None,
+            valid_until: None,
+            recorded_at: Utc::now(),
+            confidence: 0.8,
+            episode_id: None,
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        storage.insert_edge(&edge1).unwrap();
+        storage.insert_edge(&edge2).unwrap();
+
+        // Soft-expire one edge
+        assert!(storage.mark_for_deletion("edge_expired").unwrap());
+
+        // get_edges_for_entity should only return the active edge
+        let edges = storage.get_edges_for_entity("src_entity").unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].id, "edge_active");
+
+        // get_current_edges_for_entity should also filter
+        let current = storage.get_current_edges_for_entity("src_entity").unwrap();
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].id, "edge_active");
+    }
+
+    #[test]
+    fn test_stats_excludes_soft_expired_from_entity_and_edge_counts() {
+        let storage = new_test_storage();
+
+        let e1 = crate::types::Entity {
+            id: "stat_entity_1".to_string(),
+            name: "Entity 1".to_string(),
+            entity_type: "component".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        let e2 = crate::types::Entity {
+            id: "stat_entity_2".to_string(),
+            name: "Entity 2".to_string(),
+            entity_type: "component".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        let e3 = crate::types::Entity {
+            id: "stat_entity_3".to_string(),
+            name: "Entity 3".to_string(),
+            entity_type: "component".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        storage.insert_entity(&e1).unwrap();
+        storage.insert_entity(&e2).unwrap();
+        storage.insert_entity(&e3).unwrap();
+
+        // Soft-expire entity3
+        storage.mark_for_deletion("stat_entity_3").unwrap();
+
+        let edge1 = crate::types::Edge {
+            id: "stat_edge_1".to_string(),
+            source_id: "stat_entity_1".to_string(),
+            target_id: "stat_entity_2".to_string(),
+            relation: "uses".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            fact: None,
+            valid_from: None,
+            valid_until: None,
+            recorded_at: Utc::now(),
+            confidence: 0.9,
+            episode_id: None,
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        let edge2 = crate::types::Edge {
+            id: "stat_edge_2".to_string(),
+            source_id: "stat_entity_2".to_string(),
+            target_id: "stat_entity_1".to_string(),
+            relation: "depends_on".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            fact: None,
+            valid_from: None,
+            valid_until: None,
+            recorded_at: Utc::now(),
+            confidence: 0.8,
+            episode_id: None,
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        storage.insert_edge(&edge1).unwrap();
+        storage.insert_edge(&edge2).unwrap();
+
+        // Soft-expire edge2
+        storage.mark_for_deletion("stat_edge_2").unwrap();
+
+        let stats = storage.stats().unwrap();
+        assert_eq!(
+            stats.entity_count, 2,
+            "stats should exclude soft-expired entity"
+        );
+        assert_eq!(
+            stats.edge_count, 1,
+            "stats should exclude soft-expired edge"
+        );
+    }
+
+    #[test]
+    fn test_entity_counts_by_type_excludes_soft_expired() {
+        let storage = new_test_storage();
+
+        let e1 = crate::types::Entity {
+            id: "count_fact_1".to_string(),
+            name: "Fact 1".to_string(),
+            entity_type: "technology".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        let e2 = crate::types::Entity {
+            id: "count_fact_2".to_string(),
+            name: "Fact 2".to_string(),
+            entity_type: "technology".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        let e3 = crate::types::Entity {
+            id: "count_fact_3_expired".to_string(),
+            name: "Fact 3 (expired)".to_string(),
+            entity_type: "technology".to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        };
+        storage.insert_entity(&e1).unwrap();
+        storage.insert_entity(&e2).unwrap();
+        storage.insert_entity(&e3).unwrap();
+
+        // Soft-expire one fact entity
+        storage.mark_for_deletion("count_fact_3_expired").unwrap();
+
+        let counts = storage.get_entity_counts_by_type().unwrap();
+        let fact_count = counts.iter().find(|(t, _)| t == "fact").map(|(_, c)| *c);
+        assert_eq!(
+            fact_count,
+            Some(2),
+            "fact count should be 2 (excluded soft-expired)"
+        );
     }
 }
