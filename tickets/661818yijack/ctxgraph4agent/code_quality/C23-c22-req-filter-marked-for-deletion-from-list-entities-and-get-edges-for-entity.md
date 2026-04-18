@@ -4,11 +4,11 @@ title: '[C22] REQ: Filter marked_for_deletion from list_entities and get_edges_f
 repo: 661818yijack/ctxgraph4agent
 category: code_quality
 severity: high
-status: in_progress
+status: closed
 owner: 661818yijack
 file: crates/ctxgraph-core/src/storage/sqlite.rs
 created_at: '2026-04-17T02:04:57.121934Z'
-updated_at: '2026-04-17T02:06:52.143295Z'
+updated_at: '2026-04-18T02:03:16.644127Z'
 tags:
 - req
 - c22
