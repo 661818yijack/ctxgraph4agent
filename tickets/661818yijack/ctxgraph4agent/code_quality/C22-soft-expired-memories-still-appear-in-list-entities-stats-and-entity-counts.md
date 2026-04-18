@@ -4,11 +4,11 @@ title: Soft-expired memories still appear in list_entities, stats, and entity co
 repo: 661818yijack/ctxgraph4agent
 category: code_quality
 severity: medium
-status: open
+status: closed
 owner: 661818yijack
 file: crates/ctxgraph-core/src/storage/sqlite.rs
 created_at: '2026-04-17T02:04:54.001857Z'
-updated_at: '2026-04-17T02:04:54.001857Z'
+updated_at: '2026-04-18T02:03:16.478250Z'
 tags:
 - soft-expire
 - forget

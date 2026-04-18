@@ -4,11 +4,11 @@ title: '[C24] UC: Stats exclude soft-expired from entity/edge counts'
 repo: 661818yijack/ctxgraph4agent
 category: testing
 severity: medium
-status: open
+status: closed
 owner: 661818yijack
 file: null
 created_at: '2026-04-17T02:05:10.432099Z'
-updated_at: '2026-04-17T02:05:10.432099Z'
+updated_at: '2026-04-18T02:03:20.164182Z'
 tags:
 - uc
 - c24
