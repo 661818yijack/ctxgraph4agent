@@ -4,7 +4,7 @@ title: '[C2] UC: MCP server starts and handles JSON-RPC initialize request succe
 repo: 661818yijack/ctxgraph4agent
 category: testing
 severity: medium
-status: open
+status: closed
 owner: 661818yijack
 file: null
 created_at: '2026-04-06T02:04:48.573004Z'

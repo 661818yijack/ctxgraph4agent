@@ -4,7 +4,7 @@ title: "C2: Implicit TTL renewal (recalled and used -> auto-renew)"
 repo: 661818yijack/ctxgraph4agent
 category: code_quality
 severity: medium
-status: open
+status: closed
 owner: apex-agent
 phase: C
 priority: P1
