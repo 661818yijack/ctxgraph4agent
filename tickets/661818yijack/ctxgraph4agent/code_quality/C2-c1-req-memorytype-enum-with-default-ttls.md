@@ -8,7 +8,7 @@ status: closed
 owner: 661818yijack
 file: crates/ctxgraph-core/src/types.rs
 created_at: '2026-04-04T03:39:00.785408Z'
-updated_at: '2026-04-04T03:44:41.756680Z'
+updated_at: '2026-04-19T02:04:35.954470Z'
 tags:
 - req
 - c1
@@ -16,4 +16,4 @@ tags:
 ---
 
 <!-- DESCRIPTION -->
-Add MemoryType enum with variants Fact/Pattern/Experience/Preference/Decision. Each variant has a default TTL: Fact=90d, Pattern=None(never), Experience=14d, Preference=30d, Decision=90d. Must impl Serialize/Deserialize/Display. Include default_for_entity_type mapping function.
+B2 (Implicit TTL renewal) was removed from the roadmap on 2026-04-05. Auto-renewal on retrieval was deemed redundant: usage_count already rewards frequently-recalled memories in scoring, and active re-verify (B3) handles stale memory detection. This ticket is obsolete.
