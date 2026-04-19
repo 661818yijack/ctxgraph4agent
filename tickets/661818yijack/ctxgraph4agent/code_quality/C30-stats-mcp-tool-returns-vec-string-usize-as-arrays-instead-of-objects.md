@@ -4,11 +4,11 @@ title: Stats MCP tool returns Vec<(String,usize)> as arrays instead of objects
 repo: 661818yijack/ctxgraph4agent
 category: code_quality
 severity: medium
-status: open
+status: closed
 owner: 661818yijack
 file: crates/ctxgraph-mcp/src/tools.rs
 created_at: '2026-04-19T02:04:42.532333Z'
-updated_at: '2026-04-19T02:04:42.532333Z'
+updated_at: '2026-04-19T02:07:43.924104Z'
 tags:
 - bug
 - mcp

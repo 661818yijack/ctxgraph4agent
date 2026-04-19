@@ -4,11 +4,11 @@ title: '[C30] REQ: Convert stats Vec fields to JSON objects in MCP handler'
 repo: 661818yijack/ctxgraph4agent
 category: code_quality
 severity: medium
-status: in_progress
+status: closed
 owner: 661818yijack
 file: crates/ctxgraph-mcp/src/tools.rs
 created_at: '2026-04-19T02:04:48.304631Z'
-updated_at: '2026-04-19T02:05:19.697615Z'
+updated_at: '2026-04-19T02:07:44.089889Z'
 tags:
 - req
 - mcp

@@ -4,11 +4,11 @@ title: '[C31] UC: decayed_entities_by_type returned as JSON object with string k
 repo: 661818yijack/ctxgraph4agent
 category: testing
 severity: medium
-status: open
+status: closed
 owner: 661818yijack
 file: null
 created_at: '2026-04-19T02:05:10.580630Z'
-updated_at: '2026-04-19T02:05:10.580630Z'
+updated_at: '2026-04-19T02:07:44.742334Z'
 tags:
 - uc
 - test
