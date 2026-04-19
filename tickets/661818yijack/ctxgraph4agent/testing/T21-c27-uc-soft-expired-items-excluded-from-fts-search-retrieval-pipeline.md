@@ -4,11 +4,11 @@ title: '[C27] UC: Soft-expired items excluded from fts_search retrieval pipeline
 repo: 661818yijack/ctxgraph4agent
 category: testing
 severity: medium
-status: open
+status: closed
 owner: 661818yijack
 file: null
 created_at: '2026-04-18T02:03:52.948406Z'
-updated_at: '2026-04-18T02:03:52.948406Z'
+updated_at: '2026-04-19T02:04:38.561151Z'
 tags:
 - uc
 - test
@@ -17,4 +17,4 @@ tags:
 ---
 
 <!-- DESCRIPTION -->
-Given entities and edges exist with marked_for_deletion=true, When retrieve_for_context() runs the FTS5 search phase, Then no marked_for_deletion items appear in the candidate list from fts_search_entities/edges/episodes.
+Fixed in PR #8 (commit 51f1440, merged 2026-04-18). Soft-expire filtering now covers search_entities, search_edges, fts_search, get_1hop_candidates, and cleanup_expired. All paths filter on COALESCE(json_extract(metadata, '$.marked_for_deletion'), 0) = 0.

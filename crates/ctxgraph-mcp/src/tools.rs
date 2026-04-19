@@ -4,7 +4,19 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use ctxgraph::{Episode, Graph, MockBatchLabelDescriber, SkillScope};
 use ctxgraph_embed::EmbedEngine;
-use serde_json::{Value, json};
+use serde_json::{Map, Number, Value, json};
+
+/// Convert Vec<(String, usize)> to a JSON object { key: value }.
+///
+/// Vec<(String, usize)> serializes as arrays of arrays `[["fact", 5], ...]`,
+/// which is hard for agents to consume. This produces `{"fact": 5, ...}` instead.
+fn vec_pairs_to_json_object(pairs: &[(String, usize)]) -> Value {
+    let mut map = Map::new();
+    for (key, val) in pairs {
+        map.insert(key.clone(), Value::Number(Number::from(*val)));
+    }
+    Value::Object(map)
+}
 
 pub struct ToolContext {
     pub graph: Arc<AsyncMutex<Graph>>,
@@ -368,13 +380,6 @@ impl ToolContext {
         let graph = self.graph.lock().await;
         let stats = graph.stats().map_err(|e| e.to_string())?;
 
-        // Convert Vec<(String, usize)> to JSON object
-        let total_by_type: serde_json::Value =
-            serde_json::to_value(&stats.total_entities_by_type).unwrap_or(serde_json::Value::Null);
-        let decayed_by_type: serde_json::Value =
-            serde_json::to_value(&stats.decayed_entities_by_type)
-                .unwrap_or(serde_json::Value::Null);
-
         let mut result = json!({
             "episodes": stats.episode_count,
             "entities": stats.entity_count,
@@ -382,13 +387,13 @@ impl ToolContext {
             "decayed_entities": stats.decayed_entities,
             "decayed_edges": stats.decayed_edges,
             "db_size_bytes": stats.db_size_bytes,
-            "sources": stats.sources
+            "sources": vec_pairs_to_json_object(&stats.sources),
+            "total_entities_by_type": vec_pairs_to_json_object(&stats.total_entities_by_type),
+            "decayed_entities_by_type": vec_pairs_to_json_object(&stats.decayed_entities_by_type),
         });
 
         // Add cleanup visibility fields
         if let Some(obj) = result.as_object_mut() {
-            obj.insert("total_entities_by_type".to_string(), total_by_type);
-            obj.insert("decayed_entities_by_type".to_string(), decayed_by_type);
             obj.insert(
                 "last_cleanup_at".to_string(),
                 serde_json::Value::String(
