@@ -1,8 +1,11 @@
 use std::collections::HashMap;
+use std::env;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as AsyncMutex;
 
-use ctxgraph::{Episode, Graph, MockBatchLabelDescriber, SkillScope};
+use ctxgraph::{
+    BatchLabelDescriber, Episode, Graph, MockBatchLabelDescriber, PatternCandidate, SkillScope,
+};
 use ctxgraph_embed::EmbedEngine;
 use serde_json::{Map, Number, Value, json};
 
@@ -18,6 +21,198 @@ fn vec_pairs_to_json_object(pairs: &[(String, usize)]) -> Value {
     Value::Object(map)
 }
 
+/// LLM-based batch label describer for the MCP server.
+///
+/// Makes a single LLM call for all candidates and returns one label per candidate.
+/// Silently falls back to `MockBatchLabelDescriber` if no API key is configured.
+struct McpBatchLabelDescriber {
+    api_key: String,
+    model: String,
+    url: String,
+    /// true = OpenAI-compatible (ZAI), false = Anthropic-compatible (MiniMax)
+    openai_compat: bool,
+}
+
+impl McpBatchLabelDescriber {
+    /// Try to create from environment variables.
+    /// Returns `None` if no API key is set (silent fallback to mock).
+    fn from_env() -> Option<Self> {
+        // Priority: ZAI_API_KEY > MINIMAX_API_KEY > CTXGRAPH_LLM_KEY
+        if let Ok(key) = env::var("ZAI_API_KEY")
+            && !key.is_empty()
+        {
+            let model = env::var("CTXGRAPH_MODEL").unwrap_or_else(|_| "glm-5-turbo".to_string());
+            return Some(Self {
+                api_key: key,
+                model,
+                url: "https://api.z.ai/api/coding/paas/v4/chat/completions".to_string(),
+                openai_compat: true,
+            });
+        }
+
+        if let Ok(key) = env::var("MINIMAX_API_KEY")
+            && !key.is_empty()
+        {
+            let model = env::var("CTXGRAPH_MODEL").unwrap_or_else(|_| "MiniMax-M2.7".to_string());
+            return Some(Self {
+                api_key: key,
+                model,
+                url: "https://api.minimax.io/anthropic/v1/messages".to_string(),
+                openai_compat: false,
+            });
+        }
+
+        if let Ok(key) = env::var("CTXGRAPH_LLM_KEY")
+            && !key.is_empty()
+        {
+            let url = env::var("CTXGRAPH_LLM_URL").unwrap_or_else(|_| {
+                "https://api.z.ai/api/coding/paas/v4/chat/completions".to_string()
+            });
+            let model =
+                env::var("CTXGRAPH_LLM_MODEL").unwrap_or_else(|_| "glm-5-turbo".to_string());
+            let openai_compat = !url.contains("minimax");
+            return Some(Self {
+                api_key: key,
+                model,
+                url,
+                openai_compat,
+            });
+        }
+
+        None
+    }
+
+    async fn call_llm(&self, prompt: &str, max_tokens: u32) -> Result<String, String> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        let body = json!({
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": 0.3
+        });
+
+        let response = if self.openai_compat {
+            client
+                .post(&self.url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+        } else {
+            client
+                .post(&self.url)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+        };
+
+        let response = response.map_err(|e| e.to_string())?;
+        let json: Value = response.json().await.map_err(|e| e.to_string())?;
+
+        json["choices"][0]["message"]["content"]
+            .as_str()
+            .map(|s| s.trim().to_string())
+            .ok_or_else(|| "Invalid LLM response".to_string())
+    }
+}
+
+impl BatchLabelDescriber for McpBatchLabelDescriber {
+    async fn describe_batch(
+        &self,
+        candidates: &[PatternCandidate],
+        source_summaries: &std::collections::HashMap<String, Vec<String>>,
+    ) -> ctxgraph::Result<Vec<(String, String)>> {
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let patterns_text: String = candidates
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let detail = if let Some(ref triplet) = c.relation_triplet {
+                    format!("{} --({})--> {}", triplet.0, triplet.1, triplet.2)
+                } else if let Some(ref pair) = c.entity_pair {
+                    format!("{} <-> {}", pair.0, pair.1)
+                } else {
+                    format!("types: {}", c.entity_types.join(", "))
+                };
+                let summaries = source_summaries
+                    .get(&c.id)
+                    .map(|v| v.iter().take(2).cloned().collect::<Vec<_>>().join("; "))
+                    .unwrap_or_default();
+                let ctx = if summaries.is_empty() {
+                    String::new()
+                } else {
+                    format!(" | context: {}", summaries)
+                };
+                format!(
+                    "{}. {} | episodes: {}{}",
+                    i + 1,
+                    detail,
+                    c.occurrence_count,
+                    ctx
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let prompt = format!(
+            "You are a behavioral pattern analyzer. For each pattern below, generate a \
+            1-2 sentence behavioral label describing what the agent or user does/should do.\n\n\
+            Patterns:\n{}\n\n\
+            Output JSON array:\n[{{\n  \"id\": \"1\",\n  \"label\": \"...\"\n}}, ...]\n\n\
+            Rules:\n\
+            - Max 150 chars per label\n\
+            - Focus on observable behaviors, not metadata\n\
+            - DO NOT include episode counts or entity type names\n\
+            - id must match the pattern number exactly",
+            patterns_text
+        );
+
+        let max_tokens = (candidates.len() as u32) * 60 + 100;
+        let raw = self
+            .call_llm(&prompt, max_tokens)
+            .await
+            .map_err(|e| ctxgraph::CtxGraphError::Extraction(e))?;
+
+        let parsed: Value = serde_json::from_str(raw.trim()).map_err(|e| {
+            ctxgraph::CtxGraphError::Extraction(format!("Failed to parse batch labels JSON: {}", e))
+        })?;
+
+        let arr = parsed.as_array().ok_or_else(|| {
+            ctxgraph::CtxGraphError::Extraction("Expected JSON array from LLM".to_string())
+        })?;
+
+        let mut results = Vec::new();
+        for item in arr {
+            let id_str = item["id"]
+                .as_str()
+                .or_else(|| item["id"].as_u64().map(|_| ""))
+                .unwrap_or("")
+                .to_string();
+            let label = item["label"].as_str().unwrap_or("").to_string();
+
+            if let Ok(idx) = id_str.parse::<usize>()
+                && idx >= 1
+                && idx <= candidates.len()
+            {
+                results.push((candidates[idx - 1].id.clone(), label));
+            }
+        }
+
+        Ok(results)
+    }
+}
+
 pub struct ToolContext {
     pub graph: Arc<AsyncMutex<Graph>>,
     pub embed: Option<Arc<EmbedEngine>>,
@@ -27,6 +222,9 @@ pub struct ToolContext {
     /// Invalidated (new entry appended) when `add_episode` stores a new embedding
     /// so subsequent searches never re-hit SQLite for already-loaded episodes.
     embedding_cache: Mutex<Option<HashMap<String, Vec<f32>>>>,
+    /// Optional LLM-based describer for the learn tool.
+    /// None if no API key is configured (falls back to MockBatchLabelDescriber).
+    describer: Option<McpBatchLabelDescriber>,
 }
 
 impl ToolContext {
@@ -35,6 +233,7 @@ impl ToolContext {
             graph: Arc::new(AsyncMutex::new(graph)),
             embed: embed.map(Arc::new),
             embedding_cache: Mutex::new(None),
+            describer: McpBatchLabelDescriber::from_env(),
         }
     }
 
@@ -444,18 +643,29 @@ impl ToolContext {
         };
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
-        let describer = MockBatchLabelDescriber;
-
         let graph = self.graph.lock().await;
-        let result = graph
-            .run_learning_pipeline(&agent, scope, &describer, limit)
-            .await
-            .map_err(|e| e.to_string())?;
+
+        let result = if let Some(ref describer) = self.describer {
+            // Real LLM describer available
+            graph
+                .run_learning_pipeline(&agent, scope, describer, limit)
+                .await
+                .map_err(|e| e.to_string())?
+        } else {
+            // No API key configured — silent fallback to mock labels
+            let mock = MockBatchLabelDescriber;
+            graph
+                .run_learning_pipeline(&agent, scope, &mock, limit)
+                .await
+                .map_err(|e| e.to_string())?
+        };
 
         Ok(json!({
             "patterns_found": result.patterns_found,
+            "patterns_new": result.patterns_new,
             "skills_created": result.skills_created,
-            "skills_updated": result.skills_updated
+            "skills_updated": result.skills_updated,
+            "skill_ids": result.skill_ids,
         }))
     }
 
