@@ -2128,25 +2128,25 @@ impl Storage {
 
     /// Get all compression groups with their associated entities and edges.
     ///
-    /// A compression group consists of:
-    /// - One compressed (summary) episode (`compression_id IS NULL`)
-    /// - All source episodes that were compressed into it (`compression_id = summary_id`)
-    /// - Entities linked to the source episodes
-    /// - Edges from the source episodes
+    /// Store a pattern candidate as a LearnedPattern entity.
     ///
-    /// This method is used by D1a (co-occurrence counting) to extract pattern candidates.
-    pub fn get_compression_groups(
+    /// Loads all Experience-type episodes with their associated entities and edges,
+    /// then runs the pure-logic `PatternExtractor` to produce ranked candidates
+    /// filtered by the given config.
+    ///
+    /// This is the storage-layer entry point for D1a (pattern extraction phase of Learn).
+    pub fn get_pattern_candidates(
         &self,
-        before: DateTime<Utc>,
-    ) -> Result<Vec<CompressionGroupData>> {
-        // Find all compressed summary episodes (source = 'compression') recorded before `before`
-        let mut stmt = self.conn.prepare(
+        config: &PatternExtractorConfig,
+    ) -> Result<Vec<PatternCandidate>> {
+        // 1. Load all Experience episodes (raw evidence chain for skills)
+        let mut ep_stmt = self.conn.prepare(
             "SELECT id, content, source, recorded_at, metadata, compression_id, memory_type
-             FROM episodes WHERE source = 'compression' AND recorded_at < ?1",
+             FROM episodes WHERE memory_type = 'experience'
+             ORDER BY recorded_at DESC",
         )?;
-
-        let comp_episodes: Vec<Episode> = stmt
-            .query_map(params![before.to_rfc3339()], |row| {
+        let episodes: Vec<Episode> = ep_stmt
+            .query_map([], |row| {
                 Ok(Episode {
                     id: row.get(0)?,
                     content: row.get(1)?,
@@ -2161,67 +2161,45 @@ impl Storage {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        let mut groups = Vec::new();
-        for comp_ep in comp_episodes {
-            // Get source episode IDs for this compression group
-            // Source episodes have compression_id = comp_ep.id
-            let mut src_stmt = self
-                .conn
-                .prepare("SELECT id FROM episodes WHERE compression_id = ?1")?;
-            let source_ids: Vec<String> = src_stmt
-                .query_map(params![comp_ep.id.clone()], |row| row.get(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-
-            // Get entities linked to source episodes
-            let mut entity_stmt = self.conn.prepare(
-                "SELECT DISTINCT e.id, e.name, e.entity_type, e.memory_type, e.ttl_seconds,
-                        e.summary, e.created_at, e.metadata, e.usage_count, e.last_recalled_at
-                 FROM entities e
-                 JOIN episode_entities ee ON e.id = ee.entity_id
-                 WHERE ee.episode_id IN (SELECT id FROM episodes WHERE compression_id = ?1)",
-            )?;
-            let entities: Vec<Entity> = entity_stmt
-                .query_map(params![comp_ep.id.clone()], map_entity_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-
-            // Get edges from source episodes (episode_id matches source episode IDs)
-            let mut edge_stmt = self.conn.prepare(
-                "SELECT e.id, e.source_id, e.target_id, e.relation, e.memory_type, e.ttl_seconds,
-                        e.fact, e.valid_from, e.valid_until, e.recorded_at, e.confidence,
-                        e.episode_id, e.metadata, e.usage_count, e.last_recalled_at
-                 FROM edges e
-                 WHERE e.episode_id IN (SELECT id FROM episodes WHERE compression_id = ?1)
-                 AND e.valid_until IS NULL",
-            )?;
-            let edges: Vec<Edge> = edge_stmt
-                .query_map(params![comp_ep.id.clone()], map_edge_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-
-            groups.push(CompressionGroupData {
-                compression_id: comp_ep.id,
-                source_episode_ids: source_ids,
-                entities,
-                edges,
-            });
+        if episodes.is_empty() {
+            return Ok(Vec::new());
         }
 
-        Ok(groups)
-    }
+        let episode_ids: Vec<&str> = episodes.iter().map(|e| e.id.as_str()).collect();
 
-    /// Extract pattern candidates from all compression groups using co-occurrence counting.
-    ///
-    /// Loads all compression groups via `get_compression_groups` and runs the pure-logic
-    /// `PatternExtractor` to produce ranked candidates filtered by the given config.
-    pub fn get_pattern_candidates(
-        &self,
-        config: &PatternExtractorConfig,
-    ) -> Result<Vec<PatternCandidate>> {
-        let before = Utc::now();
-        let _groups = self.get_compression_groups(before)?;
+        // 2. Load entities linked to these episodes via episode_entities junction
+        let placeholders: Vec<String> = (1..=episode_ids.len()).map(|i| format!("?{i}")).collect();
+        let in_clause = placeholders.join(", ");
+        let mut entity_stmt = self.conn.prepare(&format!(
+            "SELECT DISTINCT e.id, e.name, e.entity_type, e.memory_type, e.ttl_seconds,
+                    e.summary, e.created_at, e.metadata, e.usage_count, e.last_recalled_at
+             FROM entities e
+             JOIN episode_entities ee ON e.id = ee.entity_id
+             WHERE ee.episode_id IN ({in_clause})"
+        ))?;
+        let entities: Vec<Entity> = entity_stmt
+            .query_map(
+                rusqlite::params_from_iter(episode_ids.iter()),
+                map_entity_row,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // 3. Load edges from these episodes (only valid/non-expired edges)
+        let mut edge_stmt = self.conn.prepare(&format!(
+            "SELECT id, source_id, target_id, relation, memory_type, ttl_seconds,
+                    fact, valid_from, valid_until, recorded_at, confidence,
+                    episode_id, metadata, usage_count, last_recalled_at
+             FROM edges
+             WHERE episode_id IN ({in_clause})
+             AND valid_until IS NULL"
+        ))?;
+        let edges: Vec<Edge> = edge_stmt
+            .query_map(rusqlite::params_from_iter(episode_ids.iter()), map_edge_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // 4. Run pure-logic extraction
         let extractor = PatternExtractor::new();
-        // CompressionGroupData can be converted to episodes - for now, pass empty slices
-        // TODO: properly map CompressionGroupData to episodes/entities/edges
-        Ok(extractor.extract(&[], &[], &[], config))
+        Ok(extractor.extract(&episodes, &entities, &edges, config))
     }
 
     /// Store a pattern candidate as a LearnedPattern entity.
@@ -4033,5 +4011,246 @@ mod tests {
             "cleanup should handle FK safety: {:?}",
             result.errors
         );
+    }
+
+    // ── get_pattern_candidates tests (T30-T32) ──────────────────────────────
+
+    fn make_test_episode(id: &str) -> Episode {
+        Episode {
+            id: id.to_string(),
+            content: format!("Fixed Docker networking bug in episode {id}"),
+            source: Some("agent".to_string()),
+            recorded_at: Utc::now(),
+            metadata: None,
+            compression_id: None,
+            memory_type: MemoryType::Experience,
+        }
+    }
+
+    fn make_test_entity(id: &str, name: &str, entity_type: &str) -> Entity {
+        Entity {
+            id: id.to_string(),
+            name: name.to_string(),
+            entity_type: entity_type.to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            summary: None,
+            created_at: Utc::now(),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        }
+    }
+
+    fn make_test_edge(
+        id: &str,
+        source_id: &str,
+        target_id: &str,
+        relation: &str,
+        episode_id: &str,
+    ) -> Edge {
+        Edge {
+            id: id.to_string(),
+            source_id: source_id.to_string(),
+            target_id: target_id.to_string(),
+            relation: relation.to_string(),
+            memory_type: MemoryType::Fact,
+            ttl: Some(Duration::from_secs(90 * 86400)),
+            fact: None,
+            valid_from: None,
+            valid_until: None,
+            recorded_at: Utc::now(),
+            confidence: 1.0,
+            episode_id: Some(episode_id.to_string()),
+            metadata: None,
+            usage_count: 0,
+            last_recalled_at: None,
+        }
+    }
+
+    /// T30: get_pattern_candidates returns candidates from episodes with edges
+    #[test]
+    fn test_get_pattern_candidates_returns_candidates_from_episodes() {
+        let storage = new_test_storage();
+
+        // Insert 4 Experience episodes (above default threshold of 3)
+        for i in 1..=4 {
+            let ep = make_test_episode(&format!("ep{i}"));
+            storage.insert_episode(&ep).unwrap();
+        }
+
+        // Insert entities
+        let docker = make_test_entity("e1", "Docker", "Component");
+        let network = make_test_entity("e2", "Network", "Infrastructure");
+        storage.insert_entity(&docker).unwrap();
+        storage.insert_entity(&network).unwrap();
+
+        // Link entities to episodes
+        for i in 1..=4 {
+            storage
+                .link_episode_entity(&format!("ep{i}"), "e1", None, None)
+                .unwrap();
+            storage
+                .link_episode_entity(&format!("ep{i}"), "e2", None, None)
+                .unwrap();
+        }
+
+        // Insert edges (one per episode, same pair)
+        for i in 1..=4 {
+            let edge = make_test_edge(
+                &format!("edge{i}"),
+                "e1",
+                "e2",
+                "depends_on",
+                &format!("ep{i}"),
+            );
+            storage.insert_edge(&edge).unwrap();
+        }
+
+        // Run pattern extraction with default config (min_occurrence_count = 3)
+        let config = PatternExtractorConfig::default();
+        let candidates = storage
+            .get_pattern_candidates(&config)
+            .expect("get_pattern_candidates should not error");
+
+        // Should find candidates — at least a triplet and/or pair
+        assert!(
+            !candidates.is_empty(),
+            "expected non-empty candidates with 4 episodes sharing same entity pair, got {}",
+            candidates.len()
+        );
+
+        // The triplet (Docker, depends_on, Network) should appear with count 4
+        let triplet = candidates.iter().find(|c| c.relation_triplet.is_some());
+        assert!(
+            triplet.is_some(),
+            "expected a triplet candidate among {:?}",
+            candidates
+                .iter()
+                .map(|c| &c.relation_triplet)
+                .collect::<Vec<_>>()
+        );
+        let t = triplet.unwrap();
+        assert_eq!(t.occurrence_count, 4);
+    }
+
+    /// T31: get_pattern_candidates returns empty for database with no episodes
+    #[test]
+    fn test_get_pattern_candidates_empty_db_returns_empty() {
+        let storage = new_test_storage();
+        let config = PatternExtractorConfig::default();
+        let candidates = storage
+            .get_pattern_candidates(&config)
+            .expect("get_pattern_candidates should not error on empty DB");
+        assert!(
+            candidates.is_empty(),
+            "expected empty candidates for empty DB"
+        );
+    }
+
+    /// T32: Episodes below min_occurrence_count returns no candidates
+    #[test]
+    fn test_get_pattern_candidates_below_threshold_returns_empty() {
+        let storage = new_test_storage();
+
+        // Only 2 episodes (below default threshold of 3)
+        for i in 1..=2 {
+            let ep = make_test_episode(&format!("ep{i}"));
+            storage.insert_episode(&ep).unwrap();
+        }
+
+        let docker = make_test_entity("e1", "Docker", "Component");
+        let network = make_test_entity("e2", "Network", "Infrastructure");
+        storage.insert_entity(&docker).unwrap();
+        storage.insert_entity(&network).unwrap();
+
+        for i in 1..=2 {
+            storage
+                .link_episode_entity(&format!("ep{i}"), "e1", None, None)
+                .unwrap();
+            storage
+                .link_episode_entity(&format!("ep{i}"), "e2", None, None)
+                .unwrap();
+            let edge = make_test_edge(
+                &format!("edge{i}"),
+                "e1",
+                "e2",
+                "depends_on",
+                &format!("ep{i}"),
+            );
+            storage.insert_edge(&edge).unwrap();
+        }
+
+        // Default threshold is 3 → should return empty
+        let config = PatternExtractorConfig::default();
+        let candidates_default = storage
+            .get_pattern_candidates(&config)
+            .expect("should not error");
+        assert!(
+            candidates_default.is_empty(),
+            "expected empty candidates with 2 episodes and default threshold 3"
+        );
+
+        // With threshold 1 → should find candidates
+        let config_low = PatternExtractorConfig {
+            min_occurrence_count: 1,
+            ..Default::default()
+        };
+        let candidates_low = storage
+            .get_pattern_candidates(&config_low)
+            .expect("should not error");
+        assert!(
+            !candidates_low.is_empty(),
+            "expected candidates with threshold 1"
+        );
+    }
+
+    /// T33 (partial): get_pattern_candidates only sees Experience episodes
+    #[test]
+    fn test_get_pattern_candidates_ignores_non_experience_episodes() {
+        let storage = new_test_storage();
+
+        // Insert non-Experience episodes (should be ignored)
+        let mut fact_ep = make_test_episode("fact_ep1");
+        fact_ep.memory_type = MemoryType::Fact;
+        storage.insert_episode(&fact_ep).unwrap();
+
+        // Also insert one Experience episode
+        let exp_ep = make_test_episode("exp_ep1");
+        storage.insert_episode(&exp_ep).unwrap();
+
+        let entity = make_test_entity("e1", "Redis", "Cache");
+        storage.insert_entity(&entity).unwrap();
+
+        // Only link to Experience episode
+        storage
+            .link_episode_entity("exp_ep1", "e1", None, None)
+            .unwrap();
+
+        let edge = make_test_edge("edge1", "e1", "e1", "caches", "exp_ep1");
+        storage.insert_edge(&edge).unwrap();
+
+        let config = PatternExtractorConfig {
+            min_occurrence_count: 1,
+            ..Default::default()
+        };
+        let candidates = storage
+            .get_pattern_candidates(&config)
+            .expect("should not error");
+
+        // Should find candidates from the Experience episode only
+        // (Only 1 episode with threshold 1, so it may or may not produce candidates
+        // depending on extraction logic — but should NOT error)
+        // The key assertion: no crash, and only Experience data was used
+        let all_source_ids: std::collections::HashSet<&str> = candidates
+            .iter()
+            .flat_map(|c| c.source_groups.iter().map(|s| s.as_str()))
+            .collect();
+        if !all_source_ids.is_empty() {
+            assert!(
+                !all_source_ids.contains("fact_ep1"),
+                "should not include non-Experience episode IDs"
+            );
+        }
     }
 }

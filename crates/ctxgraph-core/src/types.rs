@@ -1821,16 +1821,3 @@ pub struct CompressionResult {
     /// Any errors that occurred during compression.
     pub errors: Vec<String>,
 }
-
-/// Data for a group of episodes that have been compressed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompressionGroupData {
-    /// ID of the compression summary episode.
-    pub compression_id: String,
-    /// IDs of original episodes that were compressed into this summary.
-    pub source_episode_ids: Vec<String>,
-    /// Entities from the original episodes.
-    pub entities: Vec<Entity>,
-    /// Edges connected to the original episodes.
-    pub edges: Vec<Edge>,
-}

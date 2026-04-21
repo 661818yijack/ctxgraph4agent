@@ -805,8 +805,7 @@ impl Graph {
     /// Get pattern candidates from raw episodes.
     ///
     /// Used by D1a for pattern candidate extraction.
-    /// NOTE: Compression has been removed. This now returns pattern candidates
-    /// from raw episodes via storage layer.
+    /// Loads Experience episodes from storage and runs co-occurrence analysis.
     pub fn get_pattern_candidates(
         &self,
         config: &PatternExtractorConfig,
