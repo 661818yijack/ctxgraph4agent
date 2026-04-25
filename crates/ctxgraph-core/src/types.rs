@@ -81,8 +81,7 @@ impl MemoryType {
     /// Decay formulas:
     /// - Exponential (Fact, Preference, Decision):
     ///   `base_confidence * exp(-λ * age)` where `λ = ln(2) / half_life`
-    ///   - Fact/Decision: `half_life = ttl * 0.5`
-    ///   - Preference:    `half_life = ttl * 0.7`
+    ///   - Fact/Decision/Preference: `half_life = ttl * 0.5`
     /// - Linear (Experience): `base_confidence * max(0.0, 1.0 - age / ttl)`
     /// - Constant (Pattern):  `base_confidence` (no decay, ignores ttl)
     pub fn decay_score(
