@@ -257,12 +257,12 @@ impl ExtractionPipeline {
                 #[cfg(not(feature = "cloakpipe"))]
                 let llm_text = text;
 
-                match llm.extract(llm_text, &self.schema).await {
+                match llm.extract(&llm_text, &self.schema).await {
                     Err(ref e) => {
                         llm_failed = true;
                         eprintln!("[ctxgraph] LLM escalation failed: {e}");
                     }
-                    Ok(llm_result) => {
+                    Ok(mut llm_result) => {
                         // Rehydrate PII in entity names when CloakPipe is active
                         #[cfg(feature = "cloakpipe")]
                         {
