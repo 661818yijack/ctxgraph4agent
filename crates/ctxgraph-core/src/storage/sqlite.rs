@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 use crate::error::{CtxGraphError, Result};
 use crate::pattern::PatternExtractor;
@@ -2216,12 +2216,56 @@ impl Storage {
         &self,
         config: &PatternExtractorConfig,
     ) -> Result<Vec<PatternCandidate>> {
-        let before = Utc::now();
-        let _groups = self.get_compression_groups(before)?;
+        // Load all non-compression episodes (raw experiences)
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content, source, recorded_at, metadata, compression_id, memory_type
+             FROM episodes
+             WHERE source IS NULL OR source != 'compression'
+             ORDER BY recorded_at DESC",
+        )?;
+        let episodes: Vec<Episode> = stmt
+            .query_map([], |row| {
+                Ok(Episode {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    source: row.get(2)?,
+                    recorded_at: parse_datetime(&row.get::<_, String>(3)?),
+                    metadata: row
+                        .get::<_, Option<String>>(4)?
+                        .and_then(|s| parse_metadata(&s)),
+                    compression_id: row.get(5)?,
+                    memory_type: MemoryType::from_db(&row.get::<_, String>(6)?),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // Load all entities linked to these episodes via episode_entities
+        let mut entity_stmt = self.conn.prepare(
+            "SELECT DISTINCT e.id, e.name, e.entity_type, e.memory_type, e.ttl_seconds,
+                    e.summary, e.created_at, e.metadata, e.usage_count, e.last_recalled_at
+             FROM entities e
+             JOIN episode_entities ee ON e.id = ee.entity_id
+             WHERE ee.episode_id IN (SELECT id FROM episodes WHERE source IS NULL OR source != 'compression')",
+        )?;
+        let entities: Vec<Entity> = entity_stmt
+            .query_map([], map_entity_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // Load all edges linked to these episodes
+        let mut edge_stmt = self.conn.prepare(
+            "SELECT e.id, e.source_id, e.target_id, e.relation, e.memory_type, e.ttl_seconds,
+                    e.fact, e.valid_from, e.valid_until, e.recorded_at, e.confidence,
+                    e.episode_id, e.metadata, e.usage_count, e.last_recalled_at
+             FROM edges e
+             WHERE e.episode_id IN (SELECT id FROM episodes WHERE source IS NULL OR source != 'compression')
+             AND e.valid_until IS NULL",
+        )?;
+        let edges: Vec<Edge> = edge_stmt
+            .query_map([], map_edge_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
         let extractor = PatternExtractor::new();
-        // CompressionGroupData can be converted to episodes - for now, pass empty slices
-        // TODO: properly map CompressionGroupData to episodes/entities/edges
-        Ok(extractor.extract(&[], &[], &[], config))
+        Ok(extractor.extract(&episodes, &entities, &edges, config))
     }
 
     /// Store a pattern candidate as a LearnedPattern entity.
