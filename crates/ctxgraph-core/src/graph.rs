@@ -184,6 +184,12 @@ impl Graph {
     pub async fn add_episode(&self, episode: Episode) -> Result<EpisodeResult> {
         self.storage.insert_episode(&episode)?;
 
+        // Increment learn counter after successful insertion
+        let _ = self.storage.increment_episodes_since_last_learn();
+
+        // Check if auto-learn threshold reached
+        let _ = self.maybe_trigger_learn().await;
+
         #[cfg(feature = "extract")]
         if let Some(ref pipeline) = self.pipeline {
             return self.add_episode_with_extraction(&episode, pipeline).await;
@@ -739,6 +745,48 @@ impl Graph {
     /// Returns the configured interval (default 100), clamped to [1, 10000].
     pub fn get_cleanup_interval(&self) -> Result<u64> {
         self.storage.get_cleanup_interval()
+    }
+
+    /// Lazy learn trigger — runs the learning pipeline if:
+    /// - episodes_since_last_learn >= learn_interval (default 50)
+    /// - learn is not already in progress
+    ///
+    /// Uses MockBatchLabelDescriber so no LLM keys are required.
+    /// Silently skips if pipeline fails — add_episode() must never fail
+    /// because learn failed.
+    async fn maybe_trigger_learn(&self) -> Result<()> {
+        // Early exit: check if learn is already running
+        if let Some(val) = self.storage.get_system_metadata("learn_in_progress")?
+            && val == "true"
+        {
+            return Ok(()); // skip silently
+        }
+
+        let count = self.storage.get_episodes_since_last_learn()?;
+        let interval = self.storage.get_learn_interval()?;
+
+        if count >= interval {
+            // Mark learn in progress to prevent concurrent runs
+            let _ = self.storage.set_system_metadata("learn_in_progress", "true");
+
+            // Run learning pipeline with mock describer (no LLM dependency)
+            let describer = crate::pattern::MockBatchLabelDescriber;
+            let result = self
+                .run_learning_pipeline("auto-learn", crate::types::SkillScope::Private, &describer, 10)
+                .await;
+
+            // Reset counter regardless of success (avoid retry storm)
+            let _ = self.storage.reset_episodes_since_last_learn();
+
+            // Clear in-progress flag
+            let _ = self.storage.set_system_metadata("learn_in_progress", "false");
+
+            // Silently ignore errors — don't fail add_episode()
+            if let Err(ref e) = result {
+                eprintln!("[ctxgraph] auto-learn failed (non-critical): {}", e);
+            }
+        }
+        Ok(())
     }
 
     /// Lazy cleanup trigger — runs cleanup if:
@@ -1297,5 +1345,119 @@ mod tests {
         graph.maybe_trigger_cleanup().unwrap();
         let count = graph.storage.get_query_count_since_cleanup().unwrap();
         assert_eq!(count, 0, "counter should have been reset");
+    }
+
+    // ── Auto-learn trigger tests (C4) ──
+
+    #[tokio::test]
+    async fn test_learn_counter_increments_on_add_episode() {
+        let graph = new_test_graph();
+
+        // Add 3 episodes
+        for i in 0..3 {
+            let ep = Episode::builder(&format!("Episode {}", i)).build();
+            graph.add_episode(ep).await.unwrap();
+        }
+
+        let count = graph.storage.get_episodes_since_last_learn().unwrap();
+        assert_eq!(count, 3, "counter should be 3 after 3 episodes");
+    }
+
+    #[tokio::test]
+    async fn test_learn_interval_default_is_50() {
+        let graph = new_test_graph();
+        let interval = graph.storage.get_learn_interval().unwrap();
+        assert_eq!(interval, 50, "default learn interval should be 50");
+    }
+
+    #[tokio::test]
+    async fn test_learn_interval_can_be_set_and_read() {
+        let graph = new_test_graph();
+        graph.storage.set_learn_interval(25).unwrap();
+        let interval = graph.storage.get_learn_interval().unwrap();
+        assert_eq!(interval, 25, "learn interval should be 25 after set");
+    }
+
+    #[tokio::test]
+    async fn test_auto_learn_triggers_at_threshold_and_resets_counter() {
+        let graph = new_test_graph();
+        // Set interval to 5 for fast testing
+        graph.storage.set_learn_interval(5).unwrap();
+
+        // Add 5 episodes — 5th should trigger learn
+        for i in 0..5 {
+            let ep = Episode::builder(&format!("Auto-learn trigger test episode {}", i)).build();
+            let result = graph.add_episode(ep).await;
+            assert!(result.is_ok(), "add_episode should never fail, even if learn fails");
+        }
+
+        // After trigger, counter should be reset to 0
+        let count = graph.storage.get_episodes_since_last_learn().unwrap();
+        assert_eq!(count, 0, "counter should be reset after auto-learn trigger");
+    }
+
+    #[tokio::test]
+    async fn test_auto_learn_does_not_trigger_below_threshold() {
+        let graph = new_test_graph();
+        // Set interval to 10
+        graph.storage.set_learn_interval(10).unwrap();
+
+        // Add 9 episodes
+        for i in 0..9 {
+            let ep = Episode::builder(&format!("No trigger episode {}", i)).build();
+            graph.add_episode(ep).await.unwrap();
+        }
+
+        let count = graph.storage.get_episodes_since_last_learn().unwrap();
+        assert_eq!(count, 9, "counter should be 9, learn should NOT have triggered");
+    }
+
+    #[tokio::test]
+    async fn test_auto_learn_uses_mock_describer_no_llm_dependency() {
+        let graph = new_test_graph();
+        // Set interval to 3 for fast testing
+        graph.storage.set_learn_interval(3).unwrap();
+
+        // No API keys configured — this test proves auto-learn works without LLM
+        for i in 0..3 {
+            let ep = Episode::builder(&format!("Mock describer episode {}", i)).build();
+            let result = graph.add_episode(ep).await;
+            assert!(result.is_ok(), "add_episode should succeed with no LLM keys");
+        }
+
+        // Counter should be reset (learn triggered with MockBatchLabelDescriber)
+        let count = graph.storage.get_episodes_since_last_learn().unwrap();
+        assert_eq!(count, 0, "learn should have triggered using mock describer");
+    }
+
+    #[tokio::test]
+    async fn test_auto_learn_silent_failure_does_not_break_add_episode() {
+        let graph = new_test_graph();
+        // Force learn_in_progress = true to simulate concurrent run
+        graph.storage.set_system_metadata("learn_in_progress", "true").unwrap();
+        graph.storage.set_learn_interval(2).unwrap();
+
+        // Add episodes — should NOT trigger learn because flag is set
+        for i in 0..4 {
+            let ep = Episode::builder(&format!("Silent skip episode {}", i)).build();
+            let result = graph.add_episode(ep).await;
+            assert!(result.is_ok(), "add_episode must not fail when learn is skipped");
+        }
+
+        // Counter should still increment even though learn was skipped
+        let count = graph.storage.get_episodes_since_last_learn().unwrap();
+        assert_eq!(count, 4, "counter should still increment when learn skipped");
+    }
+
+    #[test]
+    fn test_learn_interval_clamping() {
+        let graph = new_test_graph();
+        // Test clamp to max
+        graph.storage.set_learn_interval(50_000).unwrap();
+        assert_eq!(graph.storage.get_learn_interval().unwrap(), 10_000);
+
+        // Test clamp to min
+        graph.storage.set_learn_interval(0).unwrap();
+        assert_eq!(graph.storage.get_learn_interval().unwrap(), 1);
     }
 }

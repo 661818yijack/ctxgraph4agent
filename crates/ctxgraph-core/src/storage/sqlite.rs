@@ -1300,6 +1300,65 @@ impl Storage {
         Ok(())
     }
 
+    // ── Learn Auto-Trigger (C4) ────────────────────────────────────────────────
+
+    /// Increment the episode count since last auto-learn trigger.
+    ///
+    /// Called after each successful `add_episode()` to track how many
+    /// episodes have been logged since the learning pipeline last ran.
+    pub fn increment_episodes_since_last_learn(&self) -> Result<()> {
+        let current = self.get_episodes_since_last_learn()?;
+        let next = current + 1;
+        self.set_system_metadata("episodes_since_last_learn", &next.to_string())?;
+        Ok(())
+    }
+
+    /// Get the current episode count since last auto-learn trigger.
+    ///
+    /// Returns 0 if the key doesn't exist (lazy initialization).
+    pub fn get_episodes_since_last_learn(&self) -> Result<u64> {
+        match self.get_system_metadata("episodes_since_last_learn")? {
+            Some(val) => Ok(val.parse::<u64>().unwrap_or(0)),
+            None => Ok(0), // lazy init: default to 0
+        }
+    }
+
+    /// Reset the episode count since last auto-learn trigger to 0.
+    ///
+    /// Called after `run_learning_pipeline()` completes successfully.
+    pub fn reset_episodes_since_last_learn(&self) -> Result<()> {
+        self.set_system_metadata("episodes_since_last_learn", "0")?;
+        Ok(())
+    }
+
+    /// Get the learn interval (number of episodes between auto-learn triggers).
+    ///
+    /// Returns the value from system_metadata, clamped to [1, 10000].
+    /// Defaults to 50 if not set or invalid.
+    pub fn get_learn_interval(&self) -> Result<u64> {
+        match self.get_system_metadata("learn_interval")? {
+            Some(val) => {
+                let interval = val.parse::<u64>().unwrap_or(50);
+                Ok(interval.clamp(1, 10_000))
+            }
+            None => {
+                // Lazy init: set default on first access
+                self.set_system_metadata("learn_interval", "50")?;
+                Ok(50)
+            }
+        }
+    }
+
+    /// Set the learn interval (number of episodes between auto-learn triggers).
+    ///
+    /// The value is clamped to [1, 10000]. Values outside this range
+    /// are silently clamped to prevent accidental misconfiguration.
+    pub fn set_learn_interval(&self, interval: u64) -> Result<()> {
+        let clamped = interval.clamp(1, 10_000);
+        self.set_system_metadata("learn_interval", &clamped.to_string())?;
+        Ok(())
+    }
+
     /// Get the current query count (used by lazy cleanup trigger).
     pub fn query_count(&self) -> usize {
         self.query_count.load(Ordering::Relaxed)
