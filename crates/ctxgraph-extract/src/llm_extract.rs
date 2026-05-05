@@ -105,6 +105,19 @@ struct ChatChoiceMessage {
     content: Option<String>,
 }
 
+/// Extract content from a raw JSON response, trying OpenAI format first,
+/// then falling back to Anthropic format (`content[0].text`).
+fn extract_content_from_json(json: &serde_json::Value) -> Option<String> {
+    json["choices"][0]["message"]["content"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .or_else(|| {
+            json["content"][0]["text"]
+                .as_str()
+                .map(|s| s.trim().to_string())
+        })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
     #[error("HTTP error: {0}")]
@@ -350,14 +363,11 @@ RULES:
             return Err(LlmError::Api(format!("{status}: {body}")));
         }
 
-        let chat_resp: ChatResponse = response.json().await?;
-        let content = chat_resp
-            .choices
-            .first()
-            .and_then(|c| c.message.content.as_deref())
+        let response_json: serde_json::Value = response.json().await?;
+        let content = extract_content_from_json(&response_json)
             .ok_or_else(|| LlmError::Parse("empty response".into()))?;
 
-        let json_str = extract_json_from_response(content);
+        let json_str = extract_json_from_response(&content);
 
         #[derive(Deserialize)]
         struct EntityOnly {
@@ -451,14 +461,11 @@ RULES:
             return Err(LlmError::Api(format!("{status}: {body}")));
         }
 
-        let chat_resp: ChatResponse = response.json().await?;
-        let content = chat_resp
-            .choices
-            .first()
-            .and_then(|c| c.message.content.as_deref())
+        let response_json: serde_json::Value = response.json().await?;
+        let content = extract_content_from_json(&response_json)
             .ok_or_else(|| LlmError::Parse("empty response".into()))?;
 
-        let parsed: LlmResponse = serde_json::from_str(content)
+        let parsed: LlmResponse = serde_json::from_str(&content)
             .map_err(|e| LlmError::Parse(format!("JSON parse: {e}\nRaw: {content}")))?;
 
         let entities = parsed
@@ -554,14 +561,11 @@ Text: "{text}"
             return Err(LlmError::Api(format!("{status}: {body}")));
         }
 
-        let chat_resp: ChatResponse = response.json().await?;
-        let raw = chat_resp
-            .choices
-            .first()
-            .and_then(|c| c.message.content.as_deref())
+        let response_json: serde_json::Value = response.json().await?;
+        let raw = extract_content_from_json(&response_json)
             .ok_or_else(|| LlmError::Parse("empty response".into()))?;
 
-        let json_str = extract_json_from_response(raw);
+        let json_str = extract_json_from_response(&raw);
 
         let parsed: LlmResponse = serde_json::from_str(json_str)
             .map_err(|e| LlmError::Parse(format!("JSON parse: {e}\nRaw: {raw}")))?;

@@ -66,10 +66,17 @@ impl RealBatchLabelDescriber {
             .await
             .map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
 
-        json["choices"][0]["message"]["content"]
+        // Dual-format parser: try OpenAI format first, fall back to Anthropic format.
+        let content = json["choices"][0]["message"]["content"]
             .as_str()
             .map(|s| s.trim().to_string())
-            .ok_or_else(|| CtxGraphError::Extraction("Invalid LLM response".to_string()))
+            .or_else(|| {
+                json["content"][0]["text"]
+                    .as_str()
+                    .map(|s| s.trim().to_string())
+            });
+
+        content.ok_or_else(|| CtxGraphError::Extraction("Invalid LLM response".to_string()))
     }
 }
 

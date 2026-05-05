@@ -117,10 +117,17 @@ impl McpBatchLabelDescriber {
         let response = response.map_err(|e| e.to_string())?;
         let json: Value = response.json().await.map_err(|e| e.to_string())?;
 
-        json["choices"][0]["message"]["content"]
+        // Dual-format parser: try OpenAI format first, fall back to Anthropic format.
+        let content = json["choices"][0]["message"]["content"]
             .as_str()
             .map(|s| s.trim().to_string())
-            .ok_or_else(|| "Invalid LLM response".to_string())
+            .or_else(|| {
+                json["content"][0]["text"]
+                    .as_str()
+                    .map(|s| s.trim().to_string())
+            });
+
+        content.ok_or_else(|| "Invalid LLM response".to_string())
     }
 }
 
