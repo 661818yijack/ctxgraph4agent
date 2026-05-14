@@ -1980,7 +1980,7 @@ fn test_low_confidence_edge_replaced_silently() {
     let mut edge1 = Edge::new(&alice.id, &postgres.id, "chose");
     edge1.confidence = 0.1; // Below 0.2 threshold
     edge1.fact = Some("Alice chose PostgreSQL".to_string());
-    let edge1_id = edge1.id.clone();
+    let _edge1_id = edge1.id.clone();
     graph.add_edge(edge1).unwrap();
 
     // Second edge with higher confidence

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::error::{CtxGraphError, Result};
 use crate::pattern::PatternExtractor;
@@ -2870,14 +2870,14 @@ impl Storage {
             if let Some(entity) = self.get_entity(&nid)? {
                 // Skip soft-expired neighbor entities
                 if let Some(ref meta) = entity.metadata {
-                    if meta
+                    let marked = meta
                         .get("marked_for_deletion")
                         .map(|v| {
                             matches!(v, serde_json::Value::Number(n) if n.as_i64() == Some(1))
                                 || v.as_bool() == Some(true)
                         })
-                        .unwrap_or(false)
-                    {
+                        .unwrap_or(false);
+                    if marked {
                         continue;
                     }
                 }

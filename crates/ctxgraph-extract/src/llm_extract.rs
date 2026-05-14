@@ -90,21 +90,6 @@ struct JsonSchemaWrapper {
     schema: serde_json::Value,
 }
 
-#[derive(Debug, Deserialize)]
-struct ChatResponse {
-    choices: Vec<ChatChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatChoice {
-    message: ChatChoiceMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatChoiceMessage {
-    content: Option<String>,
-}
-
 /// Extract content from a raw JSON response, trying OpenAI format first,
 /// then falling back to Anthropic format (`content[0].text`).
 fn extract_content_from_json(json: &serde_json::Value) -> Option<String> {
@@ -743,20 +728,18 @@ enabled = false
 [overrides]
 [resolver]
 "#;
-    let config: DetectionConfig = toml::from_str(config_toml).unwrap_or_else(|_| {
-        return DetectionConfig {
-            secrets: true,
-            financial: true,
-            dates: false,
-            emails: true,
-            phone_numbers: false,
-            ip_addresses: false,
-            urls_internal: false,
-            ner: Default::default(),
-            custom: Default::default(),
-            overrides: Default::default(),
-            resolver: Default::default(),
-        };
+    let config: DetectionConfig = toml::from_str(config_toml).unwrap_or_else(|_| DetectionConfig {
+        secrets: true,
+        financial: true,
+        dates: false,
+        emails: true,
+        phone_numbers: false,
+        ip_addresses: false,
+        urls_internal: false,
+        ner: Default::default(),
+        custom: Default::default(),
+        overrides: Default::default(),
+        resolver: Default::default(),
     });
     let detector = match Detector::from_config(&config) {
         Ok(d) => d,

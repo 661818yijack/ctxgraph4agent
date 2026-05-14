@@ -259,5 +259,8 @@ fn test_json_array_response_from_llm() {
     });
 
     let content = extract_llm_content(&json_array);
-    assert_eq!(content, Some("[{\"id\": \"1\", \"label\": \"test\"}]".to_string()));
+    assert_eq!(
+        content,
+        Some("[{\"id\": \"1\", \"label\": \"test\"}]".to_string())
+    );
 }

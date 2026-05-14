@@ -17,6 +17,7 @@ struct RealWorldEpisode {
 #[derive(Debug, Deserialize)]
 struct ExpEntity {
     name: String,
+    #[allow(dead_code)]
     entity_type: String,
 }
 

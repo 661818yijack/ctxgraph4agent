@@ -1117,7 +1117,7 @@ mod tests {
         for candidate in test_cases {
             let score = score_candidate(&candidate);
             assert!(
-                score >= 0.0 && score <= 1.5,
+                (0.0..=1.5).contains(&score),
                 "score {score} should be in [0.0, 1.5] range"
             );
         }

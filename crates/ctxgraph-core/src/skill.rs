@@ -203,10 +203,7 @@ mod tests {
         }
     }
 
-    fn default_args<'a>(
-        patterns: &'a [PatternCandidate],
-        edges: &'a [Edge],
-    ) -> (
+    type DefaultArgs<'a> = (
         &'a [PatternCandidate],
         &'a [Edge],
         HashMap<String, Vec<String>>,
@@ -214,7 +211,9 @@ mod tests {
         SkillCreatorConfig,
         SkillScope,
         &'static str,
-    ) {
+    );
+
+    fn default_args<'a>(patterns: &'a [PatternCandidate], edges: &'a [Edge]) -> DefaultArgs<'a> {
         (
             patterns,
             edges,

@@ -5,10 +5,10 @@
 //! candidates — fixing the bug where it always returned empty results
 //! because it was still using the removed compression group system.
 
+use chrono::Utc;
+use ctxgraph::Graph;
 use ctxgraph::pattern::MockBatchLabelDescriber;
 use ctxgraph::types::{Edge, Entity, Episode, MemoryType, PatternExtractorConfig};
-use ctxgraph::Graph;
-use chrono::Utc;
 use std::time::Duration;
 
 fn make_episode(id: &str, content: &str) -> Episode {
@@ -65,7 +65,10 @@ fn test_pattern_extraction_finds_candidates_from_raw_episodes() {
     // Insert 4 episodes about Docker networking
     let episodes = vec![
         make_episode("ep1", "Docker container failed to connect to network"),
-        make_episode("ep2", "Docker networking issue resolved by restarting bridge"),
+        make_episode(
+            "ep2",
+            "Docker networking issue resolved by restarting bridge",
+        ),
         make_episode("ep3", "Docker network configuration updated for prod"),
         make_episode("ep4", "Docker containers communicate via overlay network"),
     ];
@@ -84,8 +87,14 @@ fn test_pattern_extraction_finds_candidates_from_raw_episodes() {
 
     // Link episodes to entities via episode_entities
     for ep in &episodes {
-        graph.storage.link_episode_entity(&ep.id, "e1", None, None).unwrap();
-        graph.storage.link_episode_entity(&ep.id, "e2", None, None).unwrap();
+        graph
+            .storage
+            .link_episode_entity(&ep.id, "e1", None, None)
+            .unwrap();
+        graph
+            .storage
+            .link_episode_entity(&ep.id, "e2", None, None)
+            .unwrap();
     }
 
     // Insert edges linking episodes to entities
@@ -112,7 +121,10 @@ fn test_pattern_extraction_finds_candidates_from_raw_episodes() {
     assert!(
         high_count,
         "expected at least one candidate with occurrence_count >= 3, got counts: {:?}",
-        candidates.iter().map(|c| c.occurrence_count).collect::<Vec<_>>()
+        candidates
+            .iter()
+            .map(|c| c.occurrence_count)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -123,7 +135,10 @@ fn test_pattern_extraction_respects_threshold() {
     // Only 2 episodes — below default threshold of 3
     let episodes = vec![
         make_episode("ep1", "Docker container failed to connect to network"),
-        make_episode("ep2", "Docker networking issue resolved by restarting bridge"),
+        make_episode(
+            "ep2",
+            "Docker networking issue resolved by restarting bridge",
+        ),
     ];
     for ep in &episodes {
         graph.storage.insert_episode(ep).unwrap();
@@ -138,8 +153,14 @@ fn test_pattern_extraction_respects_threshold() {
     }
 
     for ep in &episodes {
-        graph.storage.link_episode_entity(&ep.id, "e1", None, None).unwrap();
-        graph.storage.link_episode_entity(&ep.id, "e2", None, None).unwrap();
+        graph
+            .storage
+            .link_episode_entity(&ep.id, "e1", None, None)
+            .unwrap();
+        graph
+            .storage
+            .link_episode_entity(&ep.id, "e2", None, None)
+            .unwrap();
     }
 
     let edges = vec![
@@ -179,7 +200,10 @@ fn test_learning_pipeline_end_to_end() {
         // Insert 4 episodes
         let episodes = vec![
             make_episode("ep1", "Docker container failed to connect to network"),
-            make_episode("ep2", "Docker networking issue resolved by restarting bridge"),
+            make_episode(
+                "ep2",
+                "Docker networking issue resolved by restarting bridge",
+            ),
             make_episode("ep3", "Docker network configuration updated for prod"),
             make_episode("ep4", "Docker containers communicate via overlay network"),
         ];
@@ -196,8 +220,14 @@ fn test_learning_pipeline_end_to_end() {
         }
 
         for ep in &episodes {
-            graph.storage.link_episode_entity(&ep.id, "e1", None, None).unwrap();
-            graph.storage.link_episode_entity(&ep.id, "e2", None, None).unwrap();
+            graph
+                .storage
+                .link_episode_entity(&ep.id, "e1", None, None)
+                .unwrap();
+            graph
+                .storage
+                .link_episode_entity(&ep.id, "e2", None, None)
+                .unwrap();
         }
 
         let edges = vec![

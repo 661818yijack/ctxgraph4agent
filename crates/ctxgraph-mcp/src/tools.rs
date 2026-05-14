@@ -189,7 +189,7 @@ impl BatchLabelDescriber for McpBatchLabelDescriber {
         let raw = self
             .call_llm(&prompt, max_tokens)
             .await
-            .map_err(|e| ctxgraph::CtxGraphError::Extraction(e))?;
+            .map_err(ctxgraph::CtxGraphError::Extraction)?;
 
         let parsed: Value = serde_json::from_str(raw.trim()).map_err(|e| {
             ctxgraph::CtxGraphError::Extraction(format!("Failed to parse batch labels JSON: {}", e))

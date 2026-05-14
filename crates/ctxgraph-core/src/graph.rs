@@ -767,19 +767,28 @@ impl Graph {
 
         if count >= interval {
             // Mark learn in progress to prevent concurrent runs
-            let _ = self.storage.set_system_metadata("learn_in_progress", "true");
+            let _ = self
+                .storage
+                .set_system_metadata("learn_in_progress", "true");
 
             // Run learning pipeline with mock describer (no LLM dependency)
             let describer = crate::pattern::MockBatchLabelDescriber;
             let result = self
-                .run_learning_pipeline("auto-learn", crate::types::SkillScope::Private, &describer, 10)
+                .run_learning_pipeline(
+                    "auto-learn",
+                    crate::types::SkillScope::Private,
+                    &describer,
+                    10,
+                )
                 .await;
 
             // Reset counter regardless of success (avoid retry storm)
             let _ = self.storage.reset_episodes_since_last_learn();
 
             // Clear in-progress flag
-            let _ = self.storage.set_system_metadata("learn_in_progress", "false");
+            let _ = self
+                .storage
+                .set_system_metadata("learn_in_progress", "false");
 
             // Silently ignore errors — don't fail add_episode()
             if let Err(ref e) = result {
@@ -1388,7 +1397,10 @@ mod tests {
         for i in 0..5 {
             let ep = Episode::builder(&format!("Auto-learn trigger test episode {}", i)).build();
             let result = graph.add_episode(ep).await;
-            assert!(result.is_ok(), "add_episode should never fail, even if learn fails");
+            assert!(
+                result.is_ok(),
+                "add_episode should never fail, even if learn fails"
+            );
         }
 
         // After trigger, counter should be reset to 0
@@ -1409,7 +1421,10 @@ mod tests {
         }
 
         let count = graph.storage.get_episodes_since_last_learn().unwrap();
-        assert_eq!(count, 9, "counter should be 9, learn should NOT have triggered");
+        assert_eq!(
+            count, 9,
+            "counter should be 9, learn should NOT have triggered"
+        );
     }
 
     #[tokio::test]
@@ -1422,7 +1437,10 @@ mod tests {
         for i in 0..3 {
             let ep = Episode::builder(&format!("Mock describer episode {}", i)).build();
             let result = graph.add_episode(ep).await;
-            assert!(result.is_ok(), "add_episode should succeed with no LLM keys");
+            assert!(
+                result.is_ok(),
+                "add_episode should succeed with no LLM keys"
+            );
         }
 
         // Counter should be reset (learn triggered with MockBatchLabelDescriber)
@@ -1434,19 +1452,28 @@ mod tests {
     async fn test_auto_learn_silent_failure_does_not_break_add_episode() {
         let graph = new_test_graph();
         // Force learn_in_progress = true to simulate concurrent run
-        graph.storage.set_system_metadata("learn_in_progress", "true").unwrap();
+        graph
+            .storage
+            .set_system_metadata("learn_in_progress", "true")
+            .unwrap();
         graph.storage.set_learn_interval(2).unwrap();
 
         // Add episodes — should NOT trigger learn because flag is set
         for i in 0..4 {
             let ep = Episode::builder(&format!("Silent skip episode {}", i)).build();
             let result = graph.add_episode(ep).await;
-            assert!(result.is_ok(), "add_episode must not fail when learn is skipped");
+            assert!(
+                result.is_ok(),
+                "add_episode must not fail when learn is skipped"
+            );
         }
 
         // Counter should still increment even though learn was skipped
         let count = graph.storage.get_episodes_since_last_learn().unwrap();
-        assert_eq!(count, 4, "counter should still increment when learn skipped");
+        assert_eq!(
+            count, 4,
+            "counter should still increment when learn skipped"
+        );
     }
 
     #[test]
