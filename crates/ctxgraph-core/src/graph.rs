@@ -301,8 +301,14 @@ impl Graph {
     }
 
     /// List episodes with pagination.
-    pub fn list_episodes(&self, limit: usize, offset: usize) -> Result<Vec<Episode>> {
-        self.storage.list_episodes(limit, offset)
+    pub fn list_episodes(
+        &self,
+        limit: usize,
+        offset: usize,
+        after: Option<DateTime<Utc>>,
+        source: Option<&str>,
+    ) -> Result<Vec<Episode>> {
+        self.storage.list_episodes(limit, offset, after, source)
     }
 
     /// Add an entity to the graph.

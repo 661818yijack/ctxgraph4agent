@@ -6,10 +6,10 @@ pub fn run(
     text: String,
     limit: usize,
     _after: Option<String>,
-    _source: Option<String>,
+    source: Option<String>,
 ) -> ctxgraph::Result<()> {
     let graph = open_graph()?;
-    let results = graph.search(&text, limit, None)?;
+    let results = graph.search(&text, limit, source.as_deref())?;
 
     if results.is_empty() {
         println!("No results found for '{text}'");

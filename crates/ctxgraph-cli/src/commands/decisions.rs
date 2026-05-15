@@ -1,10 +1,18 @@
+use chrono::{DateTime, Utc};
+
 use crate::display;
 
 use super::open_graph;
 
-pub fn list(_after: Option<String>, _source: Option<String>, limit: usize) -> ctxgraph::Result<()> {
+pub fn list(after: Option<String>, source: Option<String>, limit: usize) -> ctxgraph::Result<()> {
     let graph = open_graph()?;
-    let episodes = graph.list_episodes(limit, 0)?;
+
+    let after_dt = after
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone::<Utc>(&Utc));
+
+    let episodes = graph.list_episodes(limit, 0, after_dt, source.as_deref())?;
 
     if episodes.is_empty() {
         println!("No episodes found. Log some decisions first:");

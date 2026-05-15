@@ -67,13 +67,13 @@ async fn test_list_episodes() {
         graph.add_episode(ep).await.unwrap();
     }
 
-    let episodes = graph.list_episodes(3, 0).unwrap();
+    let episodes = graph.list_episodes(3, 0, None, None).unwrap();
     assert_eq!(episodes.len(), 3);
 
-    let all = graph.list_episodes(100, 0).unwrap();
+    let all = graph.list_episodes(100, 0, None, None).unwrap();
     assert_eq!(all.len(), 5);
 
-    let offset = graph.list_episodes(100, 3).unwrap();
+    let offset = graph.list_episodes(100, 3, None, None).unwrap();
     assert_eq!(offset.len(), 2);
 }
 
@@ -669,7 +669,7 @@ fn test_empty_database_operations() {
     let graph = test_graph();
 
     // All operations should succeed on empty db
-    assert!(graph.list_episodes(10, 0).unwrap().is_empty());
+    assert!(graph.list_episodes(10, 0, None, None).unwrap().is_empty());
     assert!(graph.list_entities(None, 10).unwrap().is_empty());
     assert!(graph.search("anything", 10, None).unwrap().is_empty());
 
