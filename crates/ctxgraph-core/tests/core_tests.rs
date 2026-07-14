@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use ctxgraph::*;
 
 fn test_graph() -> Graph {
@@ -262,11 +262,11 @@ async fn test_fts5_search_episodes() {
         .await
         .unwrap();
 
-    let results = graph.search("Postgres", 10, None).unwrap();
+    let results = graph.search("Postgres", 10, None, None).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].0.content.contains("Postgres"));
 
-    let results = graph.search("billing OR discount", 10, None).unwrap();
+    let results = graph.search("billing OR discount", 10, None, None).unwrap();
     assert_eq!(results.len(), 2);
 }
 
@@ -278,7 +278,9 @@ async fn test_fts5_search_empty_results() {
         .await
         .unwrap();
 
-    let results = graph.search("nonexistent_term_xyz", 10, None).unwrap();
+    let results = graph
+        .search("nonexistent_term_xyz", 10, None, None)
+        .unwrap();
     assert!(results.is_empty());
 }
 
@@ -331,12 +333,12 @@ async fn test_search_episodes_source_filter_returns_matching_only() {
         .unwrap();
 
     // Filter by source="slack" — only the slack episode matches
-    let results = graph.search("auth", 10, Some("slack")).unwrap();
+    let results = graph.search("auth", 10, Some("slack"), None).unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0.source.as_deref(), Some("slack"));
 
     // Filter by source="meeting" — only the meeting episode matches
-    let results = graph.search("auth", 10, Some("meeting")).unwrap();
+    let results = graph.search("auth", 10, Some("meeting"), None).unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0.source.as_deref(), Some("meeting"));
 }
@@ -364,7 +366,7 @@ async fn test_search_episodes_no_source_filter_returns_all() {
         .unwrap();
 
     // No source filter — all matching episodes returned
-    let results = graph.search("Postgres", 10, None).unwrap();
+    let results = graph.search("Postgres", 10, None, None).unwrap();
     assert_eq!(results.len(), 2);
 }
 
@@ -378,8 +380,65 @@ async fn test_search_episodes_source_filter_nonexistent_returns_empty() {
         .await
         .unwrap();
 
-    let results = graph.search("Deployed", 10, Some("nonexistent")).unwrap();
+    let results = graph
+        .search("Deployed", 10, Some("nonexistent"), None)
+        .unwrap();
     assert!(results.is_empty());
+}
+
+#[tokio::test]
+async fn test_search_episodes_after_filter_returns_recent_only() {
+    let graph = test_graph();
+    let cutoff = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+    let mut old_episode = Episode::builder("Postgres backup policy approved")
+        .source("meeting")
+        .build();
+    old_episode.recorded_at = Utc.with_ymd_and_hms(2025, 12, 31, 23, 59, 59).unwrap();
+
+    let mut recent_episode = Episode::builder("Postgres backup policy revised")
+        .source("meeting")
+        .build();
+    recent_episode.recorded_at = Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap();
+
+    graph.add_episode(old_episode).await.unwrap();
+    graph.add_episode(recent_episode).await.unwrap();
+
+    let results = graph.search("Postgres", 10, None, Some(cutoff)).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0.content, "Postgres backup policy revised");
+}
+
+#[tokio::test]
+async fn test_search_episodes_source_and_after_filters_both_apply() {
+    let graph = test_graph();
+    let cutoff = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+    let mut old_meeting = Episode::builder("Auth rollout approved")
+        .source("meeting")
+        .build();
+    old_meeting.recorded_at = Utc.with_ymd_and_hms(2025, 12, 1, 0, 0, 0).unwrap();
+
+    let mut recent_slack = Episode::builder("Auth rollout announced")
+        .source("slack")
+        .build();
+    recent_slack.recorded_at = Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap();
+
+    let mut recent_meeting = Episode::builder("Auth rollout approved for production")
+        .source("meeting")
+        .build();
+    recent_meeting.recorded_at = Utc.with_ymd_and_hms(2026, 1, 3, 0, 0, 0).unwrap();
+
+    graph.add_episode(old_meeting).await.unwrap();
+    graph.add_episode(recent_slack).await.unwrap();
+    graph.add_episode(recent_meeting).await.unwrap();
+
+    let results = graph
+        .search("Auth", 10, Some("meeting"), Some(cutoff))
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0.content, "Auth rollout approved for production");
+    assert_eq!(results[0].0.source.as_deref(), Some("meeting"));
 }
 
 // ── Entity Context ──
@@ -671,7 +730,7 @@ fn test_empty_database_operations() {
     // All operations should succeed on empty db
     assert!(graph.list_episodes(10, 0, None, None).unwrap().is_empty());
     assert!(graph.list_entities(None, 10).unwrap().is_empty());
-    assert!(graph.search("anything", 10, None).unwrap().is_empty());
+    assert!(graph.search("anything", 10, None, None).unwrap().is_empty());
 
     let stats = graph.stats().unwrap();
     assert_eq!(stats.episode_count, 0);
@@ -2070,7 +2129,7 @@ async fn test_fts5_search_with_question_mark() {
         .unwrap();
 
     // This used to crash with "fts5: syntax error near '?'"
-    let results = graph.search("JWT?", 10, None).unwrap();
+    let results = graph.search("JWT?", 10, None, None).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].0.content.contains("JWT"));
 }
@@ -2097,18 +2156,20 @@ async fn test_fts5_search_with_and_or_not_keywords() {
 
     // "AND gate" — search for "gate" (AND is a boolean op at query start, not content match).
     // Users searching for content containing AND should use phrase matching.
-    let results = graph.search("signal AND gate", 10, None).unwrap();
+    let results = graph.search("signal AND gate", 10, None, None).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].0.content.contains("AND gate"));
 
     // "OR operator" — search with boolean OR
-    let results = graph.search("operator OR constraint", 10, None).unwrap();
+    let results = graph
+        .search("operator OR constraint", 10, None, None)
+        .unwrap();
     assert_eq!(results.len(), 2);
 
     // "NOT NULL" — search for "NOT" as boolean op + "NULL"
     // Since NOT at query start is valid FTS5: "NOT NULL" means "without NULL"
     // Let's search for the full content instead
-    let results = graph.search("constraint NULL", 10, None).unwrap();
+    let results = graph.search("constraint NULL", 10, None, None).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].0.content.contains("NOT NULL"));
 }
@@ -2128,12 +2189,12 @@ async fn test_fts5_search_with_parentheses_and_quotes() {
         .unwrap();
 
     // Parentheses in query — used to crash
-    let results = graph.search("(v4.17)", 10, None).unwrap();
+    let results = graph.search("(v4.17)", 10, None, None).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].0.content.contains("v4.17"));
 
     // Quotes in content and query
-    let results = graph.search("strict mode", 10, None).unwrap();
+    let results = graph.search("strict mode", 10, None, None).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].0.content.contains("strict mode"));
 }
