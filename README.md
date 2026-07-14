@@ -217,6 +217,7 @@ ctxgraph models download              # one-time ONNX model download
 ctxgraph init                         # initialize graph in current dir
 ctxgraph log "Alice chose PostgreSQL"  # extract + store
 ctxgraph query "why PostgreSQL?"       # search the graph
+ctxgraph query "PostgreSQL" --after 2026-01-01T00:00:00Z  # search recent episodes only
 ```
 
 ### Optional: LLM for cross-domain quality
