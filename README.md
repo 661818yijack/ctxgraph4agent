@@ -259,9 +259,21 @@ Without this, everything runs locally at 0.846 F1 on tech text.
 ## Rust SDK
 
 ```rust
-let graph = ctxgraph::Graph::init(".ctxgraph")?;
-graph.add_episode(Episode::builder("Chose Postgres for billing").build())?;
-let results = graph.search("why Postgres?", 10)?;
+use ctxgraph::{Episode, Graph};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let graph = Graph::init(std::env::current_dir()?.as_path())?;
+
+    graph
+        .add_episode(Episode::builder("Chose Postgres for billing").build())
+        .await?;
+
+    let results = graph.search("why Postgres?", 10, None)?;
+    println!("found {} result(s)", results.len());
+
+    Ok(())
+}
 ```
 
 ## Project Structure

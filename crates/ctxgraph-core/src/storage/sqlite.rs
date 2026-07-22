@@ -750,8 +750,6 @@ impl Storage {
         Ok(rows)
     }
 
-
-
     /// Get entity counts grouped by memory type.
     ///
     /// Returns a vec of (type_name, count) tuples, ordered by count descending.
@@ -3765,43 +3763,37 @@ mod tests {
         let t3 = Utc::now();
 
         storage
-            .insert_episode(
-                &Episode {
-                    id: "ep1".to_string(),
-                    content: "Old decision".to_string(),
-                    source: Some("cli".to_string()),
-                    recorded_at: t1,
-                    metadata: None,
-                    compression_id: None,
-                    memory_type: MemoryType::Decision,
-                },
-            )
+            .insert_episode(&Episode {
+                id: "ep1".to_string(),
+                content: "Old decision".to_string(),
+                source: Some("cli".to_string()),
+                recorded_at: t1,
+                metadata: None,
+                compression_id: None,
+                memory_type: MemoryType::Decision,
+            })
             .unwrap();
         storage
-            .insert_episode(
-                &Episode {
-                    id: "ep2".to_string(),
-                    content: "Recent decision".to_string(),
-                    source: Some("cli".to_string()),
-                    recorded_at: t2,
-                    metadata: None,
-                    compression_id: None,
-                    memory_type: MemoryType::Decision,
-                },
-            )
+            .insert_episode(&Episode {
+                id: "ep2".to_string(),
+                content: "Recent decision".to_string(),
+                source: Some("cli".to_string()),
+                recorded_at: t2,
+                metadata: None,
+                compression_id: None,
+                memory_type: MemoryType::Decision,
+            })
             .unwrap();
         storage
-            .insert_episode(
-                &Episode {
-                    id: "ep3".to_string(),
-                    content: "Latest decision".to_string(),
-                    source: Some("cli".to_string()),
-                    recorded_at: t3,
-                    metadata: None,
-                    compression_id: None,
-                    memory_type: MemoryType::Decision,
-                },
-            )
+            .insert_episode(&Episode {
+                id: "ep3".to_string(),
+                content: "Latest decision".to_string(),
+                source: Some("cli".to_string()),
+                recorded_at: t3,
+                metadata: None,
+                compression_id: None,
+                memory_type: MemoryType::Decision,
+            })
             .unwrap();
 
         let cutoff = t1 + chrono::Duration::days(1);
@@ -3816,30 +3808,26 @@ mod tests {
         let now = Utc::now();
 
         storage
-            .insert_episode(
-                &Episode {
-                    id: "ep_a".to_string(),
-                    content: "From slack".to_string(),
-                    source: Some("slack".to_string()),
-                    recorded_at: now,
-                    metadata: None,
-                    compression_id: None,
-                    memory_type: MemoryType::Decision,
-                },
-            )
+            .insert_episode(&Episode {
+                id: "ep_a".to_string(),
+                content: "From slack".to_string(),
+                source: Some("slack".to_string()),
+                recorded_at: now,
+                metadata: None,
+                compression_id: None,
+                memory_type: MemoryType::Decision,
+            })
             .unwrap();
         storage
-            .insert_episode(
-                &Episode {
-                    id: "ep_b".to_string(),
-                    content: "From cli".to_string(),
-                    source: Some("cli".to_string()),
-                    recorded_at: now,
-                    metadata: None,
-                    compression_id: None,
-                    memory_type: MemoryType::Decision,
-                },
-            )
+            .insert_episode(&Episode {
+                id: "ep_b".to_string(),
+                content: "From cli".to_string(),
+                source: Some("cli".to_string()),
+                recorded_at: now,
+                metadata: None,
+                compression_id: None,
+                memory_type: MemoryType::Decision,
+            })
             .unwrap();
 
         let filtered = storage.list_episodes(100, 0, None, Some("slack")).unwrap();
@@ -3854,43 +3842,37 @@ mod tests {
         let t_new = Utc::now() - chrono::Duration::days(1);
 
         storage
-            .insert_episode(
-                &Episode {
-                    id: "ep_old_cli".to_string(),
-                    content: "Old CLI".to_string(),
-                    source: Some("cli".to_string()),
-                    recorded_at: t_old,
-                    metadata: None,
-                    compression_id: None,
-                    memory_type: MemoryType::Decision,
-                },
-            )
+            .insert_episode(&Episode {
+                id: "ep_old_cli".to_string(),
+                content: "Old CLI".to_string(),
+                source: Some("cli".to_string()),
+                recorded_at: t_old,
+                metadata: None,
+                compression_id: None,
+                memory_type: MemoryType::Decision,
+            })
             .unwrap();
         storage
-            .insert_episode(
-                &Episode {
-                    id: "ep_new_cli".to_string(),
-                    content: "New CLI".to_string(),
-                    source: Some("cli".to_string()),
-                    recorded_at: t_new,
-                    metadata: None,
-                    compression_id: None,
-                    memory_type: MemoryType::Decision,
-                },
-            )
+            .insert_episode(&Episode {
+                id: "ep_new_cli".to_string(),
+                content: "New CLI".to_string(),
+                source: Some("cli".to_string()),
+                recorded_at: t_new,
+                metadata: None,
+                compression_id: None,
+                memory_type: MemoryType::Decision,
+            })
             .unwrap();
         storage
-            .insert_episode(
-                &Episode {
-                    id: "ep_new_slack".to_string(),
-                    content: "New Slack".to_string(),
-                    source: Some("slack".to_string()),
-                    recorded_at: t_new,
-                    metadata: None,
-                    compression_id: None,
-                    memory_type: MemoryType::Decision,
-                },
-            )
+            .insert_episode(&Episode {
+                id: "ep_new_slack".to_string(),
+                content: "New Slack".to_string(),
+                source: Some("slack".to_string()),
+                recorded_at: t_new,
+                metadata: None,
+                compression_id: None,
+                memory_type: MemoryType::Decision,
+            })
             .unwrap();
 
         let cutoff = t_old + chrono::Duration::days(1);
@@ -3908,17 +3890,15 @@ mod tests {
 
         for i in 0..3 {
             storage
-                .insert_episode(
-                    &Episode {
-                        id: format!("ep_{}", i),
-                        content: format!("Decision {}", i),
-                        source: Some("cli".to_string()),
-                        recorded_at: now,
-                        metadata: None,
-                        compression_id: None,
-                        memory_type: MemoryType::Decision,
-                    },
-                )
+                .insert_episode(&Episode {
+                    id: format!("ep_{}", i),
+                    content: format!("Decision {}", i),
+                    source: Some("cli".to_string()),
+                    recorded_at: now,
+                    metadata: None,
+                    compression_id: None,
+                    memory_type: MemoryType::Decision,
+                })
                 .unwrap();
         }
 
