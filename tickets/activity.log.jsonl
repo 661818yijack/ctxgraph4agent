@@ -29,3 +29,29 @@
 {"ts": "2026-04-13T02:09:41.228625+00:00", "action": "updated", "ticket_id": "T6", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:42.501823+00:00", "action": "updated", "ticket_id": "T7", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:43.775889+00:00", "action": "updated", "ticket_id": "T8", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-07-22T02:04:11.601475+00:00", "action": "created", "ticket_id": "ENHANCEMENT-1"}
+{"ts": "2026-07-22T02:04:43.298572+00:00", "action": "created", "ticket_id": "ENHANCEMENT-2"}
+{"ts": "2026-07-22T02:04:43.458537+00:00", "action": "created", "ticket_id": "ENHANCEMENT-3"}
+{"ts": "2026-07-22T02:04:43.616723+00:00", "action": "created", "ticket_id": "ENHANCEMENT-4"}
+{"ts": "2026-07-22T02:04:43.775740+00:00", "action": "created", "ticket_id": "ENHANCEMENT-5"}
+{"ts": "2026-07-22T02:04:43.932795+00:00", "action": "created", "ticket_id": "ENHANCEMENT-6"}
+{"ts": "2026-07-22T02:04:44.091875+00:00", "action": "created", "ticket_id": "ENHANCEMENT-7"}
+{"ts": "2026-07-22T02:04:44.252998+00:00", "action": "created", "ticket_id": "ENHANCEMENT-8"}
+{"ts": "2026-07-22T02:04:44.413736+00:00", "action": "created", "ticket_id": "ENHANCEMENT-9"}
+{"ts": "2026-07-22T02:04:44.573366+00:00", "action": "created", "ticket_id": "ENHANCEMENT-10"}
+{"ts": "2026-07-22T02:04:44.734478+00:00", "action": "created", "ticket_id": "ENHANCEMENT-11"}
+{"ts": "2026-07-22T02:04:44.891068+00:00", "action": "created", "ticket_id": "ENHANCEMENT-12"}
+{"ts": "2026-07-22T02:04:45.051514+00:00", "action": "created", "ticket_id": "ENHANCEMENT-13"}
+{"ts": "2026-07-22T02:05:52.705614+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-1", "fields": {"fix": "Implemented SDK quick start doctest, corrected README Rust SDK snippet, ran cargo fmt --check and cargo test --workspace successfully.", "status": "done"}}
+{"ts": "2026-07-22T02:05:52.878596+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-2", "fields": {"fix": "Implemented SDK quick start doctest, corrected README Rust SDK snippet, ran cargo fmt --check and cargo test --workspace successfully.", "status": "done"}}
+{"ts": "2026-07-22T02:05:53.052987+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-3", "fields": {"fix": "Implemented SDK quick start doctest, corrected README Rust SDK snippet, ran cargo fmt --check and cargo test --workspace successfully.", "status": "done"}}
+{"ts": "2026-07-22T02:05:53.222905+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-4", "fields": {"fix": "Implemented SDK quick start doctest, corrected README Rust SDK snippet, ran cargo fmt --check and cargo test --workspace successfully.", "status": "done"}}
+{"ts": "2026-07-22T02:05:53.383682+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-5", "fields": {"fix": "Implemented SDK quick start doctest, corrected README Rust SDK snippet, ran cargo fmt --check and cargo test --workspace successfully.", "status": "done"}}
+{"ts": "2026-07-22T02:05:53.547571+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-6", "fields": {"fix": "Implemented SDK quick start doctest, corrected README Rust SDK snippet, ran cargo fmt --check and cargo test --workspace successfully.", "status": "done"}}
+{"ts": "2026-07-22T02:05:53.714808+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-7", "fields": {"fix": "Implemented SDK quick start doctest, corrected README Rust SDK snippet, ran cargo fmt --check and cargo test --workspace successfully.", "status": "done"}}
+{"ts": "2026-07-22T02:05:53.874702+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-8", "fields": {"fix": "Implemented SDK quick start doctest, corrected README Rust SDK snippet, ran cargo fmt --check and cargo test --workspace successfully.", "status": "done"}}
+{"ts": "2026-07-22T02:05:54.035235+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-9", "fields": {"fix": "Implemented SDK quick start doctest, corrected README Rust SDK snippet, ran cargo fmt --check and cargo test --workspace successfully.", "status": "done"}}
+{"ts": "2026-07-22T02:05:54.200483+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-10", "fields": {"fix": "Implemented SDK quick start doctest, corrected README Rust SDK snippet, ran cargo fmt --check and cargo test --workspace successfully.", "status": "done"}}
+{"ts": "2026-07-22T02:05:54.365955+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-11", "fields": {"fix": "Implemented SDK quick start doctest, corrected README Rust SDK snippet, ran cargo fmt --check and cargo test --workspace successfully.", "status": "done"}}
+{"ts": "2026-07-22T02:05:54.535874+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-12", "fields": {"fix": "Implemented SDK quick start doctest, corrected README Rust SDK snippet, ran cargo fmt --check and cargo test --workspace successfully.", "status": "done"}}
+{"ts": "2026-07-22T02:05:54.713835+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-13", "fields": {"fix": "Implemented SDK quick start doctest, corrected README Rust SDK snippet, ran cargo fmt --check and cargo test --workspace successfully.", "status": "done"}}
