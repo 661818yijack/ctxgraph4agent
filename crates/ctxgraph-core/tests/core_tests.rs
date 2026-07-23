@@ -84,6 +84,98 @@ fn test_episode_not_found() {
     assert!(result.is_none());
 }
 
+#[tokio::test]
+async fn test_expire_memory_deletes_episode_by_id() {
+    let graph = test_graph();
+
+    let episode = Episode::builder("Temporary note to expire").build();
+    let episode_id = episode.id.clone();
+    graph.add_episode(episode).await.unwrap();
+
+    graph.expire_memory(&episode_id).unwrap();
+
+    assert!(graph.get_episode(&episode_id).unwrap().is_none());
+    assert!(
+        graph
+            .list_episodes(100, 0, None, None)
+            .unwrap()
+            .iter()
+            .all(|episode| episode.id != episode_id)
+    );
+}
+
+#[tokio::test]
+async fn test_expire_memory_deletes_episode_links_before_episode() {
+    let graph = test_graph();
+
+    let episode = Episode::builder("Linked note to expire").build();
+    let episode_id = episode.id.clone();
+    graph.add_episode(episode).await.unwrap();
+
+    let entity = Entity::new("Linked Entity", "Component");
+    let entity_id = entity.id.clone();
+    graph.add_entity(entity).unwrap();
+    graph
+        .link_episode_entity(&episode_id, &entity_id, Some(0), Some(6))
+        .unwrap();
+
+    graph.expire_memory(&episode_id).unwrap();
+
+    assert!(graph.get_episode(&episode_id).unwrap().is_none());
+    assert!(graph.get_entity(&entity_id).unwrap().is_some());
+}
+
+#[test]
+fn test_expire_memory_still_deletes_entity_by_id() {
+    let graph = test_graph();
+
+    let entity = Entity::new("Temporary Entity", "Component");
+    let entity_id = entity.id.clone();
+    graph.add_entity(entity).unwrap();
+
+    graph.expire_memory(&entity_id).unwrap();
+
+    assert!(graph.get_entity(&entity_id).unwrap().is_none());
+}
+
+#[test]
+fn test_expire_memory_still_deletes_edge_by_id() {
+    let graph = test_graph();
+
+    let source = Entity::new("Source", "Component");
+    let target = Entity::new("Target", "Component");
+    let source_id = source.id.clone();
+    let target_id = target.id.clone();
+    graph.add_entity(source).unwrap();
+    graph.add_entity(target).unwrap();
+
+    let edge = Edge::new(&source_id, &target_id, "connects_to");
+    let edge_id = edge.id.clone();
+    graph.add_edge(edge).unwrap();
+
+    graph.expire_memory(&edge_id).unwrap();
+
+    assert!(
+        graph
+            .get_edges_for_entity(&source_id)
+            .unwrap()
+            .iter()
+            .all(|edge| edge.id != edge_id)
+    );
+}
+
+#[test]
+fn test_expire_memory_nonexistent_id_is_harmless() {
+    let graph = test_graph();
+    let entity = Entity::new("Persistent Entity", "Component");
+    let entity_id = entity.id.clone();
+    graph.add_entity(entity).unwrap();
+
+    graph.expire_memory("nonexistent-id").unwrap();
+
+    assert!(graph.get_entity(&entity_id).unwrap().is_some());
+}
+
 // ── Entity CRUD ──
 
 #[test]
