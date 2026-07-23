@@ -1326,16 +1326,21 @@ impl Storage {
     /// Immediately expire (delete) a memory by ID.
     ///
     /// Deletes from episode_entities junction first (for FK integrity),
-    /// then entities, then edges.
+    /// then episodes, entities, and edges.
     /// "not found" is handled gracefully (no error returned).
     pub fn expire_memory(&self, id: &str) -> Result<()> {
         self.query_count.fetch_add(1, Ordering::Relaxed);
 
-        // Delete from episode_entities junction first (FK integrity)
+        // Delete episode/entity junction rows first for FK integrity. The same
+        // memory ID can be an episode ID or an entity ID depending on caller input.
         self.conn.execute(
-            "DELETE FROM episode_entities WHERE entity_id = ?1",
+            "DELETE FROM episode_entities WHERE episode_id = ?1 OR entity_id = ?1",
             params![id],
         )?;
+
+        // Then try episode
+        self.conn
+            .execute("DELETE FROM episodes WHERE id = ?1", params![id])?;
 
         // Then try entity
         self.conn
