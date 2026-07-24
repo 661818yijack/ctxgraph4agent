@@ -380,8 +380,9 @@ fn decode_entities(
         }
     }
 
-    // Greedy dedup: for overlapping spans, keep highest confidence
-    entities.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap());
+    // Greedy dedup: for overlapping spans, keep highest confidence.
+    // Use total_cmp so non-finite confidence values can never panic during sort.
+    entities.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
     let mut used_ranges: Vec<(usize, usize)> = Vec::new();
     entities.retain(|e| {
         let overlaps = used_ranges
@@ -488,6 +489,9 @@ fn decode_relations(
 }
 
 fn sigmoid(x: f32) -> f32 {
+    if x.is_nan() {
+        return 0.0;
+    }
     1.0 / (1.0 + (-x).exp())
 }
 
@@ -498,4 +502,67 @@ pub enum RelexError {
 
     #[error("relex inference error: {0}")]
     Inference(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::{Array, IxDyn};
+
+    fn one_word_spans(text: &str) -> Vec<(usize, usize, String)> {
+        text.split_whitespace()
+            .scan(0, |search_start, word| {
+                let relative_start = text[*search_start..]
+                    .find(word)
+                    .expect("test word must exist");
+                let start = *search_start + relative_start;
+                let end = start + word.len();
+                *search_start = end;
+                Some((start, end, word.to_string()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sigmoid_returns_zero_for_nan_logits() {
+        assert_eq!(sigmoid(f32::NAN), 0.0);
+    }
+
+    #[test]
+    fn decode_entities_skips_nan_logits_without_panicking() {
+        let text = "Alice chose Postgres";
+        let spans = one_word_spans(text);
+        let mut logits = Array::from_elem(IxDyn(&[1, 3, 1, 1]), -10.0_f32);
+        logits[[0, 0, 0, 0]] = f32::NAN;
+        logits[[0, 2, 0, 0]] = f32::INFINITY;
+
+        let entities = decode_entities(
+            &logits.view(),
+            &spans,
+            spans.len(),
+            text,
+            &["Database"],
+            0.5,
+        );
+
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].text, "Postgres");
+        assert_eq!(entities[0].confidence, 1.0);
+    }
+
+    #[test]
+    fn decode_entities_keeps_highest_confidence_overlapping_span() {
+        let text = "Alice chose Postgres";
+        let spans = one_word_spans(text);
+        let mut logits = Array::from_elem(IxDyn(&[1, 3, 2, 1]), -10.0_f32);
+        logits[[0, 0, 0, 0]] = 2.0;
+        logits[[0, 0, 1, 0]] = 4.0;
+        logits[[0, 2, 0, 0]] = 3.0;
+
+        let entities = decode_entities(&logits.view(), &spans, spans.len(), text, &["Person"], 0.5);
+        let names: Vec<&str> = entities.iter().map(|entity| entity.text.as_str()).collect();
+
+        assert_eq!(names, vec!["Alice chose", "Postgres"]);
+        assert!(entities[0].confidence > entities[1].confidence);
+    }
 }
