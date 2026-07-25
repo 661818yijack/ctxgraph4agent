@@ -295,6 +295,36 @@ impl Graph {
         })
     }
 
+    /// Add a plain text episode with an optional source label.
+    ///
+    /// This is a convenience wrapper around `add_episode()` for embedders that
+    /// want to record a memory without manually constructing an `Episode`.
+    /// Episodes recorded this way use the builder default memory type
+    /// (`MemoryType::Experience`).
+    pub async fn add_text(&self, content: &str, source: Option<&str>) -> Result<EpisodeResult> {
+        self.add_text_with_type(content, source, MemoryType::Experience)
+            .await
+    }
+
+    /// Add a plain text episode with an explicit memory type.
+    ///
+    /// This preserves the same storage and extraction behavior as
+    /// `add_episode()`, including extraction result counters when the extraction
+    /// feature and pipeline are enabled.
+    pub async fn add_text_with_type(
+        &self,
+        content: &str,
+        source: Option<&str>,
+        memory_type: MemoryType,
+    ) -> Result<EpisodeResult> {
+        let mut builder = Episode::builder(content).memory_type(memory_type);
+        if let Some(source) = source {
+            builder = builder.source(source);
+        }
+
+        self.add_episode(builder.build()).await
+    }
+
     /// Get an episode by ID.
     pub fn get_episode(&self, id: &str) -> Result<Option<Episode>> {
         self.storage.get_episode(id)

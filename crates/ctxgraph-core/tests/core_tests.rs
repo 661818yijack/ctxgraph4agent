@@ -84,6 +84,52 @@ fn test_episode_not_found() {
     assert!(result.is_none());
 }
 
+#[tokio::test]
+async fn test_add_text_records_default_experience_with_source() {
+    let graph = test_graph();
+
+    let result = graph
+        .add_text("Agent observed flaky login retries", Some("telegram"))
+        .await
+        .unwrap();
+
+    assert_eq!(result.entities_extracted, 0);
+    assert_eq!(result.edges_created, 0);
+
+    let retrieved = graph.get_episode(&result.episode_id).unwrap().unwrap();
+    assert_eq!(retrieved.content, "Agent observed flaky login retries");
+    assert_eq!(retrieved.source.as_deref(), Some("telegram"));
+    assert_eq!(retrieved.memory_type, MemoryType::Experience);
+
+    let source_matches = graph.list_episodes(10, 0, None, Some("telegram")).unwrap();
+    assert_eq!(source_matches.len(), 1);
+    assert_eq!(source_matches[0].id, result.episode_id);
+}
+
+#[tokio::test]
+async fn test_add_text_with_type_records_decision_and_source() {
+    let graph = test_graph();
+
+    let result = graph
+        .add_text_with_type(
+            "Decided to keep SQLite for embedded agent memory",
+            Some("architecture"),
+            MemoryType::Decision,
+        )
+        .await
+        .unwrap();
+
+    let retrieved = graph.get_episode(&result.episode_id).unwrap().unwrap();
+    assert_eq!(retrieved.memory_type, MemoryType::Decision);
+    assert_eq!(retrieved.source.as_deref(), Some("architecture"));
+
+    let source_matches = graph
+        .list_episodes(10, 0, None, Some("architecture"))
+        .unwrap();
+    assert_eq!(source_matches.len(), 1);
+    assert_eq!(source_matches[0].memory_type, MemoryType::Decision);
+}
+
 // ── Entity CRUD ──
 
 #[test]
