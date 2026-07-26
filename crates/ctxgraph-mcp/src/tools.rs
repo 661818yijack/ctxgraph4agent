@@ -328,7 +328,10 @@ impl ToolContext {
             .as_str()
             .ok_or("missing required field: query")?
             .to_string();
-        let limit = args["limit"].as_u64().unwrap_or(10) as usize;
+        let limit = args["limit"]
+            .as_u64()
+            .or_else(|| args["topk"].as_u64())
+            .unwrap_or(10) as usize;
         let source = args["source"].as_str();
 
         let items: Vec<Value> = if let Some(ref embed) = self.embed {
@@ -569,7 +572,9 @@ impl ToolContext {
         });
 
         if include_episodes {
-            let episodes = graph.list_episodes(limit, 0, None, None).map_err(|e| e.to_string())?;
+            let episodes = graph
+                .list_episodes(limit, 0, None, None)
+                .map_err(|e| e.to_string())?;
             let episodes_json: Vec<Value> = episodes
                 .into_iter()
                 .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
@@ -842,6 +847,7 @@ pub fn tools_list() -> Value {
                     "properties": {
                         "query": {"type": "string", "description": "Search query"},
                         "limit": {"type": "integer", "description": "Max results (default 10)"},
+                        "topk": {"type": "integer", "description": "Deprecated alias for limit; limit takes precedence when both are provided"},
                         "source": {"type": "string", "description": "Filter by source"}
                     },
                     "required": ["query"]
