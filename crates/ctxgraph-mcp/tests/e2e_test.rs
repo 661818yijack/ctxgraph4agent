@@ -100,6 +100,44 @@ fn test_mcp_tools_list() {
     assert!(names.contains(&"find_precedents"));
 }
 
+fn add_episode(mcp: &mut McpProcess, id: u64, text: &str, source: Option<&str>) {
+    let mut arguments = json!({"text": text});
+    if let Some(source) = source {
+        arguments["source"] = json!(source);
+    }
+
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": {
+            "name": "add_episode",
+            "arguments": arguments
+        }
+    }));
+    let add_resp = mcp.recv();
+    assert_eq!(add_resp["id"], id);
+    let content = &add_resp["result"]["content"][0]["text"];
+    let result: Value = serde_json::from_str(content.as_str().unwrap()).unwrap();
+    assert!(result["episode_id"].is_string());
+}
+
+fn search(mcp: &mut McpProcess, id: u64, arguments: Value) -> Vec<Value> {
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": {
+            "name": "search",
+            "arguments": arguments
+        }
+    }));
+    let search_resp = mcp.recv();
+    assert_eq!(search_resp["id"], id);
+    let search_content = &search_resp["result"]["content"][0]["text"];
+    serde_json::from_str::<Vec<Value>>(search_content.as_str().unwrap()).unwrap()
+}
+
 #[test]
 fn test_mcp_add_episode_and_search() {
     let tmp = tempfile::tempdir().unwrap();
@@ -109,39 +147,82 @@ fn test_mcp_add_episode_and_search() {
     mcp.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
     mcp.recv();
 
-    // Add episode
-    mcp.send(json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/call",
-        "params": {
-            "name": "add_episode",
-            "arguments": {"text": "Chose PostgreSQL over MySQL for the billing service"}
-        }
-    }));
-    let add_resp = mcp.recv();
-    assert_eq!(add_resp["id"], 2);
-    let content = &add_resp["result"]["content"][0]["text"];
-    let result: Value = serde_json::from_str(content.as_str().unwrap()).unwrap();
-    assert!(result["episode_id"].is_string());
+    add_episode(
+        &mut mcp,
+        2,
+        "Chose PostgreSQL over MySQL for the billing service",
+        None,
+    );
 
-    // Search for it
-    mcp.send(json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": {
-            "name": "search",
-            "arguments": {"query": "PostgreSQL billing", "limit": 5}
-        }
-    }));
-    let search_resp = mcp.recv();
-    let search_content = &search_resp["result"]["content"][0]["text"];
-    let results: Value = serde_json::from_str(search_content.as_str().unwrap()).unwrap();
-    // Should find at least one result
+    let results = search(
+        &mut mcp,
+        3,
+        json!({"query": "PostgreSQL billing", "limit": 5}),
+    );
+    assert!(!results.is_empty(), "search should return results");
+}
+
+#[test]
+fn test_mcp_search_accepts_topk_alias_for_limit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("test.db").to_str().unwrap().to_string();
+    let mut mcp = McpProcess::spawn(&db);
+
+    mcp.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    mcp.recv();
+
+    add_episode(&mut mcp, 2, "PostgreSQL billing alpha", Some("slack"));
+    add_episode(&mut mcp, 3, "PostgreSQL billing beta", Some("slack"));
+    add_episode(&mut mcp, 4, "PostgreSQL billing gamma", Some("email"));
+
+    let topk_results = search(
+        &mut mcp,
+        5,
+        json!({"query": "PostgreSQL billing", "topk": 1}),
+    );
+    assert_eq!(topk_results.len(), 1, "topk should cap search results");
+
+    let canonical_limit_results = search(
+        &mut mcp,
+        6,
+        json!({"query": "PostgreSQL billing", "limit": 2, "topk": 1}),
+    );
+    assert_eq!(
+        canonical_limit_results.len(),
+        2,
+        "canonical limit should take precedence over topk"
+    );
+
+    let source_results = search(
+        &mut mcp,
+        7,
+        json!({"query": "PostgreSQL billing", "source": "slack", "topk": 2}),
+    );
+    assert_eq!(source_results.len(), 2);
+    assert!(source_results.iter().all(|item| item["source"] == "slack"));
+}
+
+#[test]
+fn test_mcp_tools_list_documents_search_topk_alias() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("test.db").to_str().unwrap().to_string();
+    let mut mcp = McpProcess::spawn(&db);
+
+    mcp.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    mcp.recv();
+
+    mcp.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}));
+    let resp = mcp.recv();
+    let tools = resp["result"]["tools"].as_array().unwrap();
+    let search_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "search")
+        .expect("search tool should be registered");
     assert!(
-        results.as_array().map(|a| !a.is_empty()).unwrap_or(false),
-        "search should return results"
+        search_tool["inputSchema"]["properties"]
+            .get("topk")
+            .is_some(),
+        "search schema should document topk as an accepted alias"
     );
 }
 
