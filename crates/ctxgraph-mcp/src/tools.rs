@@ -191,33 +191,39 @@ impl BatchLabelDescriber for McpBatchLabelDescriber {
             .await
             .map_err(ctxgraph::CtxGraphError::Extraction)?;
 
-        let parsed: Value = serde_json::from_str(raw.trim()).map_err(|e| {
-            ctxgraph::CtxGraphError::Extraction(format!("Failed to parse batch labels JSON: {}", e))
-        })?;
-
-        let arr = parsed.as_array().ok_or_else(|| {
-            ctxgraph::CtxGraphError::Extraction("Expected JSON array from LLM".to_string())
-        })?;
-
-        let mut results = Vec::new();
-        for item in arr {
-            let id_str = item["id"]
-                .as_str()
-                .or_else(|| item["id"].as_u64().map(|_| ""))
-                .unwrap_or("")
-                .to_string();
-            let label = item["label"].as_str().unwrap_or("").to_string();
-
-            if let Ok(idx) = id_str.parse::<usize>()
-                && idx >= 1
-                && idx <= candidates.len()
-            {
-                results.push((candidates[idx - 1].id.clone(), label));
-            }
-        }
-
-        Ok(results)
+        parse_batch_label_response(raw.trim(), candidates)
     }
+}
+
+fn parse_batch_label_response(
+    raw: &str,
+    candidates: &[PatternCandidate],
+) -> ctxgraph::Result<Vec<(String, String)>> {
+    let parsed: Value = serde_json::from_str(raw).map_err(|e| {
+        ctxgraph::CtxGraphError::Extraction(format!("Failed to parse batch labels JSON: {}", e))
+    })?;
+
+    let arr = parsed.as_array().ok_or_else(|| {
+        ctxgraph::CtxGraphError::Extraction("Expected JSON array from LLM".to_string())
+    })?;
+
+    let mut results = Vec::new();
+    for item in arr {
+        let idx = item["id"]
+            .as_str()
+            .and_then(|s| s.parse::<usize>().ok())
+            .or_else(|| item["id"].as_u64().and_then(|n| usize::try_from(n).ok()));
+        let label = item["label"].as_str().unwrap_or("").to_string();
+
+        if let Some(idx) = idx
+            && idx >= 1
+            && idx <= candidates.len()
+        {
+            results.push((candidates[idx - 1].id.clone(), label));
+        }
+    }
+
+    Ok(results)
 }
 
 pub struct ToolContext {
@@ -956,4 +962,79 @@ pub fn tools_list() -> Value {
             }
         ]
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn candidates() -> Vec<PatternCandidate> {
+        (1..=3)
+            .map(|i| PatternCandidate {
+                id: format!("candidate-{i}"),
+                entity_types: vec!["component".to_string()],
+                entity_pair: None,
+                relation_triplet: None,
+                occurrence_count: 1,
+                source_groups: vec![],
+                confidence: 1.0,
+                description: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn parse_batch_label_response_maps_string_ids() {
+        let raw = json!([
+            {"id": "1", "label": "first"},
+            {"id": "2", "label": "second"}
+        ])
+        .to_string();
+
+        let labels = parse_batch_label_response(&raw, &candidates()).unwrap();
+
+        assert_eq!(
+            labels,
+            vec![
+                ("candidate-1".to_string(), "first".to_string()),
+                ("candidate-2".to_string(), "second".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_batch_label_response_maps_numeric_ids() {
+        let raw = json!([
+            {"id": 1, "label": "first"},
+            {"id": 3, "label": "third"}
+        ])
+        .to_string();
+
+        let labels = parse_batch_label_response(&raw, &candidates()).unwrap();
+
+        assert_eq!(
+            labels,
+            vec![
+                ("candidate-1".to_string(), "first".to_string()),
+                ("candidate-3".to_string(), "third".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_batch_label_response_ignores_invalid_ids_without_panic() {
+        let raw = json!([
+            {"id": 0, "label": "zero"},
+            {"id": 4, "label": "out of range"},
+            {"id": 1.5, "label": "fractional"},
+            {"id": {"nested": true}, "label": "object"},
+            {"id": "2"}
+        ])
+        .to_string();
+
+        let labels = parse_batch_label_response(&raw, &candidates()).unwrap();
+
+        assert_eq!(labels, vec![("candidate-2".to_string(), String::new())]);
+    }
 }
