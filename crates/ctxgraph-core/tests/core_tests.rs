@@ -42,6 +42,40 @@ async fn test_episode_with_source_and_tags() {
     assert_eq!(tags[0].as_str().unwrap(), "finance");
 }
 
+#[test]
+fn test_episode_tags_are_trimmed_and_empty_tags_ignored() {
+    let episode = Episode::builder("Priya approved the discount")
+        .tag(" finance ")
+        .tag("")
+        .tag("   ")
+        .tag("approval")
+        .tag("\turgent\n")
+        .build();
+
+    let meta = episode
+        .metadata
+        .expect("non-empty tags should create metadata");
+    let tags = meta
+        .get("tags")
+        .expect("tags metadata should be present")
+        .as_array()
+        .expect("tags metadata should be an array");
+    let actual: Vec<&str> = tags.iter().map(|tag| tag.as_str().unwrap()).collect();
+
+    assert_eq!(actual, vec!["finance", "approval", "urgent"]);
+}
+
+#[test]
+fn test_episode_blank_only_tags_do_not_create_tags_metadata() {
+    let episode = Episode::builder("Priya approved the discount")
+        .tag("")
+        .tag("   ")
+        .tag("\t\n")
+        .build();
+
+    assert!(episode.metadata.is_none());
+}
+
 #[tokio::test]
 async fn test_episode_with_metadata() {
     let graph = test_graph();
