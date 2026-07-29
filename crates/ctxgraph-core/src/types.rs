@@ -235,7 +235,10 @@ impl EpisodeBuilder {
     }
 
     pub fn tag(mut self, t: &str) -> Self {
-        self.tags.push(t.to_string());
+        let tag = t.trim();
+        if !tag.is_empty() {
+            self.tags.push(tag.to_string());
+        }
         self
     }
 

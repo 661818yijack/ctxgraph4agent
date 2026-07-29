@@ -146,6 +146,50 @@ fn test_mcp_add_episode_and_search() {
 }
 
 #[test]
+fn test_mcp_add_episode_normalizes_tags() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("test.db").to_str().unwrap().to_string();
+    let mut mcp = McpProcess::spawn(&db);
+
+    mcp.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    mcp.recv();
+
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "add_episode",
+            "arguments": {
+                "text": "Priya approved the discount",
+                "tags": [" finance ", "", "   ", "approval"]
+            }
+        }
+    }));
+    let add_resp = mcp.recv();
+    let content = &add_resp["result"]["content"][0]["text"];
+    let result: Value = serde_json::from_str(content.as_str().unwrap()).unwrap();
+    let episode_id = result["episode_id"].as_str().unwrap();
+
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "get_decision",
+            "arguments": {"id": episode_id}
+        }
+    }));
+    let get_resp = mcp.recv();
+    let content = &get_resp["result"]["content"][0]["text"];
+    let result: Value = serde_json::from_str(content.as_str().unwrap()).unwrap();
+    let tags = result["episode"]["metadata"]["tags"].as_array().unwrap();
+    let actual: Vec<&str> = tags.iter().map(|tag| tag.as_str().unwrap()).collect();
+
+    assert_eq!(actual, vec!["finance", "approval"]);
+}
+
+#[test]
 fn test_mcp_unknown_method_returns_error() {
     let tmp = tempfile::tempdir().unwrap();
     let db = tmp.path().join("test.db").to_str().unwrap().to_string();
