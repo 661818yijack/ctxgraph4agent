@@ -474,6 +474,29 @@ fn test_graph_open_nonexistent() {
     assert!(result.is_err());
 }
 
+#[test]
+fn test_traverse_returns_edges_between_visited_entities() {
+    let graph = Graph::in_memory().unwrap();
+
+    let project = Entity::new("ctxgraph", "project");
+    let database = Entity::new("SQLite", "database");
+    let project_id = project.id.clone();
+    let database_id = database.id.clone();
+
+    graph.add_entity(project).unwrap();
+    graph.add_entity(database).unwrap();
+    graph
+        .add_edge(Edge::new(&project_id, &database_id, "uses_storage"))
+        .unwrap();
+
+    let (entities, edges) = graph.traverse(&project_id, 1).unwrap();
+
+    assert_eq!(entities.len(), 2);
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].source_id, project_id);
+    assert_eq!(edges[0].target_id, database_id);
+}
+
 // ── Embedding Storage ──
 
 #[tokio::test]

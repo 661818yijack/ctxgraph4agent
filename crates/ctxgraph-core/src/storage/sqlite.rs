@@ -1843,8 +1843,13 @@ impl Storage {
             return Ok(Vec::new());
         }
 
-        let placeholders: Vec<String> = (1..=entity_ids.len()).map(|i| format!("?{i}")).collect();
-        let in_clause = placeholders.join(", ");
+        let source_placeholders: Vec<String> =
+            (1..=entity_ids.len()).map(|i| format!("?{i}")).collect();
+        let target_placeholders: Vec<String> = (entity_ids.len() + 1..=entity_ids.len() * 2)
+            .map(|i| format!("?{i}"))
+            .collect();
+        let source_in_clause = source_placeholders.join(", ");
+        let target_in_clause = target_placeholders.join(", ");
         let valid_clause = if current_only {
             "AND valid_until IS NULL"
         } else {
@@ -1856,7 +1861,7 @@ impl Storage {
                     valid_from, valid_until, recorded_at, confidence, episode_id, metadata,
                     usage_count, last_recalled_at
              FROM edges
-             WHERE source_id IN ({in_clause}) AND target_id IN ({in_clause})
+             WHERE source_id IN ({source_in_clause}) AND target_id IN ({target_in_clause})
              {valid_clause}
              ORDER BY recorded_at DESC"
         );
