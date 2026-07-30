@@ -258,6 +258,12 @@ Without this, everything runs locally at 0.846 F1 on tech text.
 
 ## Rust SDK
 
+For an executable agent-memory walkthrough, see [`docs/AGENT_MEMORY_WORKFLOW.md`](docs/AGENT_MEMORY_WORKFLOW.md) or run:
+
+```bash
+cargo run -p ctxgraph --example agent_memory_workflow
+```
+
 ```rust
 let graph = ctxgraph::Graph::init(".ctxgraph")?;
 graph.add_episode(Episode::builder("Chose Postgres for billing").build())?;
