@@ -249,12 +249,17 @@ Without this, everything runs locally at 0.846 F1 on tech text.
 
 | Tool | Description |
 |---|---|
-| `ctxgraph_add_episode` | Record a decision or event |
-| `ctxgraph_search` | Fused FTS5 + semantic + graph search |
-| `ctxgraph_traverse` | Walk the graph from an entity |
-| `ctxgraph_find_precedents` | Find similar past events |
-| `ctxgraph_list_entities` | List entities with filters |
-| `ctxgraph_export_graph` | Export entities and edges |
+| `add_episode` | Record a decision, observation, or event |
+| `search` | Fused semantic + keyword search over ranked episodes |
+| `get_decision` | Retrieve an episode by ID with entity and relation context |
+| `traverse` | Walk the graph from one entity |
+| `traverse_batch` | Walk the graph from multiple entities in one call |
+| `find_precedents` | Find similar past decisions or context |
+| `list_entities` | List entities with optional type filters and pagination |
+| `export_graph` | Export entities and edges |
+| `stats` | Inspect memory health statistics |
+| `learn` | Extract patterns and create or update skills |
+| `forget` | Soft-expire or hard-delete memories |
 
 ## Rust SDK
 
