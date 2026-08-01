@@ -357,7 +357,7 @@ impl ToolContext {
             let results = {
                 let graph = self.graph.lock().await;
                 graph
-                    .search(&query, limit, source)
+                    .search(&query, limit, source, None)
                     .map_err(|e| e.to_string())?
             };
             results
@@ -569,7 +569,9 @@ impl ToolContext {
         });
 
         if include_episodes {
-            let episodes = graph.list_episodes(limit, 0, None, None).map_err(|e| e.to_string())?;
+            let episodes = graph
+                .list_episodes(limit, 0, None, None)
+                .map_err(|e| e.to_string())?;
             let episodes_json: Vec<Value> = episodes
                 .into_iter()
                 .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))

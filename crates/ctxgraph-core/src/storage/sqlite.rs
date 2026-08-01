@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -624,39 +623,47 @@ impl Storage {
         query: &str,
         limit: usize,
         source: Option<&str>,
+        after: Option<DateTime<Utc>>,
     ) -> Result<Vec<(Episode, f64)>> {
         let safe_query = escape_fts5_query(query);
-        let results = if let Some(src) = source {
-            let mut stmt = self.conn.prepare(
-                "SELECT e.id, e.content, e.source, e.recorded_at, e.metadata,
+        let mut sql = String::from(
+            "SELECT e.id, e.content, e.source, e.recorded_at, e.metadata,
                         e.compression_id, e.memory_type,
                         rank
                  FROM episodes_fts fts
                  JOIN episodes e ON e.rowid = fts.rowid
-                 WHERE episodes_fts MATCH ?1 AND e.source = ?3
-                 ORDER BY rank
-                 LIMIT ?2",
-            )?;
-            stmt.query_map(params![safe_query, limit as i64, src], |row| {
-                Self::row_to_episode(row)
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?
-        } else {
-            let mut stmt = self.conn.prepare(
-                "SELECT e.id, e.content, e.source, e.recorded_at, e.metadata,
-                        e.compression_id, e.memory_type,
-                        rank
-                 FROM episodes_fts fts
-                 JOIN episodes e ON e.rowid = fts.rowid
-                 WHERE episodes_fts MATCH ?1
-                 ORDER BY rank
-                 LIMIT ?2",
-            )?;
-            stmt.query_map(params![safe_query, limit as i64], |row| {
-                Self::row_to_episode(row)
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?
-        };
+                 WHERE episodes_fts MATCH ?1",
+        );
+
+        if source.is_some() {
+            sql.push_str(" AND e.source = ?3");
+        }
+        if after.is_some() {
+            let after_param = if source.is_some() { "?4" } else { "?3" };
+            sql.push_str(&format!(" AND e.recorded_at >= {after_param}"));
+        }
+        sql.push_str(" ORDER BY rank LIMIT ?2");
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let results = match (source, after) {
+            (Some(src), Some(after_dt)) => stmt.query_map(
+                params![safe_query, limit as i64, src, after_dt.to_rfc3339()],
+                Self::row_to_episode,
+            )?,
+            (Some(src), None) => stmt.query_map(
+                params![safe_query, limit as i64, src],
+                Self::row_to_episode,
+            )?,
+            (None, Some(after_dt)) => stmt.query_map(
+                params![safe_query, limit as i64, after_dt.to_rfc3339()],
+                Self::row_to_episode,
+            )?,
+            (None, None) => stmt.query_map(
+                params![safe_query, limit as i64],
+                Self::row_to_episode,
+            )?,
+        }
+        .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(results)
     }
