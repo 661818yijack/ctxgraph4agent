@@ -230,7 +230,12 @@ pub struct EpisodeBuilder {
 
 impl EpisodeBuilder {
     pub fn source(mut self, s: &str) -> Self {
-        self.source = Some(s.to_string());
+        let source = s.trim();
+        self.source = if source.is_empty() {
+            None
+        } else {
+            Some(source.to_string())
+        };
         self
     }
 
