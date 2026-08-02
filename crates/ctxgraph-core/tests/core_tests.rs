@@ -43,6 +43,65 @@ async fn test_episode_with_source_and_tags() {
 }
 
 #[tokio::test]
+async fn test_episode_source_is_trimmed_for_storage_and_filters() {
+    let graph = test_graph();
+    let episode = Episode::builder("Priya approved the discount")
+        .source("  slack  ")
+        .build();
+    let id = episode.id.clone();
+
+    graph.add_episode(episode).await.unwrap();
+
+    let retrieved = graph.get_episode(&id).unwrap().unwrap();
+    assert_eq!(retrieved.source.as_deref(), Some("slack"));
+
+    let listed = graph.list_episodes(10, 0, None, Some("slack")).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, id);
+
+    let searched = graph.search("Priya", 10, Some("slack")).unwrap();
+    assert_eq!(searched.len(), 1);
+    assert_eq!(searched[0].0.id, id);
+}
+
+#[tokio::test]
+async fn test_blank_episode_source_is_dropped_but_unfiltered_list_still_returns_episode() {
+    let graph = test_graph();
+    let episode = Episode::builder("Budget approved for Q3")
+        .source("   ")
+        .build();
+    let id = episode.id.clone();
+
+    graph.add_episode(episode).await.unwrap();
+
+    let retrieved = graph.get_episode(&id).unwrap().unwrap();
+    assert_eq!(retrieved.source, None);
+
+    let listed = graph.list_episodes(10, 0, None, None).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, id);
+}
+
+#[tokio::test]
+async fn test_nonmatching_source_filter_excludes_normalized_source() {
+    let graph = test_graph();
+    graph
+        .add_episode(
+            Episode::builder("Migrated auth from Redis sessions to JWT")
+                .source(" slack ")
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    let listed = graph.list_episodes(10, 0, None, Some("email")).unwrap();
+    assert!(listed.is_empty());
+
+    let searched = graph.search("Migrated", 10, Some("email")).unwrap();
+    assert!(searched.is_empty());
+}
+
+#[tokio::test]
 async fn test_episode_with_metadata() {
     let graph = test_graph();
     let episode = Episode::builder("Budget approved for Q3")
