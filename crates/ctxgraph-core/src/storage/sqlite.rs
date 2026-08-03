@@ -625,6 +625,10 @@ impl Storage {
         limit: usize,
         source: Option<&str>,
     ) -> Result<Vec<(Episode, f64)>> {
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
         let safe_query = escape_fts5_query(query);
         let results = if let Some(src) = source {
             let mut stmt = self.conn.prepare(
@@ -681,6 +685,10 @@ impl Storage {
         Ok((episode, -rank)) // FTS5 rank is negative (lower = better)
     }
     pub fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<(Entity, f64)>> {
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
         let safe_query = escape_fts5_query(query);
         let mut stmt = self.conn.prepare(
             "SELECT e.id, e.name, e.entity_type, e.memory_type, e.ttl_seconds, e.summary, e.created_at, e.metadata, e.usage_count, e.last_recalled_at,

@@ -246,6 +246,31 @@ async fn test_episode_entity_link() {
 // ── FTS5 Search ──
 
 #[tokio::test]
+async fn test_fts5_blank_searches_return_empty_results() {
+    let graph = test_graph();
+
+    graph
+        .add_episode(Episode::builder("Chose Postgres over SQLite for billing").build())
+        .await
+        .unwrap();
+    graph.add_entity(Entity::new("Postgres", "Component")).unwrap();
+
+    for blank_query in ["", "   ", "\t\n"] {
+        let episodes = graph.search(blank_query, 10, None).unwrap();
+        assert!(
+            episodes.is_empty(),
+            "blank episode query {blank_query:?} should return no matches"
+        );
+
+        let entities = graph.search_entities(blank_query, 10).unwrap();
+        assert!(
+            entities.is_empty(),
+            "blank entity query {blank_query:?} should return no matches"
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_fts5_search_episodes() {
     let graph = test_graph();
 
