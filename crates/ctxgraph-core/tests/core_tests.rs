@@ -77,6 +77,147 @@ async fn test_list_episodes() {
     assert_eq!(offset.len(), 2);
 }
 
+fn soft_expired_episode(content: &str) -> Episode {
+    Episode::builder(content)
+        .meta("marked_for_deletion", true)
+        .build()
+}
+
+#[tokio::test]
+async fn test_list_episodes_omits_soft_expired_by_default() {
+    let graph = test_graph();
+
+    graph
+        .add_episode(Episode::builder("visible decision").build())
+        .await
+        .unwrap();
+    graph
+        .add_episode(soft_expired_episode("deleted decision"))
+        .await
+        .unwrap();
+
+    let episodes = graph.list_episodes(100, 0, None, None).unwrap();
+
+    assert_eq!(episodes.len(), 1);
+    assert_eq!(episodes[0].content, "visible decision");
+}
+
+#[tokio::test]
+async fn test_list_episodes_source_filter_omits_soft_expired() {
+    let graph = test_graph();
+
+    graph
+        .add_episode(
+            Episode::builder("visible slack decision")
+                .source("slack")
+                .build(),
+        )
+        .await
+        .unwrap();
+    graph
+        .add_episode(
+            Episode::builder("deleted slack decision")
+                .source("slack")
+                .meta("marked_for_deletion", true)
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    let episodes = graph.list_episodes(100, 0, None, Some("slack")).unwrap();
+
+    assert_eq!(episodes.len(), 1);
+    assert_eq!(episodes[0].content, "visible slack decision");
+}
+
+#[tokio::test]
+async fn test_list_episodes_after_filter_omits_soft_expired() {
+    let graph = test_graph();
+    let cutoff = Utc::now() - chrono::Duration::minutes(5);
+
+    graph
+        .add_episode(Episode::builder("visible recent decision").build())
+        .await
+        .unwrap();
+    graph
+        .add_episode(soft_expired_episode("deleted recent decision"))
+        .await
+        .unwrap();
+
+    let episodes = graph.list_episodes(100, 0, Some(cutoff), None).unwrap();
+
+    assert_eq!(episodes.len(), 1);
+    assert_eq!(episodes[0].content, "visible recent decision");
+}
+
+#[tokio::test]
+async fn test_search_episodes_omits_soft_expired_matches() {
+    let graph = test_graph();
+
+    graph
+        .add_episode(Episode::builder("alpha visible decision").build())
+        .await
+        .unwrap();
+    graph
+        .add_episode(soft_expired_episode("alpha deleted decision"))
+        .await
+        .unwrap();
+
+    let results = graph.search("alpha", 10, None).unwrap();
+    let contents: Vec<_> = results
+        .iter()
+        .map(|(episode, _score)| episode.content.as_str())
+        .collect();
+
+    assert_eq!(contents, vec!["alpha visible decision"]);
+}
+
+#[tokio::test]
+async fn test_search_episodes_source_filter_omits_soft_expired_matches() {
+    let graph = test_graph();
+
+    graph
+        .add_episode(
+            Episode::builder("alpha visible slack decision")
+                .source("slack")
+                .build(),
+        )
+        .await
+        .unwrap();
+    graph
+        .add_episode(
+            Episode::builder("alpha deleted slack decision")
+                .source("slack")
+                .meta("marked_for_deletion", true)
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    let results = graph.search("alpha", 10, Some("slack")).unwrap();
+    let contents: Vec<_> = results
+        .iter()
+        .map(|(episode, _score)| episode.content.as_str())
+        .collect();
+
+    assert_eq!(contents, vec!["alpha visible slack decision"]);
+}
+
+#[tokio::test]
+async fn test_search_episodes_returns_normal_matches_after_soft_expire_filter() {
+    let graph = test_graph();
+
+    graph
+        .add_episode(Episode::builder("ordinary searchable decision").build())
+        .await
+        .unwrap();
+
+    let results = graph.search("ordinary", 10, None).unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0.content, "ordinary searchable decision");
+}
+
 #[test]
 fn test_episode_not_found() {
     let graph = test_graph();
@@ -447,6 +588,98 @@ async fn test_stats() {
     assert_eq!(stats.entity_count, 2);
     assert_eq!(stats.edge_count, 1);
     assert_eq!(stats.sources.len(), 2);
+}
+
+#[tokio::test]
+async fn test_stats_episode_count_excludes_soft_expired_episodes() {
+    let graph = test_graph();
+
+    graph
+        .add_episode(Episode::builder("visible stats decision").build())
+        .await
+        .unwrap();
+    graph
+        .add_episode(soft_expired_episode("deleted stats decision"))
+        .await
+        .unwrap();
+
+    let stats = graph.stats().unwrap();
+
+    assert_eq!(stats.episode_count, 1);
+}
+
+#[tokio::test]
+async fn test_stats_sources_exclude_soft_expired_episodes() {
+    let graph = test_graph();
+
+    graph
+        .add_episode(
+            Episode::builder("visible slack stats")
+                .source("slack")
+                .build(),
+        )
+        .await
+        .unwrap();
+    graph
+        .add_episode(
+            Episode::builder("deleted slack stats")
+                .source("slack")
+                .meta("marked_for_deletion", true)
+                .build(),
+        )
+        .await
+        .unwrap();
+    graph
+        .add_episode(
+            Episode::builder("deleted email stats")
+                .source("email")
+                .meta("marked_for_deletion", true)
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    let stats = graph.stats().unwrap();
+
+    assert_eq!(stats.sources, vec![("slack".to_string(), 1)]);
+}
+
+#[tokio::test]
+async fn test_stats_active_episode_counts_remain_correct_after_filtering() {
+    let graph = test_graph();
+
+    graph
+        .add_episode(
+            Episode::builder("manual active stats")
+                .source("manual")
+                .build(),
+        )
+        .await
+        .unwrap();
+    graph
+        .add_episode(
+            Episode::builder("slack active stats")
+                .source("slack")
+                .build(),
+        )
+        .await
+        .unwrap();
+    graph
+        .add_episode(
+            Episode::builder("slack deleted stats")
+                .source("slack")
+                .meta("marked_for_deletion", true)
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    let stats = graph.stats().unwrap();
+
+    assert_eq!(stats.episode_count, 2);
+    assert_eq!(stats.sources.len(), 2);
+    assert!(stats.sources.contains(&("manual".to_string(), 1)));
+    assert!(stats.sources.contains(&("slack".to_string(), 1)));
 }
 
 // ── Graph Init ──

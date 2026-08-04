@@ -113,10 +113,13 @@ impl Storage {
         after: Option<DateTime<Utc>>,
         source: Option<&str>,
     ) -> Result<Vec<Episode>> {
+        let soft_expire_filter =
+            " AND COALESCE(json_extract(metadata, '$.marked_for_deletion'), 0) = 0";
         let mut sql = String::from(
             "SELECT id, content, source, recorded_at, metadata, compression_id, memory_type
              FROM episodes WHERE 1=1",
         );
+        sql.push_str(soft_expire_filter);
         if after.is_some() {
             sql.push_str(" AND recorded_at >= ?3");
         }
@@ -634,6 +637,7 @@ impl Storage {
                  FROM episodes_fts fts
                  JOIN episodes e ON e.rowid = fts.rowid
                  WHERE episodes_fts MATCH ?1 AND e.source = ?3
+                   AND COALESCE(json_extract(e.metadata, '$.marked_for_deletion'), 0) = 0
                  ORDER BY rank
                  LIMIT ?2",
             )?;
@@ -649,6 +653,7 @@ impl Storage {
                  FROM episodes_fts fts
                  JOIN episodes e ON e.rowid = fts.rowid
                  WHERE episodes_fts MATCH ?1
+                   AND COALESCE(json_extract(e.metadata, '$.marked_for_deletion'), 0) = 0
                  ORDER BY rank
                  LIMIT ?2",
             )?;
@@ -801,9 +806,11 @@ impl Storage {
         let soft_expire_filter =
             "AND COALESCE(json_extract(metadata, '$.marked_for_deletion'), 0) = 0";
 
-        let episode_count: usize =
-            self.conn
-                .query_row("SELECT COUNT(*) FROM episodes", [], |row| row.get(0))?;
+        let episode_count: usize = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM episodes WHERE 1=1 {soft_expire_filter}"),
+            [],
+            |row| row.get(0),
+        )?;
         let entity_count: usize = self.conn.query_row(
             &format!("SELECT COUNT(*) FROM entities WHERE 1=1 {soft_expire_filter}"),
             [],
@@ -815,10 +822,10 @@ impl Storage {
             |row| row.get(0),
         )?;
 
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT COALESCE(source, 'unknown'), COUNT(*)
-             FROM episodes GROUP BY source ORDER BY COUNT(*) DESC",
-        )?;
+             FROM episodes WHERE 1=1 {soft_expire_filter} GROUP BY source ORDER BY COUNT(*) DESC"
+        ))?;
         let sources = stmt
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
