@@ -1863,17 +1863,15 @@ impl Storage {
 
         let mut stmt = self.conn.prepare(&sql)?;
 
-        // Bind entity_ids twice (once for source_id IN, once for target_id IN)
-        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        for id in entity_ids {
-            all_params.push(Box::new(id.clone()));
-        }
-        for id in entity_ids {
-            all_params.push(Box::new(id.clone()));
-        }
+        // The same numbered placeholders are reused for source_id and target_id,
+        // so each entity id is bound once.
+        let all_params: Vec<Box<dyn rusqlite::types::ToSql>> = entity_ids
+            .iter()
+            .map(|id| Box::new(id.clone()) as Box<dyn rusqlite::types::ToSql>)
+            .collect();
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            all_params.iter().map(|p| p.as_ref()).collect();
+            all_params.iter().map(|param| param.as_ref()).collect();
 
         let edges = stmt
             .query_map(&*param_refs, map_edge_row)?
@@ -2189,7 +2187,6 @@ impl Storage {
 
         // Collect all candidates in a map: key = "entity:<id>" or "edge:<id>", value = candidate
         // This enables deduplication by entity_id or edge_id while keeping the higher score.
-        use std::collections::HashMap;
         let mut cand_map: HashMap<String, RetrievalCandidate> = HashMap::new();
 
         // ── FTS5: Entity names ────────────────────────────────────────────────
