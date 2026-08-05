@@ -259,9 +259,17 @@ Without this, everything runs locally at 0.846 F1 on tech text.
 ## Rust SDK
 
 ```rust
-let graph = ctxgraph::Graph::init(".ctxgraph")?;
-graph.add_episode(Episode::builder("Chose Postgres for billing").build())?;
-let results = graph.search("why Postgres?", 10)?;
+use ctxgraph::{Episode, Graph};
+
+let graph = Graph::in_memory()?;
+graph.add_episode(Episode::builder("Chose Postgres for billing").build()).await?;
+let results = graph.search("why Postgres?", 10, None)?;
+```
+
+For a complete no-model, no-API-key agent memory walkthrough, run:
+
+```bash
+cargo run -p ctxgraph --example agent_memory --no-default-features
 ```
 
 ## Project Structure
