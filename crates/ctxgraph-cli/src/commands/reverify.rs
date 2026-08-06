@@ -58,7 +58,7 @@ pub fn list(options: ReverifyListOptions) -> ctxgraph::Result<()> {
 pub fn renew(options: ReverifyRenewOptions) -> ctxgraph::Result<()> {
     let graph = open_graph()?;
 
-    let memory_type = MemoryType::from_db(&options.memory_type);
+    let memory_type = parse_reverify_memory_type(&options.memory_type)?;
     let renewed = graph
         .storage
         .renew_memory_bypass(&options.id, memory_type)?;
@@ -72,6 +72,26 @@ pub fn renew(options: ReverifyRenewOptions) -> ctxgraph::Result<()> {
     Ok(())
 }
 
+fn parse_reverify_memory_type(value: &str) -> ctxgraph::Result<MemoryType> {
+    let normalized = value.trim().to_lowercase();
+    match normalized.as_str() {
+        "fact" => Ok(MemoryType::Fact),
+        "pattern" => Ok(MemoryType::Pattern),
+        "experience" => Ok(MemoryType::Experience),
+        "preference" => Ok(MemoryType::Preference),
+        "decision" => Ok(MemoryType::Decision),
+        _ => Err(ctxgraph::CtxGraphError::InvalidInput(format!(
+            "invalid memory type '{value}'. Expected one of: fact, pattern, experience, preference, decision"
+        ))),
+    }
+}
+
+fn parse_optional_reverify_memory_type(
+    value: Option<String>,
+) -> ctxgraph::Result<Option<MemoryType>> {
+    value.as_deref().map(parse_reverify_memory_type).transpose()
+}
+
 /// Update a memory's content and/or memory_type.
 pub fn update(options: ReverifyUpdateOptions) -> ctxgraph::Result<()> {
     let graph = open_graph()?;
@@ -82,7 +102,7 @@ pub fn update(options: ReverifyUpdateOptions) -> ctxgraph::Result<()> {
         ));
     }
 
-    let memory_type = options.memory_type.map(|mt| MemoryType::from_db(&mt));
+    let memory_type = parse_optional_reverify_memory_type(options.memory_type)?;
     graph
         .storage
         .update_memory(&options.id, options.content.as_deref(), memory_type)?;
@@ -99,6 +119,71 @@ pub fn expire(options: ReverifyExpireOptions) -> ctxgraph::Result<()> {
 
     println!("Successfully expired memory: {}", options.id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_optional_reverify_memory_type, parse_reverify_memory_type};
+    use ctxgraph::{CtxGraphError, MemoryType};
+
+    #[test]
+    fn parse_memory_type_accepts_valid_canonical_values() {
+        assert_eq!(
+            parse_reverify_memory_type("fact").unwrap(),
+            MemoryType::Fact
+        );
+        assert_eq!(
+            parse_reverify_memory_type("decision").unwrap(),
+            MemoryType::Decision
+        );
+        assert_eq!(
+            parse_reverify_memory_type("experience").unwrap(),
+            MemoryType::Experience
+        );
+        assert_eq!(
+            parse_reverify_memory_type("preference").unwrap(),
+            MemoryType::Preference
+        );
+        assert_eq!(
+            parse_reverify_memory_type("pattern").unwrap(),
+            MemoryType::Pattern
+        );
+    }
+
+    #[test]
+    fn parse_memory_type_is_case_insensitive_and_trims() {
+        assert_eq!(
+            parse_reverify_memory_type(" Preference ").unwrap(),
+            MemoryType::Preference
+        );
+    }
+
+    #[test]
+    fn parse_memory_type_rejects_typo_instead_of_defaulting_to_fact() {
+        let err = parse_reverify_memory_type("prefernce").unwrap_err();
+        assert!(matches!(err, CtxGraphError::InvalidInput(_)));
+        assert!(err.to_string().contains("invalid memory type"));
+        assert!(err.to_string().contains("prefernce"));
+    }
+
+    #[test]
+    fn parse_memory_type_rejects_empty_value() {
+        let err = parse_reverify_memory_type(" ").unwrap_err();
+        assert!(matches!(err, CtxGraphError::InvalidInput(_)));
+        assert!(err.to_string().contains("invalid memory type"));
+    }
+
+    #[test]
+    fn optional_parser_allows_absent_memory_type_for_content_only_update() {
+        assert_eq!(parse_optional_reverify_memory_type(None).unwrap(), None);
+    }
+
+    #[test]
+    fn optional_parser_rejects_invalid_update_memory_type() {
+        let err = parse_optional_reverify_memory_type(Some("unknown".to_string())).unwrap_err();
+        assert!(matches!(err, CtxGraphError::InvalidInput(_)));
+        assert!(err.to_string().contains("unknown"));
+    }
 }
 
 /// Print a human-readable table of stale memories.
