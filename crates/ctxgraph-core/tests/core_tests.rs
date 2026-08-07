@@ -457,15 +457,34 @@ fn test_graph_init_and_open() {
     let dir = tmp.path();
 
     // Init should succeed
-    let _graph = Graph::init(dir).unwrap();
+    let graph = Graph::init(dir).unwrap();
+    let db_path = dir.join(".ctxgraph").join("graph.db");
+    assert_eq!(graph.db_path(), db_path.as_path());
 
     // Init again should fail (already exists)
     let result = Graph::init(dir);
     assert!(result.is_err());
 
     // Open should succeed
-    let db_path = dir.join(".ctxgraph").join("graph.db");
-    let _graph = Graph::open(&db_path).unwrap();
+    let graph = Graph::open(&db_path).unwrap();
+    assert_eq!(graph.db_path(), db_path.as_path());
+}
+
+#[test]
+fn test_graph_open_or_create_reports_explicit_db_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("custom").join("agent-memory.db");
+
+    let graph = Graph::open_or_create(&db_path).unwrap();
+
+    assert_eq!(graph.db_path(), db_path.as_path());
+}
+
+#[test]
+fn test_graph_in_memory_reports_memory_db_path() {
+    let graph = Graph::in_memory().unwrap();
+
+    assert_eq!(graph.db_path(), std::path::Path::new(":memory:"));
 }
 
 #[test]

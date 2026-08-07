@@ -17,7 +17,6 @@ use ctxgraph_extract::schema::ExtractionSchema;
 
 pub struct Graph {
     pub storage: Storage,
-    #[allow(dead_code)]
     db_path: PathBuf,
     #[cfg(feature = "extract")]
     pipeline: Option<ExtractionPipeline>,
@@ -94,6 +93,14 @@ impl Graph {
             #[cfg(feature = "extract")]
             pipeline: None,
         })
+    }
+
+    /// Return the database path this graph was opened with.
+    ///
+    /// Persistent graphs return their SQLite database path. In-memory graphs
+    /// return the `:memory:` sentinel used by rusqlite.
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
     }
 
     /// Load the extraction pipeline from models in the given directory.
