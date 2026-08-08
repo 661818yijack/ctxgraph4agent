@@ -101,6 +101,51 @@ pub fn expire(options: ReverifyExpireOptions) -> ctxgraph::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::truncate_for_table;
+
+    #[test]
+    fn truncate_for_table_keeps_short_unicode_content_unchanged() {
+        assert_eq!(truncate_for_table("修复完成✅", 40), "修复完成✅");
+    }
+
+    #[test]
+    fn truncate_for_table_keeps_exact_width_ascii_unchanged() {
+        assert_eq!(truncate_for_table("abcdefgh", 8), "abcdefgh");
+    }
+
+    #[test]
+    fn truncate_for_table_shortens_long_ascii_with_ellipsis() {
+        assert_eq!(
+            truncate_for_table("abcdefghijklmnopqrstuvwxyz", 10),
+            "abcdefg..."
+        );
+    }
+
+    #[test]
+    fn truncate_for_table_shortens_long_unicode_without_panicking() {
+        assert_eq!(truncate_for_table("🚀🚀🚀🚀🚀🚀", 5), "🚀🚀...");
+    }
+
+    #[test]
+    fn truncate_for_table_keeps_short_ids_unchanged() {
+        assert_eq!(truncate_for_table("BUG-104", 8), "BUG-104");
+    }
+}
+
+fn truncate_for_table(value: &str, max_chars: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= max_chars {
+        return value.to_string();
+    }
+
+    let prefix_len = max_chars.saturating_sub(3);
+    let mut truncated = value.chars().take(prefix_len).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
 /// Print a human-readable table of stale memories.
 fn print_stale_table(memories: &[StaleMemory]) {
     // Header
@@ -111,17 +156,8 @@ fn print_stale_table(memories: &[StaleMemory]) {
     println!("{}", "-".repeat(100));
 
     for memory in memories {
-        let id_short = if memory.id.len() > 8 {
-            format!("{}...", &memory.id[..8])
-        } else {
-            memory.id.clone()
-        };
-
-        let content = if memory.content.len() > 40 {
-            format!("{}...", &memory.content[..37])
-        } else {
-            memory.content.clone()
-        };
+        let id_short = truncate_for_table(&memory.id, 8);
+        let content = truncate_for_table(&memory.content, 40);
 
         let action_str = match memory.suggested_action {
             ctxgraph::StaleAction::Renew => "renew",
