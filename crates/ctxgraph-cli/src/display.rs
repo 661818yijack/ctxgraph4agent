@@ -11,12 +11,7 @@ pub fn print_episode(episode: &Episode, score: Option<f64>) {
         println!("  [{id_short}] ({source}, {date})");
     }
 
-    // Truncate content for display
-    let content = if episode.content.len() > 200 {
-        format!("{}...", &episode.content[..197])
-    } else {
-        episode.content.clone()
-    };
+    let content = display_content_preview(&episode.content, 200);
     println!("    {content}");
 
     if let Some(meta) = &episode.metadata
@@ -31,12 +26,22 @@ pub fn print_episode(episode: &Episode, score: Option<f64>) {
 pub fn print_episode_row(episode: &Episode) {
     let id_short = &episode.id[..8.min(episode.id.len())];
     let source = episode.source.as_deref().unwrap_or("unknown");
-    let content = if episode.content.len() > 50 {
-        format!("{}...", &episode.content[..47])
-    } else {
-        episode.content.clone()
-    };
+    let content = display_content_preview(&episode.content, 50);
     println!("{:<12} {:<12} {}", id_short, source, content);
+}
+
+fn display_content_preview(content: &str, max_chars: usize) -> String {
+    let char_count = content.chars().count();
+    if char_count <= max_chars {
+        return content.to_string();
+    }
+
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+
+    let prefix: String = content.chars().take(max_chars - 3).collect();
+    format!("{prefix}...")
 }
 
 pub fn print_entity_row(entity: &Entity) {
@@ -96,4 +101,41 @@ fn find_name(entities: &[Entity], id: &str) -> String {
         .find(|e| e.id == id)
         .map(|e| e.name.clone())
         .unwrap_or_else(|| id[..8.min(id.len())].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_content_preview;
+
+    #[test]
+    fn content_preview_leaves_short_ascii_unchanged() {
+        assert_eq!(display_content_preview("short ASCII", 200), "short ASCII");
+    }
+
+    #[test]
+    fn content_preview_truncates_long_emoji_without_panicking() {
+        let content = "🦀".repeat(80);
+
+        let preview = display_content_preview(&content, 50);
+
+        assert!(preview.ends_with("..."));
+        assert!(preview.chars().count() <= 50);
+    }
+
+    #[test]
+    fn content_preview_truncates_long_cjk_without_panicking() {
+        let content = "数据库".repeat(80);
+
+        let preview = display_content_preview(&content, 50);
+
+        assert!(preview.ends_with("..."));
+        assert!(preview.chars().count() <= 50);
+    }
+
+    #[test]
+    fn content_preview_handles_tiny_limits_safely() {
+        assert_eq!(display_content_preview("abcdef", 3), "...");
+        assert_eq!(display_content_preview("abcdef", 2), "..");
+        assert_eq!(display_content_preview("abcdef", 0), "");
+    }
 }
