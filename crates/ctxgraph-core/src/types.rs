@@ -61,7 +61,7 @@ impl MemoryType {
 
     /// Parse from a database string (case-insensitive). Defaults to Fact on unknown.
     pub fn from_db(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
+        match s.trim().to_lowercase().as_str() {
             "fact" => MemoryType::Fact,
             "pattern" => MemoryType::Pattern,
             "experience" => MemoryType::Experience,
@@ -887,6 +887,20 @@ mod tests {
     }
 
     #[test]
+    fn test_memory_type_from_db_trims_and_ignores_case() {
+        assert_eq!(MemoryType::from_db(" pattern "), MemoryType::Pattern);
+        assert_eq!(MemoryType::from_db(" DECISION "), MemoryType::Decision);
+        assert_eq!(MemoryType::from_db("unknown"), MemoryType::Fact);
+    }
+
+    #[test]
+    fn test_skill_scope_from_db_trims_and_ignores_case() {
+        assert_eq!(SkillScope::from_db(" shared "), SkillScope::Shared);
+        assert_eq!(SkillScope::from_db(" PRIVATE "), SkillScope::Private);
+        assert_eq!(SkillScope::from_db("unknown"), SkillScope::Private);
+    }
+
+    #[test]
     fn test_fresh_fact_scores_higher_than_stale_with_high_usage() {
         // Fresh fact: created 1 day ago, 90d TTL, high FTS, usage=10
         let fresh = make_candidate(
@@ -1625,7 +1639,7 @@ impl fmt::Display for SkillScope {
 impl SkillScope {
     /// Parse from a database string (case-insensitive).
     pub fn from_db(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
+        match s.trim().to_lowercase().as_str() {
             "shared" => SkillScope::Shared,
             _ => SkillScope::Private,
         }
