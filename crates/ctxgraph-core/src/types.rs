@@ -781,24 +781,19 @@ impl Default for AgentPolicy {
 
 /// Estimate token count for a text string.
 ///
-/// Uses `text.len() / 4` as a ceiling estimate. This is acknowledged to be
-/// imprecise — actual token counts vary by vocabulary and encoding — but
-/// provides a conservative (overestimating) approximation suitable for budget
-/// enforcement.
+/// Uses ceiling division over UTF-8 bytes (`ceil(text.len() / 4)`) as an
+/// intentionally simple, conservative budget estimate. This is imprecise —
+/// actual token counts vary by vocabulary and encoding — but it avoids
+/// undercounting short or non-multiple-of-four content during budget enforcement.
 ///
-/// - Input: "hello world" (11 chars) → returns 3 tokens (ceiling)
-/// - Input: "The quick brown fox jumps over the lazy dog" (44 chars) → returns 11 tokens
+/// - Input: "" → returns 0 tokens
+/// - Input: "hi" (2 bytes) → returns 1 token
+/// - Input: "hello world" (11 bytes) → returns 3 tokens
+/// - Input: "The quick brown fox jumps over the lazy dog" (43 bytes) → returns 11 tokens
 ///
 /// For exact counting, a proper tokenizer (e.g., tiktoken) would be needed.
 pub fn estimate_tokens(text: &str) -> usize {
-    // Ceiling division: (len + 3) / 4  is equivalent to ceil(len / 4)
-    // But simpler: just use len / 4 with integer division (floor), which
-    // underestimates. For ceiling, add 3 first.
-    // However, the spec says text.len() / 4 directly, so we follow that.
-    // Note: this is documented as a ceiling estimate, so we use floor which
-    // actually makes it a floor estimate, but in practice chars > tokens
-    // so this serves as a reasonable proxy.
-    text.len() / 4
+    text.len().div_ceil(4)
 }
 
 /// Greedily enforce token budget on scored candidates.
@@ -1260,10 +1255,9 @@ mod tests {
 
     #[test]
     fn test_estimate_tokens_hello_world() {
-        // "hello world" is 11 chars, 11/4 = 2.75 floor = 2
-        // But actual test: 11 chars / 4 = 2 (floor division)
+        // "hello world" is 11 bytes, ceil(11/4) = 3.
         let tokens = estimate_tokens("hello world");
-        assert_eq!(tokens, 2, "hello world (11 chars) should be ~2-3 tokens");
+        assert_eq!(tokens, 3, "hello world (11 bytes) should be 3 tokens");
     }
 
     #[test]
@@ -1273,11 +1267,17 @@ mod tests {
     }
 
     #[test]
-    fn test_estimate_tokens_ceiling_estimate() {
-        // text.len() / 4 is documented as a ceiling estimate
-        // For short strings, the floor division gives a lower bound
-        let tokens = estimate_tokens("hi"); // 2 chars
-        assert_eq!(tokens, 0, "2 chars / 4 = 0 tokens");
+    fn test_estimate_tokens_short_non_empty_text_costs_one_token() {
+        assert_eq!(estimate_tokens("h"), 1);
+        assert_eq!(estimate_tokens("hi"), 1);
+        assert_eq!(estimate_tokens("hey"), 1);
+    }
+
+    #[test]
+    fn test_estimate_tokens_rounds_non_multiple_of_four_up() {
+        assert_eq!(estimate_tokens("abcd"), 1);
+        assert_eq!(estimate_tokens("abcde"), 2);
+        assert_eq!(estimate_tokens("abcdefghijk"), 3);
     }
 
     #[test]
@@ -1296,7 +1296,7 @@ mod tests {
             candidate: RetrievalCandidate {
                 entity_id: Some("e1".to_string()),
                 edge_id: None,
-                content: "short".to_string(), // 5 chars = 1 token
+                content: "short".to_string(), // 5 bytes = 2 tokens with ceiling division
                 fts_score: 0.5,
                 memory_type: MemoryType::Fact,
                 created_at: Utc::now() - Duration::days(1),
@@ -1310,7 +1310,8 @@ mod tests {
 
         let (memories, tokens_spent) = enforce_budget(vec![candidate], 100);
         assert_eq!(memories.len(), 1);
-        assert_eq!(tokens_spent, 1); // 5 chars / 4 = 1 token
+        assert_eq!(tokens_spent, 2); // ceil(5 / 4) = 2 tokens
+        assert_eq!(memories[0].tokens, 2);
     }
 
     #[test]
@@ -1397,10 +1398,10 @@ mod tests {
             },
         ];
 
-        // Budget of 10 tokens should fit all three (1 + 1 + 6 = 8 tokens)
+        // Budget of 10 tokens should fit all three (2 + 1 + 6 = 9 tokens)
         let (memories, tokens_spent) = enforce_budget(candidates, 10);
         assert_eq!(memories.len(), 3);
-        assert_eq!(tokens_spent, 8);
+        assert_eq!(tokens_spent, 9);
 
         // Verify order is by score descending (as provided)
         assert_eq!(memories[0].score, 0.9);
@@ -1412,15 +1413,15 @@ mod tests {
     fn test_enforce_budget_respects_remaining_budget() {
         use chrono::Duration;
 
-        // First candidate uses most of budget
-        // "content that takes up many tokens here" = 38 chars = 9 tokens
-        // "another item" = 12 chars = 3 tokens
+        // First candidate uses most of budget.
+        // "123456789" = 9 bytes = 3 tokens with ceiling division.
+        // "another item" = 12 bytes = 3 tokens.
         let candidates = vec![
             ScoredCandidate {
                 candidate: RetrievalCandidate {
                     entity_id: Some("e1".to_string()),
                     edge_id: None,
-                    content: "content that takes up many tokens here".to_string(),
+                    content: "123456789".to_string(),
                     fts_score: 0.5,
                     memory_type: MemoryType::Fact,
                     created_at: Utc::now() - Duration::days(1),
@@ -1448,11 +1449,11 @@ mod tests {
             },
         ];
 
-        // Budget of 11 tokens - first candidate (9 tokens) fits,
-        // second candidate (3 tokens) would exceed 11 (9+3=12 > 11)
-        let (memories, tokens_spent) = enforce_budget(candidates, 11);
+        // Budget of 5 tokens - first candidate (3 tokens) fits,
+        // second candidate (3 tokens) would exceed 5 (3+3=6 > 5).
+        let (memories, tokens_spent) = enforce_budget(candidates, 5);
         assert_eq!(memories.len(), 1);
-        assert_eq!(tokens_spent, 9);
+        assert_eq!(tokens_spent, 3);
     }
 
     #[test]
@@ -1464,7 +1465,7 @@ mod tests {
                 candidate: RetrievalCandidate {
                     entity_id: Some("e1".to_string()),
                     edge_id: None,
-                    content: "test content number one".to_string(), // 23 chars = 5 tokens
+                    content: "test content number one".to_string(), // 23 bytes = 6 tokens
                     fts_score: 0.5,
                     memory_type: MemoryType::Fact,
                     created_at: Utc::now() - Duration::days(1),
@@ -1479,7 +1480,7 @@ mod tests {
                 candidate: RetrievalCandidate {
                     entity_id: Some("e2".to_string()),
                     edge_id: None,
-                    content: "test content number two here".to_string(), // 30 chars = 7 tokens
+                    content: "test content number two here".to_string(), // 28 bytes = 7 tokens
                     fts_score: 0.5,
                     memory_type: MemoryType::Fact,
                     created_at: Utc::now() - Duration::days(1),
@@ -1495,9 +1496,9 @@ mod tests {
         let budget = 20_000; // default budget
         let (memories, tokens_spent) = enforce_budget(candidates, budget);
 
-        // Both should fit (5 + 7 = 12 tokens < 20000)
+        // Both should fit (6 + 7 = 13 tokens < 20000)
         assert_eq!(memories.len(), 2);
-        assert_eq!(tokens_spent, 12);
+        assert_eq!(tokens_spent, 13);
 
         // Verify property: sum of tokens <= budget
         let total_tokens: usize = memories.iter().map(|m| m.tokens).sum();
