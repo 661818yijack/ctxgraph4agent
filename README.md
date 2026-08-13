@@ -273,7 +273,6 @@ crates/
 +-- ctxgraph-embed/      Local embeddings
 +-- ctxgraph-cli/        CLI binary
 +-- ctxgraph-mcp/        MCP server
-+-- ctxgraph-sdk/        Rust SDK
 ```
 
 ## Contributing
