@@ -6,7 +6,7 @@ members = ["crates/*"]
 version = "0.8.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/rohansx/ctxgraph"
+repository = "https://github.com/661818yijack/ctxgraph4agent"
 description = "Privacy-first knowledge graph engine for AI agents. Better quality, 6x cheaper than Graphiti."
 
 [workspace.dependencies]
