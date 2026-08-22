@@ -121,6 +121,8 @@ impl MemoryType {
         usage_count: u32,
         now: DateTime<Utc>,
     ) -> f64 {
+        let base_confidence = clamp_decay_score(base_confidence);
+
         // Pattern never decays regardless of ttl
         if *self == MemoryType::Pattern {
             return base_confidence;
@@ -181,6 +183,15 @@ impl MemoryType {
             MemoryType::Pattern => unreachable!(),
         }
     }
+}
+
+/// Keep public memory ranking scores within the documented [0.0, 1.0] range.
+fn clamp_decay_score(score: f64) -> f64 {
+    if score.is_nan() {
+        return 0.0;
+    }
+
+    score.clamp(0.0, 1.0)
 }
 
 /// Exponential decay: `exp(-ln(2) / half_life * age)`
