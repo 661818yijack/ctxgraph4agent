@@ -1042,18 +1042,53 @@ fn test_decay_scores_in_range() {
         MemoryType::Decision,
     ];
     let ages_days = [0i64, 7, 14, 30, 45, 90, 100, 365];
+    let base_confidences = [f64::NAN, -0.25, 0.0, 0.5, 1.0, 1.25];
 
     for mt in &types {
         let ttl = mt.default_ttl();
-        for &age in &ages_days {
-            let created_at = Utc::now() - chrono::Duration::days(age);
-            let score = mt.decay_score(1.0, created_at, ttl);
-            assert!(
-                (0.0..=1.0).contains(&score),
-                "{mt:?} at age={age}d score={score} out of range"
-            );
+        for &base_confidence in &base_confidences {
+            for &age in &ages_days {
+                let created_at = Utc::now() - chrono::Duration::days(age);
+                let score = mt.decay_score(base_confidence, created_at, ttl);
+                assert!(
+                    (0.0..=1.0).contains(&score),
+                    "{mt:?} with base_confidence={base_confidence} at age={age}d score={score} out of range"
+                );
+            }
         }
     }
+}
+
+#[test]
+fn test_decay_score_at_clamps_negative_base_confidence_to_zero() {
+    let now = Utc::now();
+    let created_at = now - chrono::Duration::days(7);
+    let ttl = Some(std::time::Duration::from_secs(90 * 86400));
+
+    let score = MemoryType::Fact.decay_score_at(-0.25, created_at, ttl, now);
+
+    assert_eq!(score, 0.0);
+}
+
+#[test]
+fn test_decay_score_clamps_over_one_base_confidence_to_one() {
+    let created_at = Utc::now();
+    let ttl = Some(std::time::Duration::from_secs(90 * 86400));
+
+    let score = MemoryType::Decision.decay_score(1.25, created_at, ttl);
+
+    assert_eq!(score, 1.0);
+}
+
+#[test]
+fn test_pattern_decay_clamps_out_of_range_base_confidence() {
+    let created_at = Utc::now() - chrono::Duration::days(365);
+
+    assert_eq!(
+        MemoryType::Pattern.decay_score(-0.25, created_at, None),
+        0.0
+    );
+    assert_eq!(MemoryType::Pattern.decay_score(1.25, created_at, None), 1.0);
 }
 
 #[test]
