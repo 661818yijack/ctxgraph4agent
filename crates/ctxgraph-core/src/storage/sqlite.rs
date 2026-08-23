@@ -2673,18 +2673,20 @@ fn parse_metadata(s: &str) -> Option<serde_json::Value> {
 
 /// Truncate a string at a word boundary to max_len characters.
 ///
-/// If the string is longer than max_len, finds the last space within
-/// the first max_len characters and truncates there.
+/// If the string is longer than max_len characters, finds the last space within
+/// the first max_len characters and truncates there. Character counting keeps
+/// multi-byte UTF-8 descriptions from being sliced at invalid byte offsets.
 fn truncate_at_word_boundary(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         return s.to_string();
     }
-    let truncated = &s[..max_len];
+
+    let truncated: String = s.chars().take(max_len).collect();
     // Find the last space in the truncated portion
     if let Some(last_space) = truncated.rfind(' ') {
-        s[..last_space].trim().to_string()
+        truncated[..last_space].trim().to_string()
     } else {
-        truncated.to_string()
+        truncated
     }
 }
 
