@@ -1683,6 +1683,19 @@ fn test_get_patterns_returns_stored_patterns_with_descriptions() {
     );
 }
 
+fn pattern_candidate(id: &str, description: Option<String>) -> PatternCandidate {
+    PatternCandidate {
+        id: id.to_string(),
+        entity_types: vec!["Component".to_string()],
+        entity_pair: None,
+        relation_triplet: None,
+        occurrence_count: 2,
+        source_groups: vec!["comp1".to_string()],
+        confidence: 0.5,
+        description,
+    }
+}
+
 #[test]
 fn test_entity_name_truncated_at_word_boundary_80_chars() {
     let graph = test_graph();
@@ -1694,16 +1707,7 @@ fn test_entity_name_truncated_at_word_boundary_80_chars() {
         "test description should be > 80 chars"
     );
 
-    let candidate = PatternCandidate {
-        id: "pattern-789".to_string(),
-        entity_types: vec!["Component".to_string()],
-        entity_pair: None,
-        relation_triplet: None,
-        occurrence_count: 2,
-        source_groups: vec!["comp1".to_string()],
-        confidence: 0.5,
-        description: Some(long_description.clone()),
-    };
+    let candidate = pattern_candidate("pattern-789", Some(long_description.clone()));
 
     // Store pattern (which truncates name at word boundary)
     graph.storage.store_pattern(&candidate).unwrap();
@@ -1713,15 +1717,15 @@ fn test_entity_name_truncated_at_word_boundary_80_chars() {
 
     // Name should be <= 80 chars
     assert!(
-        entity.name.len() <= 80,
+        entity.name.chars().count() <= 80,
         "entity name should be <= 80 chars, got {} chars: {}",
-        entity.name.len(),
+        entity.name.chars().count(),
         entity.name
     );
 
     // Name should end at word boundary (no partial words at end)
     // If it's exactly 80, check it doesn't end mid-word
-    if entity.name.len() == 80 {
+    if entity.name.chars().count() == 80 {
         assert!(
             !entity.name.ends_with(' '),
             "name should not end with space"
@@ -1729,6 +1733,49 @@ fn test_entity_name_truncated_at_word_boundary_80_chars() {
         // The truncation function finds last space in first 80 chars and truncates there
         // So it should be a complete word
     }
+}
+
+#[test]
+fn test_pattern_entity_name_handles_emoji_at_byte_boundary() {
+    let graph = test_graph();
+    let description = format!("{}🙂 stores safely after emoji", "a".repeat(79));
+    let candidate = pattern_candidate("pattern-unicode-emoji", Some(description.clone()));
+
+    graph.storage.store_pattern(&candidate).unwrap();
+
+    let entity = graph.get_entity("pattern-unicode-emoji").unwrap().unwrap();
+    assert_eq!(entity.id, "pattern-unicode-emoji");
+    assert_eq!(entity.entity_type, "LearnedPattern");
+    assert_eq!(entity.memory_type, MemoryType::Pattern);
+    assert_eq!(entity.summary.as_deref(), Some(description.as_str()));
+    assert!(entity.name.chars().count() <= 80);
+    assert!(entity.name.is_char_boundary(entity.name.len()));
+}
+
+#[test]
+fn test_pattern_entity_name_handles_cjk_without_spaces() {
+    let graph = test_graph();
+    let description = "資料".repeat(60);
+    let candidate = pattern_candidate("pattern-unicode-cjk", Some(description.clone()));
+
+    graph.storage.store_pattern(&candidate).unwrap();
+
+    let entity = graph.get_entity("pattern-unicode-cjk").unwrap().unwrap();
+    assert_eq!(entity.summary.as_deref(), Some(description.as_str()));
+    assert_eq!(entity.name.chars().count(), 80);
+    assert!(description.starts_with(&entity.name));
+}
+
+#[test]
+fn test_pattern_without_description_keeps_id_fallback_name() {
+    let graph = test_graph();
+    let candidate = pattern_candidate("pattern-no-description", None);
+
+    graph.storage.store_pattern(&candidate).unwrap();
+
+    let entity = graph.get_entity("pattern-no-description").unwrap().unwrap();
+    assert_eq!(entity.name, "Pattern pattern-");
+    assert_eq!(entity.summary, None);
 }
 
 #[test]
