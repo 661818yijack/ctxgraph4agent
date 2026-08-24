@@ -11,54 +11,99 @@ use super::open_graph;
 /// Real LLM-based batch label describer for the CLI.
 ///
 /// Makes a single LLM call for all candidates and returns one label per candidate.
-struct RealBatchLabelDescriber {
+struct RealBatchLabelDescriber;
+
+#[derive(Debug)]
+struct LlmRequestConfig {
+    url: String,
     model: String,
+    headers: HashMap<String, String>,
+    body: serde_json::Value,
 }
 
 impl RealBatchLabelDescriber {
     fn new() -> Self {
-        Self {
-            model: env::var("CTXGRAPH_MODEL").unwrap_or_else(|_| "glm-5-turbo".to_string()),
+        Self
+    }
+
+    fn request_config_from_values(
+        zai_key: Option<String>,
+        minimax_key: Option<String>,
+        model_override: Option<String>,
+        prompt: &str,
+        max_tokens: u32,
+    ) -> Result<LlmRequestConfig> {
+        if let Some(key) = zai_key {
+            let model = model_override.unwrap_or_else(|| "glm-5-turbo".to_string());
+            let mut headers = HashMap::new();
+            headers.insert("Authorization".to_string(), format!("Bearer {key}"));
+            headers.insert("Content-Type".to_string(), "application/json".to_string());
+
+            return Ok(LlmRequestConfig {
+                url: "https://api.z.ai/api/coding/paas/v4/chat/completions".to_string(),
+                model: model.clone(),
+                headers,
+                body: serde_json::json!({
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens,
+                    "temperature": 0.3
+                }),
+            });
         }
+
+        if let Some(key) = minimax_key {
+            let model = model_override.unwrap_or_else(|| "MiniMax-M2.7".to_string());
+            let mut headers = HashMap::new();
+            headers.insert("x-api-key".to_string(), key);
+            headers.insert("anthropic-version".to_string(), "2023-06-01".to_string());
+            headers.insert("Content-Type".to_string(), "application/json".to_string());
+
+            return Ok(LlmRequestConfig {
+                url: "https://api.minimax.io/anthropic/v1/messages".to_string(),
+                model: model.clone(),
+                headers,
+                body: serde_json::json!({
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens
+                }),
+            });
+        }
+
+        Err(CtxGraphError::InvalidInput(
+            "ZAI_API_KEY or MINIMAX_API_KEY must be set for learn command".to_string(),
+        ))
+    }
+
+    fn request_config_from_env(&self, prompt: &str, max_tokens: u32) -> Result<LlmRequestConfig> {
+        Self::request_config_from_values(
+            env::var("ZAI_API_KEY").ok().filter(|key| !key.is_empty()),
+            env::var("MINIMAX_API_KEY")
+                .ok()
+                .filter(|key| !key.is_empty()),
+            env::var("CTXGRAPH_MODEL")
+                .ok()
+                .filter(|model| !model.is_empty()),
+            prompt,
+            max_tokens,
+        )
     }
 
     async fn call_llm(&self, prompt: &str, max_tokens: u32) -> Result<String> {
-        let api_key = env::var("ZAI_API_KEY").ok();
-        let minimax_key = env::var("MINIMAX_API_KEY").ok();
+        let config = self.request_config_from_env(prompt, max_tokens)?;
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()
             .map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
 
-        let body = serde_json::json!({
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": 0.3
-        });
+        let mut request = client.post(&config.url);
+        for (name, value) in &config.headers {
+            request = request.header(name.as_str(), value.as_str());
+        }
 
-        let response = if let Some(key) = api_key {
-            client
-                .post("https://api.z.ai/api/coding/paas/v4/chat/completions")
-                .header("Authorization", format!("Bearer {}", key))
-                .header("Content-Type", "application/json")
-                .json(&body)
-                .send()
-                .await
-        } else if let Some(key) = minimax_key {
-            client
-                .post("https://api.minimax.io/anthropic")
-                .header("Authorization", format!("Bearer {}", key))
-                .header("Content-Type", "application/json")
-                .json(&body)
-                .send()
-                .await
-        } else {
-            return Err(CtxGraphError::InvalidInput(
-                "ZAI_API_KEY or MINIMAX_API_KEY must be set for learn command".to_string(),
-            ));
-        };
+        let response = request.json(&config.body).send().await;
 
         let response = response.map_err(|e| CtxGraphError::Extraction(e.to_string()))?;
         let json: serde_json::Value = response
@@ -228,4 +273,62 @@ pub async fn run(options: LearnOptions) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimax_request_config_uses_anthropic_endpoint_headers_and_default_model() {
+        let config = RealBatchLabelDescriber::request_config_from_values(
+            None,
+            Some("test-minimax-key".to_string()),
+            None,
+            "prompt",
+            220,
+        )
+        .expect("MiniMax key should produce a request config");
+
+        assert_eq!(config.url, "https://api.minimax.io/anthropic/v1/messages");
+        assert_eq!(config.model, "MiniMax-M2.7");
+        assert_eq!(
+            config.headers.get("x-api-key").map(String::as_str),
+            Some("test-minimax-key")
+        );
+        assert_eq!(
+            config.headers.get("anthropic-version").map(String::as_str),
+            Some("2023-06-01")
+        );
+        assert!(!config.headers.contains_key("Authorization"));
+        assert_eq!(config.body["model"], "MiniMax-M2.7");
+        assert_eq!(config.body["max_tokens"], 220);
+        assert_eq!(config.body["messages"][0]["content"], "prompt");
+        assert!(config.body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn zai_request_config_takes_priority_and_keeps_openai_shape() {
+        let config = RealBatchLabelDescriber::request_config_from_values(
+            Some("test-zai-key".to_string()),
+            Some("test-minimax-key".to_string()),
+            Some("custom-zai-model".to_string()),
+            "prompt",
+            120,
+        )
+        .expect("ZAI key should produce a request config");
+
+        assert_eq!(
+            config.url,
+            "https://api.z.ai/api/coding/paas/v4/chat/completions"
+        );
+        assert_eq!(config.model, "custom-zai-model");
+        assert_eq!(
+            config.headers.get("Authorization").map(String::as_str),
+            Some("Bearer test-zai-key")
+        );
+        assert_eq!(config.body["temperature"], 0.3);
+        assert_eq!(config.body["messages"][0]["content"], "prompt");
+        assert!(!config.headers.contains_key("x-api-key"));
+    }
 }
