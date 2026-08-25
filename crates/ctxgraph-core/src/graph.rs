@@ -1002,6 +1002,8 @@ impl Graph {
         query: &str,
         limit: usize,
     ) -> Result<Vec<(Skill, f64)>> {
+        let query = query.trim();
+
         // Get all skills visible to this agent
         let agent_skills = self.get_skills_for_agent(agent)?;
 
@@ -1228,6 +1230,123 @@ mod tests {
 
     fn new_test_graph() -> Graph {
         Graph::in_memory().expect("failed to create in-memory graph")
+    }
+
+    fn test_skill(
+        id: &str,
+        name: &str,
+        description: &str,
+        scope: SkillScope,
+        created_by_agent: &str,
+    ) -> Skill {
+        Skill {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            trigger_condition: format!("When {name} applies"),
+            action: format!("Apply {name}"),
+            success_count: 3,
+            failure_count: 1,
+            confidence: 0.75,
+            superseded_by: None,
+            created_at: Utc::now(),
+            entity_types: vec!["Process".to_string()],
+            provenance: None,
+            scope,
+            created_by_agent: created_by_agent.to_string(),
+        }
+    }
+
+    fn seed_retrieval_skills(graph: &Graph) {
+        graph
+            .storage
+            .create_skill(&test_skill(
+                "skill-own",
+                "Postgres migration runbook",
+                "Use for database migrations and rollback planning",
+                SkillScope::Private,
+                "apex",
+            ))
+            .unwrap();
+        graph
+            .storage
+            .create_skill(&test_skill(
+                "skill-shared",
+                "Incident review checklist",
+                "Shared retrospective process for outages",
+                SkillScope::Shared,
+                "lux",
+            ))
+            .unwrap();
+        graph
+            .storage
+            .create_skill(&test_skill(
+                "skill-other-private",
+                "Private billing workflow",
+                "Only another agent should see this",
+                SkillScope::Private,
+                "lux",
+            ))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_retrieve_skills_empty_context_returns_visible_skills_with_floor_score() {
+        let graph = new_test_graph();
+        seed_retrieval_skills(&graph);
+
+        let results = graph.retrieve_skills_for_context("apex", "", 10).unwrap();
+        let ids: std::collections::HashSet<_> = results
+            .iter()
+            .map(|(skill, score)| {
+                assert_eq!(*score, 0.8, "blank context fallback should use floor score");
+                skill.id.as_str()
+            })
+            .collect();
+
+        assert_eq!(results.len(), 2);
+        assert!(ids.contains("skill-own"));
+        assert!(ids.contains("skill-shared"));
+        assert!(!ids.contains("skill-other-private"));
+    }
+
+    #[test]
+    fn test_retrieve_skills_whitespace_context_matches_empty_context() {
+        let graph = new_test_graph();
+        seed_retrieval_skills(&graph);
+
+        let empty_results = graph.retrieve_skills_for_context("apex", "", 10).unwrap();
+        let whitespace_results = graph
+            .retrieve_skills_for_context("apex", "  \t  \n  ", 10)
+            .unwrap();
+
+        let empty_ids: std::collections::HashSet<_> = empty_results
+            .iter()
+            .map(|(skill, _)| skill.id.as_str())
+            .collect();
+        let whitespace_ids: std::collections::HashSet<_> = whitespace_results
+            .iter()
+            .map(|(skill, score)| {
+                assert_eq!(*score, 0.8, "whitespace context should use fallback score");
+                skill.id.as_str()
+            })
+            .collect();
+
+        assert_eq!(whitespace_ids, empty_ids);
+    }
+
+    #[test]
+    fn test_retrieve_skills_nonblank_query_still_uses_fts_and_limit() {
+        let graph = new_test_graph();
+        seed_retrieval_skills(&graph);
+
+        let results = graph
+            .retrieve_skills_for_context("apex", "Postgres", 1)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, "skill-own");
+        assert!(results[0].1 >= 0.8, "matched skill should keep score floor");
     }
 
     // ── Lazy trigger tests ──
