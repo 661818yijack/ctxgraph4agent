@@ -226,6 +226,7 @@ pub struct EpisodeBuilder {
     metadata: serde_json::Map<String, serde_json::Value>,
     tags: Vec<String>,
     memory_type: MemoryType,
+    recorded_at: Option<DateTime<Utc>>,
 }
 
 impl EpisodeBuilder {
@@ -246,6 +247,16 @@ impl EpisodeBuilder {
 
     pub fn memory_type(mut self, mt: MemoryType) -> Self {
         self.memory_type = mt;
+        self
+    }
+
+    /// Set the episode's recorded timestamp explicitly.
+    ///
+    /// By default, episodes are stamped with `Utc::now()` when `build()` is
+    /// called. Use this for importing or replaying historical context while
+    /// keeping the fluent builder API.
+    pub fn recorded_at(mut self, recorded_at: DateTime<Utc>) -> Self {
+        self.recorded_at = Some(recorded_at);
         self
     }
 
@@ -270,7 +281,7 @@ impl EpisodeBuilder {
             id: uuid::Uuid::now_v7().to_string(),
             content: self.content,
             source: self.source,
-            recorded_at: Utc::now(),
+            recorded_at: self.recorded_at.unwrap_or_else(Utc::now),
             metadata,
             memory_type: self.memory_type,
             compression_id: None,
@@ -286,6 +297,7 @@ impl Episode {
             metadata: serde_json::Map::new(),
             tags: Vec::new(),
             memory_type: MemoryType::Experience,
+            recorded_at: None,
         }
     }
 }
