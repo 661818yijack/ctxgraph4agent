@@ -270,6 +270,37 @@ const MIGRATIONS: &[(&str, &str)] = &[
         WHERE LOWER(memory_type) = 'experience' AND ttl_seconds = 1209600;
     "#,
     ),
+    (
+        "011_rebuild_skills_fts_triggers",
+        r#"
+    -- Align skills_fts rowids with skills rowids. The original triggers inserted
+    -- FTS rows without rowid, then the UPDATE trigger tried to delete by
+    -- old.rowid. Once rowids diverged, updating a skill (share/supersede) raised
+    -- a SQLite logic error from the FTS delete command.
+    DROP TRIGGER IF EXISTS skills_ai;
+    DROP TRIGGER IF EXISTS skills_ad;
+    DROP TRIGGER IF EXISTS skills_au;
+
+    DELETE FROM skills_fts;
+    INSERT INTO skills_fts(rowid, skill_id, name, description)
+        SELECT rowid, id, name, description FROM skills;
+
+    CREATE TRIGGER skills_ai AFTER INSERT ON skills BEGIN
+        INSERT INTO skills_fts(rowid, skill_id, name, description)
+        VALUES (new.rowid, new.id, new.name, new.description);
+    END;
+
+    CREATE TRIGGER skills_ad AFTER DELETE ON skills BEGIN
+        DELETE FROM skills_fts WHERE rowid = old.rowid;
+    END;
+
+    CREATE TRIGGER skills_au AFTER UPDATE ON skills BEGIN
+        DELETE FROM skills_fts WHERE rowid = old.rowid;
+        INSERT INTO skills_fts(rowid, skill_id, name, description)
+        VALUES (new.rowid, new.id, new.name, new.description);
+    END;
+    "#,
+    ),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
