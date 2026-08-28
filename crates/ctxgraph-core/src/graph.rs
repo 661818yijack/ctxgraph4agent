@@ -1146,6 +1146,12 @@ impl Graph {
             agent,
         );
 
+        // Snapshot currently-visible skills before inserting this batch.
+        // Supersession compares new skills against pre-existing skills only;
+        // otherwise a freshly-created skill can match itself or another skill
+        // from the same batch and produce noisy self-supersession attempts.
+        let existing_skills = self.get_skills_for_agent(agent)?;
+
         // Store new skills
         for skill in &new_skills {
             if let Err(e) = self.storage.create_skill(skill) {
@@ -1157,11 +1163,15 @@ impl Graph {
         }
 
         // Stage 8: D3 Supersession — entity_type overlap only (no action comparison)
-        let existing_skills = self.get_skills_for_agent(agent)?;
         let mut skills_updated = 0;
+        let mut superseded_old_skill_ids = std::collections::HashSet::new();
 
         for new_skill in &new_skills {
             for old_skill in &existing_skills {
+                if superseded_old_skill_ids.contains(&old_skill.id) {
+                    continue;
+                }
+
                 if new_skill
                     .entity_types
                     .iter()
@@ -1174,6 +1184,7 @@ impl Graph {
                         );
                     } else {
                         skills_updated += 1;
+                        superseded_old_skill_ids.insert(old_skill.id.clone());
                     }
                     break;
                 }
