@@ -82,18 +82,27 @@ impl McpBatchLabelDescriber {
         None
     }
 
+    fn build_request_body(&self, prompt: &str, max_tokens: u32) -> Value {
+        let mut body = json!({
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens
+        });
+
+        if self.openai_compat {
+            body["temperature"] = json!(0.3);
+        }
+
+        body
+    }
+
     async fn call_llm(&self, prompt: &str, max_tokens: u32) -> Result<String, String> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()
             .map_err(|e| e.to_string())?;
 
-        let body = json!({
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": 0.3
-        });
+        let body = self.build_request_body(prompt, max_tokens);
 
         let response = if self.openai_compat {
             client
@@ -128,6 +137,50 @@ impl McpBatchLabelDescriber {
             });
 
         content.ok_or_else(|| "Invalid LLM response".to_string())
+    }
+}
+
+#[cfg(test)]
+mod learn_request_body_tests {
+    use super::*;
+
+    #[test]
+    fn minimax_anthropic_request_body_omits_openai_temperature() {
+        let describer = McpBatchLabelDescriber {
+            api_key: "test-key".to_string(),
+            model: "MiniMax-M2.7".to_string(),
+            url: "https://api.minimax.io/anthropic/v1/messages".to_string(),
+            openai_compat: false,
+        };
+
+        let body = describer.build_request_body("summarize patterns", 220);
+
+        assert_eq!(body["model"], "MiniMax-M2.7");
+        assert_eq!(body["max_tokens"], 220);
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][0]["content"], "summarize patterns");
+        assert!(
+            body.get("temperature").is_none(),
+            "Anthropic-compatible MiniMax requests must not include OpenAI-only temperature"
+        );
+    }
+
+    #[test]
+    fn openai_compatible_request_body_keeps_temperature() {
+        let describer = McpBatchLabelDescriber {
+            api_key: "test-key".to_string(),
+            model: "glm-5-turbo".to_string(),
+            url: "https://api.z.ai/api/coding/paas/v4/chat/completions".to_string(),
+            openai_compat: true,
+        };
+
+        let body = describer.build_request_body("summarize patterns", 180);
+
+        assert_eq!(body["model"], "glm-5-turbo");
+        assert_eq!(body["max_tokens"], 180);
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][0]["content"], "summarize patterns");
+        assert_eq!(body["temperature"], 0.3);
     }
 }
 
