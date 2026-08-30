@@ -74,7 +74,7 @@ enum Commands {
         dry_run: bool,
 
         /// Skill scope: private or shared
-        #[arg(long, default_value = "private")]
+        #[arg(long, default_value = "private", value_name = "private|shared")]
         scope: String,
 
         /// Maximum number of skills to create per run
@@ -221,6 +221,47 @@ enum DecisionsAction {
     },
 }
 
+fn parse_learn_scope(scope: &str) -> ctxgraph::Result<ctxgraph::SkillScope> {
+    match scope {
+        "private" => Ok(ctxgraph::SkillScope::Private),
+        "shared" => Ok(ctxgraph::SkillScope::Shared),
+        other => Err(ctxgraph::CtxGraphError::InvalidInput(format!(
+            "invalid learn scope '{other}'; expected 'private' or 'shared'"
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_learn_scope;
+
+    #[test]
+    fn learn_scope_accepts_documented_values() {
+        assert_eq!(
+            parse_learn_scope("private").unwrap(),
+            ctxgraph::SkillScope::Private
+        );
+        assert_eq!(
+            parse_learn_scope("shared").unwrap(),
+            ctxgraph::SkillScope::Shared
+        );
+    }
+
+    #[test]
+    fn learn_scope_rejects_unknown_values() {
+        let error = parse_learn_scope("sharedd").unwrap_err();
+
+        match error {
+            ctxgraph::CtxGraphError::InvalidInput(message) => {
+                assert!(message.contains("invalid learn scope 'sharedd'"));
+                assert!(message.contains("private"));
+                assert!(message.contains("shared"));
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -256,20 +297,19 @@ async fn main() {
             limit,
             agent,
             format,
-        } => {
-            let scope = match scope.as_str() {
-                "shared" => ctxgraph::SkillScope::Shared,
-                _ => ctxgraph::SkillScope::Private,
-            };
-            commands::learn::run(commands::learn::LearnOptions {
-                dry_run,
-                scope,
-                limit,
-                agent,
-                format,
-            })
-            .await
-        }
+        } => match parse_learn_scope(&scope) {
+            Ok(scope) => {
+                commands::learn::run(commands::learn::LearnOptions {
+                    dry_run,
+                    scope,
+                    limit,
+                    agent,
+                    format,
+                })
+                .await
+            }
+            Err(error) => Err(error),
+        },
         Commands::Models { action } => match action {
             ModelsAction::Download => commands::models::download(),
         },
