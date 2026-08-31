@@ -105,6 +105,8 @@ impl McpServer {
                     "export_graph" => ctx.export_graph(args).await,
                     "stats" => ctx.stats(args).await,
                     "learn" => ctx.learn(args).await,
+                    "list_skills" => ctx.list_skills(args).await,
+                    "share_skill" => ctx.share_skill(args).await,
                     "forget" => ctx.forget(args).await,
                     other => Err(format!("unknown tool: {other}")),
                 };

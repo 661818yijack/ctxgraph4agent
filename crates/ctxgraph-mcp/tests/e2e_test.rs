@@ -98,6 +98,52 @@ fn test_mcp_tools_list() {
     assert!(names.contains(&"get_decision"));
     assert!(names.contains(&"traverse"));
     assert!(names.contains(&"find_precedents"));
+    assert!(names.contains(&"list_skills"));
+    assert!(names.contains(&"share_skill"));
+}
+
+#[test]
+fn test_mcp_skill_tools_dispatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("test.db").to_str().unwrap().to_string();
+    let mut mcp = McpProcess::spawn(&db);
+
+    mcp.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    mcp.recv();
+
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "list_skills",
+            "arguments": {}
+        }
+    }));
+    let list_resp = mcp.recv();
+    let list_content = &list_resp["result"]["content"][0]["text"];
+    let list_result: Value = serde_json::from_str(list_content.as_str().unwrap()).unwrap();
+    assert_eq!(list_result["agent"], "assistant");
+    assert_eq!(list_result["count"], 0);
+
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "share_skill",
+            "arguments": {"skill_id": "missing"}
+        }
+    }));
+    let share_resp = mcp.recv();
+    let share_content = &share_resp["result"]["content"][0]["text"];
+    let share_result: Value = serde_json::from_str(share_content.as_str().unwrap()).unwrap();
+    assert!(
+        share_result["error"]
+            .as_str()
+            .unwrap()
+            .contains("skill not found")
+    );
 }
 
 #[test]

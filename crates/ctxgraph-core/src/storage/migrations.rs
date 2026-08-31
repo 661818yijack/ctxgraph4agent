@@ -226,20 +226,18 @@ const MIGRATIONS: &[(&str, &str)] = &[
 
     -- FTS5 triggers to keep skills_fts in sync
     CREATE TRIGGER IF NOT EXISTS skills_ai AFTER INSERT ON skills BEGIN
-        INSERT INTO skills_fts(skill_id, name, description)
-        VALUES (new.id, new.name, new.description);
+        INSERT INTO skills_fts(rowid, skill_id, name, description)
+        VALUES (new.rowid, new.id, new.name, new.description);
     END;
 
     CREATE TRIGGER IF NOT EXISTS skills_ad AFTER DELETE ON skills BEGIN
-        INSERT INTO skills_fts(skills_fts, rowid, skill_id, name, description)
-        VALUES ('delete', old.rowid, old.id, old.name, old.description);
+        DELETE FROM skills_fts WHERE rowid = old.rowid;
     END;
 
     CREATE TRIGGER IF NOT EXISTS skills_au AFTER UPDATE ON skills BEGIN
-        INSERT INTO skills_fts(skills_fts, rowid, skill_id, name, description)
-        VALUES ('delete', old.rowid, old.id, old.name, old.description);
-        INSERT INTO skills_fts(skill_id, name, description)
-        VALUES (new.id, new.name, new.description);
+        DELETE FROM skills_fts WHERE rowid = old.rowid;
+        INSERT INTO skills_fts(rowid, skill_id, name, description)
+        VALUES (new.rowid, new.id, new.name, new.description);
     END;
     "#,
     ),
@@ -268,6 +266,36 @@ const MIGRATIONS: &[(&str, &str)] = &[
         WHERE LOWER(memory_type) = 'experience' AND ttl_seconds = 1209600;
     UPDATE edges SET ttl_seconds = 15552000
         WHERE LOWER(memory_type) = 'experience' AND ttl_seconds = 1209600;
+    "#,
+    ),
+    (
+        "011_repair_skills_fts_triggers",
+        r#"
+    -- Repair skills_fts triggers for the normal FTS5 table. The external-content
+    -- 'delete' command is invalid here and breaks updates such as share_skill and
+    -- supersede_skill with a SQLite "SQL logic error".
+    DROP TRIGGER IF EXISTS skills_ai;
+    DROP TRIGGER IF EXISTS skills_ad;
+    DROP TRIGGER IF EXISTS skills_au;
+
+    DELETE FROM skills_fts;
+    INSERT INTO skills_fts(rowid, skill_id, name, description)
+        SELECT rowid, id, name, description FROM skills;
+
+    CREATE TRIGGER skills_ai AFTER INSERT ON skills BEGIN
+        INSERT INTO skills_fts(rowid, skill_id, name, description)
+        VALUES (new.rowid, new.id, new.name, new.description);
+    END;
+
+    CREATE TRIGGER skills_ad AFTER DELETE ON skills BEGIN
+        DELETE FROM skills_fts WHERE rowid = old.rowid;
+    END;
+
+    CREATE TRIGGER skills_au AFTER UPDATE ON skills BEGIN
+        DELETE FROM skills_fts WHERE rowid = old.rowid;
+        INSERT INTO skills_fts(rowid, skill_id, name, description)
+        VALUES (new.rowid, new.id, new.name, new.description);
+    END;
     "#,
     ),
 ];
