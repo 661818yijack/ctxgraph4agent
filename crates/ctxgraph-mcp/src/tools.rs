@@ -569,7 +569,9 @@ impl ToolContext {
         });
 
         if include_episodes {
-            let episodes = graph.list_episodes(limit, 0, None, None).map_err(|e| e.to_string())?;
+            let episodes = graph
+                .list_episodes(limit, 0, None, None)
+                .map_err(|e| e.to_string())?;
             let episodes_json: Vec<Value> = episodes
                 .into_iter()
                 .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
@@ -673,6 +675,58 @@ impl ToolContext {
             "skills_created": result.skills_created,
             "skills_updated": result.skills_updated,
             "skill_ids": result.skill_ids,
+        }))
+    }
+
+    /// Tool: list_skills
+    /// List active skills visible to an agent.
+    pub async fn list_skills(&self, args: Value) -> Result<Value, String> {
+        let agent = args
+            .get("agent")
+            .and_then(|v| v.as_str())
+            .unwrap_or("assistant")
+            .to_string();
+
+        let graph = self.graph.lock().await;
+        let skills = graph
+            .storage
+            .get_skills_for_agent(&agent)
+            .map_err(|e| e.to_string())?;
+        let skills_json: Vec<Value> = skills
+            .into_iter()
+            .map(|skill| serde_json::to_value(skill).unwrap_or(Value::Null))
+            .collect();
+
+        Ok(json!({
+            "agent": agent,
+            "count": skills_json.len(),
+            "skills": skills_json,
+        }))
+    }
+
+    /// Tool: share_skill
+    /// Mark a skill as shared so every agent can use it.
+    pub async fn share_skill(&self, args: Value) -> Result<Value, String> {
+        let skill_id = args["skill_id"]
+            .as_str()
+            .ok_or("missing required field: skill_id")?
+            .to_string();
+
+        let graph = self.graph.lock().await;
+        let existing = graph
+            .storage
+            .get_skill(&skill_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("skill not found: {skill_id}"))?;
+
+        if existing.scope != SkillScope::Shared {
+            graph.share_skill(&skill_id).map_err(|e| e.to_string())?;
+        }
+
+        Ok(json!({
+            "ok": true,
+            "skill_id": skill_id,
+            "scope": "shared",
         }))
     }
 
@@ -940,6 +994,27 @@ pub fn tools_list() -> Value {
                         "scope": {"type": "string", "description": "'private' (default) or 'shared'"},
                         "limit": {"type": "integer", "description": "Max patterns to extract (default: 50)"}
                     }
+                }
+            },
+            {
+                "name": "list_skills",
+                "description": "List active skills visible to an agent. Returns the agent's private skills plus shared skills.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "agent": {"type": "string", "description": "Agent name (default: 'assistant')"}
+                    }
+                }
+            },
+            {
+                "name": "share_skill",
+                "description": "Mark a skill as shared so every agent can use it. Sharing is one-way and idempotent.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "skill_id": {"type": "string", "description": "Skill ID to share"}
+                    },
+                    "required": ["skill_id"]
                 }
             },
             {
