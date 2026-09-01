@@ -256,12 +256,19 @@ Without this, everything runs locally at 0.846 F1 on tech text.
 | `ctxgraph_list_entities` | List entities with filters |
 | `ctxgraph_export_graph` | Export entities and edges |
 
-## Rust SDK
+## Rust API
 
 ```rust
 let graph = ctxgraph::Graph::init(".ctxgraph")?;
-graph.add_episode(Episode::builder("Chose Postgres for billing").build())?;
-let results = graph.search("why Postgres?", 10)?;
+graph.add_episode(Episode::builder("Chose Postgres for billing").build()).await?;
+let results = graph.search("why Postgres?", 10, None)?;
+```
+
+For a complete offline example that initializes a temporary graph, records decisions,
+queries them, and prints stats, run:
+
+```bash
+cargo run -p ctxgraph --example basic_usage --no-default-features
 ```
 
 ## Project Structure
