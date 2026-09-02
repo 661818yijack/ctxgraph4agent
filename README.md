@@ -39,6 +39,7 @@ ctxgraph runs a tiered extraction pipeline: local ONNX models handle most episod
 ## How It Works
 
 For a full walkthrough in simpler language, see [`docs/EXPLAINED.md`](docs/EXPLAINED.md).
+For terminology used by the Rust API, CLI, MCP server, and planning docs, see the [Glossary](docs/GLOSSARY.md).
 
 ### In plain English
 
