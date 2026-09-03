@@ -26,8 +26,20 @@ pub struct ReverifyExpireOptions {
     pub id: String,
 }
 
+fn validate_reverify_threshold(threshold: f64) -> ctxgraph::Result<()> {
+    if threshold.is_finite() {
+        return Ok(());
+    }
+
+    Err(ctxgraph::CtxGraphError::InvalidInput(
+        "reverify threshold must be finite".to_string(),
+    ))
+}
+
 /// List stale memories for re-verification.
 pub fn list(options: ReverifyListOptions) -> ctxgraph::Result<()> {
+    validate_reverify_threshold(options.threshold)?;
+
     let graph = open_graph()?;
     let stale_memories =
         graph
@@ -139,5 +151,61 @@ fn print_stale_table(memories: &[StaleMemory]) {
             action_str,
             content
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReverifyListOptions, list, validate_reverify_threshold};
+    use ctxgraph::CtxGraphError;
+
+    fn assert_invalid_threshold(value: f64) {
+        let error = validate_reverify_threshold(value).expect_err("threshold should be invalid");
+        match error {
+            CtxGraphError::InvalidInput(message) => {
+                assert!(message.contains("finite"), "unexpected error: {message}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_reverify_threshold_rejects_nan() {
+        assert_invalid_threshold(f64::NAN);
+    }
+
+    #[test]
+    fn validate_reverify_threshold_rejects_positive_infinity() {
+        assert_invalid_threshold(f64::INFINITY);
+    }
+
+    #[test]
+    fn validate_reverify_threshold_rejects_negative_infinity() {
+        assert_invalid_threshold(f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn validate_reverify_threshold_accepts_common_finite_values() {
+        for threshold in [0.0, 0.7, 1.0] {
+            validate_reverify_threshold(threshold).expect("finite threshold should be valid");
+        }
+    }
+
+    #[test]
+    fn list_rejects_non_finite_threshold_before_opening_graph() {
+        let error = list(ReverifyListOptions {
+            threshold: f64::NAN,
+            limit: 10,
+            offset: 0,
+            format: "text".to_string(),
+        })
+        .expect_err("non-finite threshold should fail before graph open");
+
+        match error {
+            CtxGraphError::InvalidInput(message) => {
+                assert!(message.contains("finite"), "unexpected error: {message}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
     }
 }
