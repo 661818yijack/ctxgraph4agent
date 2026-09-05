@@ -11,12 +11,7 @@ pub fn print_episode(episode: &Episode, score: Option<f64>) {
         println!("  [{id_short}] ({source}, {date})");
     }
 
-    // Truncate content for display
-    let content = if episode.content.len() > 200 {
-        format!("{}...", &episode.content[..197])
-    } else {
-        episode.content.clone()
-    };
+    let content = shorten_for_display(&episode.content, 200);
     println!("    {content}");
 
     if let Some(meta) = &episode.metadata
@@ -31,12 +26,20 @@ pub fn print_episode(episode: &Episode, score: Option<f64>) {
 pub fn print_episode_row(episode: &Episode) {
     let id_short = &episode.id[..8.min(episode.id.len())];
     let source = episode.source.as_deref().unwrap_or("unknown");
-    let content = if episode.content.len() > 50 {
-        format!("{}...", &episode.content[..47])
-    } else {
-        episode.content.clone()
-    };
+    let content = shorten_for_display(&episode.content, 50);
     println!("{:<12} {:<12} {}", id_short, source, content);
+}
+
+fn shorten_for_display(content: &str, max_chars: usize) -> String {
+    let content_chars = content.chars().count();
+    if content_chars <= max_chars {
+        return content.to_string();
+    }
+
+    let prefix_chars = max_chars.saturating_sub(3);
+    let mut shortened: String = content.chars().take(prefix_chars).collect();
+    shortened.push_str("...");
+    shortened
 }
 
 pub fn print_entity_row(entity: &Entity) {
@@ -96,4 +99,45 @@ fn find_name(entities: &[Entity], id: &str) -> String {
         .find(|e| e.id == id)
         .map(|e| e.name.clone())
         .unwrap_or_else(|| id[..8.min(id.len())].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shorten_for_display;
+
+    #[test]
+    fn short_ascii_content_is_unchanged() {
+        assert_eq!(shorten_for_display("short note", 50), "short note");
+    }
+
+    #[test]
+    fn exact_width_ascii_content_is_unchanged() {
+        let content = "a".repeat(50);
+        assert_eq!(shorten_for_display(&content, 50), content);
+    }
+
+    #[test]
+    fn long_ascii_content_uses_visible_prefix_and_ellipsis() {
+        let content = "a".repeat(51);
+        assert_eq!(
+            shorten_for_display(&content, 50),
+            format!("{}...", "a".repeat(47))
+        );
+    }
+
+    #[test]
+    fn long_emoji_content_does_not_slice_inside_character() {
+        let content = "😀".repeat(60);
+        let shortened = shorten_for_display(&content, 50);
+        assert_eq!(shortened.chars().count(), 50);
+        assert!(shortened.ends_with("..."));
+    }
+
+    #[test]
+    fn long_cjk_content_does_not_slice_inside_character() {
+        let content = "決策".repeat(40);
+        let shortened = shorten_for_display(&content, 50);
+        assert_eq!(shortened.chars().count(), 50);
+        assert!(shortened.ends_with("..."));
+    }
 }
