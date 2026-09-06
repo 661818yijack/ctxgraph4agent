@@ -8,7 +8,8 @@ pub fn list(entity_type: Option<String>, limit: usize) -> ctxgraph::Result<()> {
 
     if entities.is_empty() {
         println!("No entities found.");
-        println!("Entities will be auto-extracted in v0.2. For now, add them via the Rust API.");
+        println!("Add context with: ctxgraph log \"Your first decision or event\"");
+        println!("For richer extraction, run: ctxgraph models download");
         return Ok(());
     }
 
