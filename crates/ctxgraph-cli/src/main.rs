@@ -35,6 +35,7 @@ enum Commands {
     },
 
     /// Search the context graph
+    #[command(visible_alias = "search")]
     Query {
         /// Search query text
         text: String,
@@ -312,5 +313,89 @@ async fn main() {
     if let Err(e) = result {
         eprintln!("error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory, Parser};
+
+    use super::{Cli, Commands};
+
+    #[test]
+    fn query_command_still_parses_text_limit_and_filters() {
+        let cli = Cli::try_parse_from([
+            "ctxgraph",
+            "query",
+            "billing database",
+            "--limit",
+            "7",
+            "--after",
+            "2026-09-01T00:00:00Z",
+            "--source",
+            "adr",
+        ])
+        .expect("query command should parse");
+
+        let Commands::Query {
+            text,
+            limit,
+            after,
+            source,
+        } = cli.command
+        else {
+            panic!("expected query command");
+        };
+
+        assert_eq!(text, "billing database");
+        assert_eq!(limit, 7);
+        assert_eq!(after.as_deref(), Some("2026-09-01T00:00:00Z"));
+        assert_eq!(source.as_deref(), Some("adr"));
+    }
+
+    #[test]
+    fn search_alias_parses_like_query_command() {
+        let cli = Cli::try_parse_from([
+            "ctxgraph",
+            "search",
+            "jwt decision",
+            "--limit",
+            "3",
+            "--after",
+            "2026-09-02T00:00:00Z",
+            "--source",
+            "notes",
+        ])
+        .expect("search alias should parse like query");
+
+        let Commands::Query {
+            text,
+            limit,
+            after,
+            source,
+        } = cli.command
+        else {
+            panic!("search alias should dispatch to query command");
+        };
+
+        assert_eq!(text, "jwt decision");
+        assert_eq!(limit, 3);
+        assert_eq!(after.as_deref(), Some("2026-09-02T00:00:00Z"));
+        assert_eq!(source.as_deref(), Some("notes"));
+    }
+
+    #[test]
+    fn top_level_help_mentions_search_alias_without_new_variant() {
+        let help = Cli::command().render_long_help().to_string();
+
+        assert!(
+            help.contains("query") && help.contains("search"),
+            "top-level help should mention query and its search alias:\n{help}"
+        );
+        assert_eq!(
+            help.matches("Search the context graph").count(),
+            1,
+            "alias should not create a duplicate help entry"
+        );
     }
 }
