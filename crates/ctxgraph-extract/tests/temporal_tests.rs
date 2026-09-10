@@ -204,6 +204,43 @@ async fn layer4_fiscal_year_long() {
     );
 }
 
+#[tokio::test]
+async fn layer4_mixed_long_and_short_fiscal_year_mentions() {
+    let r = parse_temporal(
+        "FY2026 roadmap supersedes the FY26 budget memo",
+        utc(2026, 1, 1),
+    );
+    assert_eq!(
+        r,
+        vec![
+            TemporalResult::DateRange {
+                start: nd(2026, 1, 1),
+                end: nd(2026, 12, 31),
+                label: "FY2026".into(),
+            },
+            TemporalResult::DateRange {
+                start: nd(2026, 1, 1),
+                end: nd(2026, 12, 31),
+                label: "FY2026".into(),
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn layer4_long_fiscal_year_does_not_create_overlapping_short_duplicate() {
+    let r = parse_temporal("FY2026 plan", utc(2026, 1, 1));
+    assert_eq!(r.len(), 1);
+    assert_eq!(
+        r[0],
+        TemporalResult::DateRange {
+            start: nd(2026, 1, 1),
+            end: nd(2026, 12, 31),
+            label: "FY2026".into(),
+        }
+    );
+}
+
 // ── Layer 5: Durations ─────────────────────────────────────────────────
 
 #[tokio::test]
