@@ -339,23 +339,25 @@ fn layer4_fiscal(text: &str, out: &mut Vec<TemporalResult>) {
         }
     }
 
-    // Short form FY26 -> 2026 (only if not already captured by long form).
-    // We skip if the two-digit number also appeared as part of a 4-digit FY.
-    let long_matches: Vec<String> = FISCAL_YEAR_LONG
-        .captures_iter(text)
-        .map(|c| c[1].to_string())
+    // Short form FY26 -> 2026. Skip only short-form matches that overlap a
+    // long-form FY token, so `FY2026` does not double count but a separate
+    // `FY26` mention in the same text is still captured.
+    let long_ranges: Vec<(usize, usize)> = FISCAL_YEAR_LONG
+        .find_iter(text)
+        .map(|m| (m.start(), m.end()))
         .collect();
 
     for cap in FISCAL_YEAR_SHORT.captures_iter(text) {
-        let short: &str = &cap[1];
-        let year: i32 = 2000 + short.parse::<i32>().unwrap();
-        let year_str = year.to_string();
-        // Avoid double-counting FY2026 vs FY26
-        if long_matches.contains(&year_str) {
-            // Check if this specific match overlaps with a long-form match
-            // by seeing if the full match text is 4 digits.
+        let short_match = cap.get(0).unwrap();
+        if long_ranges
+            .iter()
+            .any(|&(s, e)| short_match.start() < e && short_match.end() > s)
+        {
             continue;
         }
+
+        let short: &str = &cap[1];
+        let year: i32 = 2000 + short.parse::<i32>().unwrap();
         if let (Some(start), Some(end)) = (
             NaiveDate::from_ymd_opt(year, 1, 1),
             NaiveDate::from_ymd_opt(year, 12, 31),
