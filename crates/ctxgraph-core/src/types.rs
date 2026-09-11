@@ -50,7 +50,7 @@ impl MemoryType {
 
     /// Map an entity_type string to a MemoryType. Unknown types default to Fact.
     pub fn from_entity_type(entity_type: &str) -> Self {
-        match entity_type.to_lowercase().as_str() {
+        match entity_type.trim().to_lowercase().as_str() {
             "decision" => MemoryType::Decision,
             "pattern" => MemoryType::Pattern,
             "experience" => MemoryType::Experience,
