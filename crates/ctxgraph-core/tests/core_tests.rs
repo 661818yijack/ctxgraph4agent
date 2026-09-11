@@ -704,6 +704,22 @@ fn test_memory_type_from_entity_type_unknown_falls_back_to_fact() {
 }
 
 #[test]
+fn test_memory_type_from_entity_type_trims_whitespace() {
+    assert_eq!(
+        MemoryType::from_entity_type(" decision "),
+        MemoryType::Decision
+    );
+    assert_eq!(
+        MemoryType::from_entity_type("\tPREFERENCE\n"),
+        MemoryType::Preference
+    );
+    assert_eq!(
+        MemoryType::from_entity_type(" UnknownType "),
+        MemoryType::Fact
+    );
+}
+
+#[test]
 fn test_memory_type_default_ttl_fact() {
     use std::time::Duration;
     assert_eq!(
