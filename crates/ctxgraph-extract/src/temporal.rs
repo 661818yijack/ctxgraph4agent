@@ -263,22 +263,30 @@ fn layer3_relative(text: &str, ref_date: NaiveDate, out: &mut Vec<TemporalResult
     }
 
     for cap in REL_N_DAYS_AGO.captures_iter(text) {
-        let n: i64 = cap[1].parse().unwrap();
-        let d = ref_date - chrono::Duration::days(n);
-        out.push(TemporalResult::RelativeDate {
-            offset_days: -n,
-            resolved: Some(d),
-        });
+        let Ok(n) = cap[1].parse::<i64>() else {
+            continue;
+        };
+        if let Some(d) = checked_days_before(ref_date, n) {
+            out.push(TemporalResult::RelativeDate {
+                offset_days: -n,
+                resolved: Some(d),
+            });
+        }
     }
 
     for cap in REL_N_WEEKS_AGO.captures_iter(text) {
-        let n: i64 = cap[1].parse().unwrap();
-        let days = n * 7;
-        let d = ref_date - chrono::Duration::days(days);
-        out.push(TemporalResult::RelativeDate {
-            offset_days: -days,
-            resolved: Some(d),
-        });
+        let Ok(n) = cap[1].parse::<i64>() else {
+            continue;
+        };
+        let Some(days) = n.checked_mul(7) else {
+            continue;
+        };
+        if let Some(d) = checked_days_before(ref_date, days) {
+            out.push(TemporalResult::RelativeDate {
+                offset_days: -days,
+                resolved: Some(d),
+            });
+        }
     }
 
     if REL_LAST_WEEK.is_match(text) {
@@ -296,6 +304,10 @@ fn layer3_relative(text: &str, ref_date: NaiveDate, out: &mut Vec<TemporalResult
             resolved: Some(d),
         });
     }
+}
+
+fn checked_days_before(ref_date: NaiveDate, days: i64) -> Option<NaiveDate> {
+    chrono::Duration::try_days(days).and_then(|duration| ref_date.checked_sub_signed(duration))
 }
 
 // ---------------------------------------------------------------------------
@@ -383,7 +395,9 @@ fn last_day_of_month(year: i32, month: u32) -> Option<NaiveDate> {
 
 fn layer5_duration(text: &str, out: &mut Vec<TemporalResult>) {
     for cap in DUR_MONTHS.captures_iter(text) {
-        let n: u32 = cap[1].parse().unwrap();
+        let Ok(n) = cap[1].parse::<u32>() else {
+            continue;
+        };
         let full = cap.get(0).unwrap().as_str();
         out.push(TemporalResult::Duration {
             months: n,
@@ -393,17 +407,24 @@ fn layer5_duration(text: &str, out: &mut Vec<TemporalResult>) {
     }
 
     for cap in DUR_WEEKS.captures_iter(text) {
-        let n: u32 = cap[1].parse().unwrap();
+        let Ok(n) = cap[1].parse::<u32>() else {
+            continue;
+        };
+        let Some(days) = n.checked_mul(7) else {
+            continue;
+        };
         let full = cap.get(0).unwrap().as_str();
         out.push(TemporalResult::Duration {
             months: 0,
-            days: n * 7,
+            days,
             label: full.to_string(),
         });
     }
 
     for cap in DUR_DAYS.captures_iter(text) {
-        let n: u32 = cap[1].parse().unwrap();
+        let Ok(n) = cap[1].parse::<u32>() else {
+            continue;
+        };
         let full = cap.get(0).unwrap().as_str();
         out.push(TemporalResult::Duration {
             months: 0,

@@ -258,6 +258,45 @@ async fn layer5_for_days() {
     );
 }
 
+#[tokio::test]
+async fn oversized_relative_numbers_do_not_panic() {
+    let huge = "999999999999999999999999999999999999999999 days ago";
+    let result = std::panic::catch_unwind(|| parse_temporal(huge, utc(2026, 1, 1)));
+
+    assert!(result.is_ok(), "oversized relative date should not panic");
+    assert!(result.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn oversized_durations_do_not_panic() {
+    let huge = "for 999999999999999999999999999999999999999999 weeks";
+    let result = std::panic::catch_unwind(|| parse_temporal(huge, utc(2026, 1, 1)));
+
+    assert!(result.is_ok(), "oversized duration should not panic");
+    assert!(result.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn invalid_large_temporal_numbers_keep_valid_neighbors() {
+    let text = "999999999999999999999999 days ago, then 3 days ago, for 2 weeks, and for 999999999999999999999999 weeks";
+    let r = parse_temporal(text, utc(2026, 3, 11));
+
+    assert_eq!(
+        r,
+        vec![
+            TemporalResult::RelativeDate {
+                offset_days: -3,
+                resolved: Some(nd(2026, 3, 8)),
+            },
+            TemporalResult::Duration {
+                months: 0,
+                days: 14,
+                label: "for 2 weeks".into(),
+            },
+        ]
+    );
+}
+
 // ── Multi-layer ────────────────────────────────────────────────────────
 
 #[tokio::test]
