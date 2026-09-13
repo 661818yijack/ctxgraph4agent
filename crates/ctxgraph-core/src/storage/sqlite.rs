@@ -2595,8 +2595,10 @@ impl Storage {
 ///
 /// FTS5 treats certain characters as syntax operators (?, *, :, etc.). This function
 /// wraps tokens containing non-word characters in double-quotes so they're treated as
-/// literal text. Tokens that are purely alphanumeric (including FTS5 boolean keywords
-/// like AND, OR, NOT) are left unquoted so FTS5 boolean queries still work.
+/// literal text. Underscores are safe inside bare tokens; hyphens are quoted because
+/// FTS5 parses `foo-bar` as syntax rather than a single literal. Tokens that are
+/// purely alphanumeric (including FTS5 boolean keywords like AND, OR, NOT) are left
+/// unquoted so FTS5 boolean queries still work.
 ///
 /// Embedded double-quotes within tokens are escaped by doubling ("").
 ///
@@ -2609,9 +2611,7 @@ fn escape_fts5_query(query: &str) -> String {
     query
         .split_whitespace()
         .map(|token| {
-            let has_non_word = token
-                .chars()
-                .any(|c| !c.is_alphanumeric() && c != '-' && c != '_');
+            let has_non_word = token.chars().any(|c| !c.is_alphanumeric() && c != '_');
             if has_non_word {
                 format!("\"{}\"", token.replace('"', "\"\""))
             } else {

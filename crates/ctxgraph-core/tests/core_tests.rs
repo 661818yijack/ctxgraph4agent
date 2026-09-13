@@ -282,6 +282,34 @@ async fn test_fts5_search_empty_results() {
     assert!(results.is_empty());
 }
 
+#[tokio::test]
+async fn test_fts5_search_hyphenated_episode_literal() {
+    let graph = test_graph();
+    graph
+        .add_episode(Episode::builder("ctxgraph-mcp handles agent memory calls").build())
+        .await
+        .unwrap();
+
+    let results = graph.search("ctxgraph-mcp", 10, None).unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].0.content.contains("ctxgraph-mcp"));
+}
+
+#[tokio::test]
+async fn test_fts5_search_punctuated_query_without_match_error() {
+    let graph = test_graph();
+    graph
+        .add_episode(Episode::builder("Node.js adapter shipped for MCP clients").build())
+        .await
+        .unwrap();
+
+    let node_results = graph.search("Node.js", 10, None).unwrap();
+    assert_eq!(node_results.len(), 1);
+
+    let no_results = graph.search("missing-term!", 10, None).unwrap();
+    assert!(no_results.is_empty());
+}
+
 #[test]
 fn test_fts5_search_entities() {
     let graph = test_graph();
@@ -298,8 +326,15 @@ fn test_fts5_search_entities() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0.name, "Postgres");
 
+    graph
+        .add_entity(Entity::new("ctxgraph-mcp", "Component"))
+        .unwrap();
+    let results = graph.search_entities("ctxgraph-mcp", 10).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0.name, "ctxgraph-mcp");
+
     let results = graph.search_entities("Component", 10).unwrap();
-    assert_eq!(results.len(), 2);
+    assert_eq!(results.len(), 3);
 }
 
 // ── Source filter tests ──
