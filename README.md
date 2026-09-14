@@ -219,6 +219,8 @@ ctxgraph log "Alice chose PostgreSQL"  # extract + store
 ctxgraph query "why PostgreSQL?"       # search the graph
 ```
 
+For an offline, API-key-free walkthrough of using ctxgraph as agent decision memory, see [`docs/use-cases/decision-memory-cli.md`](docs/use-cases/decision-memory-cli.md).
+
 ### Optional: LLM for cross-domain quality
 
 ```toml
