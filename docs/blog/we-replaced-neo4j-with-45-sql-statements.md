@@ -353,4 +353,4 @@ No views. No stored procedures. No computed columns. The complexity lives in the
 
 ---
 
-*ctxgraph is open source (MIT). The full storage layer is [~650 lines of Rust + SQL](https://github.com/rohansx/ctxgraph/tree/main/crates/ctxgraph-core/src/storage). The benchmark corpus is [open for inspection](https://github.com/rohansx/ctxgraph/blob/main/crates/ctxgraph-extract/tests/fixtures/benchmark_episodes.json).*
+*ctxgraph is open source (MIT). The full storage layer is [~650 lines of Rust + SQL](https://github.com/661818yijack/ctxgraph4agent/tree/main/crates/ctxgraph-core/src/storage). The benchmark corpus is [open for inspection](https://github.com/661818yijack/ctxgraph4agent/blob/main/crates/ctxgraph-extract/tests/fixtures/benchmark_episodes.json).*

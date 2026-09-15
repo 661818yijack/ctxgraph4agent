@@ -3,13 +3,13 @@ title: "SQLite as a Graph Database: Recursive CTEs, Semantic Search, and Why We 
 published: false
 description: "How we built a knowledge graph engine on SQLite using recursive CTEs, FTS5, embeddings, and Reciprocal Rank Fusion. Single binary, zero API calls, 0.800 F1."
 tags: sqlite, rust, database, graphdatabase
-canonical_url: https://github.com/rohansx/ctxgraph/blob/main/docs/blog/sqlite-as-graph-database.md
+canonical_url: https://github.com/661818yijack/ctxgraph4agent/blob/main/docs/blog/sqlite-as-graph-database.md
 cover_image:
 ---
 
 Knowledge graphs are having a moment. Every AI agent framework wants one. The typical stack looks like this: Neo4j for graph storage, OpenAI for extraction, Docker to run it all. Three moving parts, two network dependencies, one `docker-compose.yml` you'll fight with for an hour.
 
-We built [ctxgraph](https://github.com/rohansx/ctxgraph) to see how far you can get with just SQLite. The answer: surprisingly far. 0.800 combined F1 on extraction benchmarks, zero API calls, ~2 seconds for 50 episodes, single binary. No Docker. No API keys. No Neo4j.
+We built [ctxgraph](https://github.com/661818yijack/ctxgraph4agent) to see how far you can get with just SQLite. The answer: surprisingly far. 0.800 combined F1 on extraction benchmarks, zero API calls, ~2 seconds for 50 episodes, single binary. No Docker. No API keys. No Neo4j.
 
 This post walks through the actual implementation: the schema, the recursive CTEs that make SQLite behave like a graph database, and the 3-mode search fusion that ties it together.
 
@@ -355,4 +355,4 @@ Sometimes the best architecture is the one with the fewest moving parts.
 
 ---
 
-*[ctxgraph](https://github.com/rohansx/ctxgraph) is open-source (MIT). Star it on GitHub if this was useful. We're actively inviting [benchmark episode submissions](https://github.com/rohansx/ctxgraph/blob/main/CONTRIBUTING.md) to independently validate the extraction quality.*
+*[ctxgraph](https://github.com/661818yijack/ctxgraph4agent) is open-source (MIT). Star it on GitHub if this was useful. We're actively inviting [benchmark episode submissions](https://github.com/661818yijack/ctxgraph4agent/blob/main/CONTRIBUTING.md) to independently validate the extraction quality.*

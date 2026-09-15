@@ -2,7 +2,7 @@
 
 Knowledge graphs are having a moment. Every AI agent framework wants one. The typical stack looks like this: Neo4j for graph storage, OpenAI for extraction, Docker to run it all. Three moving parts, two network dependencies, one `docker-compose.yml` you'll fight with for an hour.
 
-We built [ctxgraph](https://github.com/rohansx/ctxgraph) to see how far you can get with just SQLite. The answer: surprisingly far. 0.800 combined F1 on extraction benchmarks, zero API calls, ~2 seconds for 50 episodes, single binary. No Docker. No API keys. No Neo4j.
+We built [ctxgraph](https://github.com/661818yijack/ctxgraph4agent) to see how far you can get with just SQLite. The answer: surprisingly far. 0.800 combined F1 on extraction benchmarks, zero API calls, ~2 seconds for 50 episodes, single binary. No Docker. No API keys. No Neo4j.
 
 This post walks through the actual implementation: the schema, the recursive CTEs that make SQLite behave like a graph database, and the 3-mode search fusion that ties it together.
 
