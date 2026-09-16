@@ -2510,6 +2510,7 @@ impl Storage {
         RetrievalCandidate {
             entity_id: Some(entity.id.clone()),
             edge_id: None,
+            skill_id: None,
             content: entity
                 .summary
                 .clone()
@@ -2529,6 +2530,7 @@ impl Storage {
         RetrievalCandidate {
             entity_id: None,
             edge_id: Some(edge.id.clone()),
+            skill_id: None,
             content: edge.fact.clone().unwrap_or_else(|| edge.relation.clone()),
             fts_score,
             memory_type: edge.memory_type,
@@ -2545,6 +2547,7 @@ impl Storage {
         RetrievalCandidate {
             entity_id: None,
             edge_id: None,
+            skill_id: None,
             content: episode.content.clone(),
             fts_score,
             memory_type: episode.memory_type,

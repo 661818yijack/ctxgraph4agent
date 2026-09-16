@@ -605,6 +605,8 @@ pub struct RetrievalCandidate {
     pub entity_id: Option<String>,
     /// Edge ID if this candidate is an edge, otherwise None.
     pub edge_id: Option<String>,
+    /// Skill ID if this candidate is a learned skill, otherwise None.
+    pub skill_id: Option<String>,
     /// Content preview for display.
     pub content: String,
     /// FTS5 BM25 score (raw, may exceed 1.0).
@@ -741,6 +743,8 @@ pub struct RankedMemory {
     pub entity_id: Option<String>,
     /// Edge ID if this is an edge memory, otherwise None.
     pub edge_id: Option<String>,
+    /// Skill ID if this is a skill memory, otherwise None.
+    pub skill_id: Option<String>,
     /// Token estimate for this memory (text.len() / 4).
     pub tokens: usize,
 }
@@ -850,6 +854,7 @@ pub fn enforce_budget(
             score: scored.composite_score,
             entity_id: scored.candidate.entity_id,
             edge_id: scored.candidate.edge_id,
+            skill_id: scored.candidate.skill_id,
             tokens,
         };
 
@@ -875,6 +880,7 @@ mod tests {
         RetrievalCandidate {
             entity_id: Some("test-entity".to_string()),
             edge_id: None,
+            skill_id: None,
             content: "test content".to_string(),
             fts_score,
             memory_type,
@@ -1296,6 +1302,7 @@ mod tests {
             candidate: RetrievalCandidate {
                 entity_id: Some("e1".to_string()),
                 edge_id: None,
+                skill_id: None,
                 content: "short".to_string(), // 5 chars = 1 token
                 fts_score: 0.5,
                 memory_type: MemoryType::Fact,
@@ -1322,6 +1329,7 @@ mod tests {
             candidate: RetrievalCandidate {
                 entity_id: Some("e1".to_string()),
                 edge_id: None,
+                skill_id: None,
                 content: "a".repeat(500), // 500 chars = 125 tokens
                 fts_score: 0.5,
                 memory_type: MemoryType::Fact,
@@ -1354,6 +1362,7 @@ mod tests {
                 candidate: RetrievalCandidate {
                     entity_id: Some("e1".to_string()),
                     edge_id: None,
+                    skill_id: None,
                     content: "small".to_string(), // 5 chars = 1 token
                     fts_score: 0.5,
                     memory_type: MemoryType::Fact,
@@ -1369,6 +1378,7 @@ mod tests {
                 candidate: RetrievalCandidate {
                     entity_id: Some("e3".to_string()),
                     edge_id: None,
+                    skill_id: None,
                     content: "tiny".to_string(), // 4 chars = 1 token
                     fts_score: 0.5,
                     memory_type: MemoryType::Fact,
@@ -1384,6 +1394,7 @@ mod tests {
                 candidate: RetrievalCandidate {
                     entity_id: Some("e2".to_string()),
                     edge_id: None,
+                    skill_id: None,
                     content: "medium size content here".to_string(), // 24 chars = 6 tokens
                     fts_score: 0.5,
                     memory_type: MemoryType::Fact,
@@ -1420,6 +1431,7 @@ mod tests {
                 candidate: RetrievalCandidate {
                     entity_id: Some("e1".to_string()),
                     edge_id: None,
+                    skill_id: None,
                     content: "content that takes up many tokens here".to_string(),
                     fts_score: 0.5,
                     memory_type: MemoryType::Fact,
@@ -1435,6 +1447,7 @@ mod tests {
                 candidate: RetrievalCandidate {
                     entity_id: Some("e2".to_string()),
                     edge_id: None,
+                    skill_id: None,
                     content: "another item".to_string(),
                     fts_score: 0.5,
                     memory_type: MemoryType::Fact,
@@ -1464,6 +1477,7 @@ mod tests {
                 candidate: RetrievalCandidate {
                     entity_id: Some("e1".to_string()),
                     edge_id: None,
+                    skill_id: None,
                     content: "test content number one".to_string(), // 23 chars = 5 tokens
                     fts_score: 0.5,
                     memory_type: MemoryType::Fact,
@@ -1479,6 +1493,7 @@ mod tests {
                 candidate: RetrievalCandidate {
                     entity_id: Some("e2".to_string()),
                     edge_id: None,
+                    skill_id: None,
                     content: "test content number two here".to_string(), // 30 chars = 7 tokens
                     fts_score: 0.5,
                     memory_type: MemoryType::Fact,
@@ -1575,6 +1590,7 @@ mod tests {
             candidate: RetrievalCandidate {
                 entity_id: Some("entity-123".to_string()),
                 edge_id: Some("edge-456".to_string()),
+                skill_id: None,
                 content: "test memory content".to_string(),
                 fts_score: 0.8,
                 memory_type: MemoryType::Pattern,

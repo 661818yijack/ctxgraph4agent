@@ -594,7 +594,8 @@ impl Graph {
     /// 2. A4b: rank_candidates — score and sort by composite score
     /// 3. A4c: enforce_budget — greedy selection within token budget
     ///
-    /// This is a convenience passthrough to Storage::retrieve_for_context.
+    /// This combines storage-backed memories with skills visible to `agent_name`,
+    /// then runs all candidates through the same ranking and token-budget path.
     ///
     /// Returns `(ranked_memories, tokens_spent)` where:
     /// - `ranked_memories`: selected memories within budget, sorted by score descending
@@ -610,9 +611,7 @@ impl Graph {
         agent_name: &str,
         budget_tokens: usize,
     ) -> Result<(Vec<RankedMemory>, usize)> {
-        let result = self
-            .storage
-            .retrieve_for_context(query, agent_name, budget_tokens);
+        let result = self.retrieve_for_context_inner(query, agent_name, budget_tokens);
 
         // Increment cleanup counter after retrieval (even if retrieval failed)
         let _ = self.storage.increment_query_count_since_cleanup();
@@ -621,6 +620,50 @@ impl Graph {
         let _ = self.maybe_trigger_cleanup();
 
         result
+    }
+
+    fn retrieve_for_context_inner(
+        &self,
+        query: &str,
+        agent_name: &str,
+        budget_tokens: usize,
+    ) -> Result<(Vec<RankedMemory>, usize)> {
+        if budget_tokens == 0 {
+            return Ok((Vec::new(), 0));
+        }
+
+        let mut candidates = self.storage.retrieve_candidates(query, 100, 50)?;
+        let skill_candidates = self
+            .retrieve_skills_for_context(agent_name, query, 50)?
+            .into_iter()
+            .map(|(skill, score)| Self::skill_to_candidate(&skill, score));
+        candidates.extend(skill_candidates);
+
+        if candidates.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+
+        let scored = self.rank_candidates(candidates);
+        Ok(enforce_budget(scored, budget_tokens))
+    }
+
+    fn skill_to_candidate(skill: &Skill, score: f64) -> RetrievalCandidate {
+        RetrievalCandidate {
+            entity_id: None,
+            edge_id: None,
+            skill_id: Some(skill.id.clone()),
+            content: format!(
+                "Skill: {}\nTrigger: {}\nAction: {}\nDescription: {}",
+                skill.name, skill.trigger_condition, skill.action, skill.description
+            ),
+            fts_score: score.max(0.8),
+            memory_type: MemoryType::Pattern,
+            created_at: skill.created_at,
+            ttl: None,
+            base_confidence: skill.confidence,
+            usage_count: skill.success_count + skill.failure_count,
+            last_recalled_at: None,
+        }
     }
 
     // ── Traversal ──

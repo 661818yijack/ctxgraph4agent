@@ -2197,3 +2197,108 @@ async fn test_decay_preference_soft_tail_is_continuous_at_ttl() {
         "Preference soft tail should continue smoothly at TTL: at_ttl={score_at_ttl}, after={score_after_ttl}"
     );
 }
+
+fn skill_for_agent(name: &str, description: &str, scope: SkillScope, agent: &str) -> Skill {
+    Skill {
+        id: uuid::Uuid::now_v7().to_string(),
+        name: name.to_string(),
+        description: description.to_string(),
+        trigger_condition: format!("When {name} is relevant"),
+        action: format!("Apply {description}"),
+        success_count: 3,
+        failure_count: 1,
+        confidence: 0.75,
+        superseded_by: None,
+        created_at: Utc::now(),
+        entity_types: vec!["Component".to_string()],
+        provenance: None,
+        scope,
+        created_by_agent: agent.to_string(),
+    }
+}
+
+fn ranked_skill_ids(memories: &[RankedMemory]) -> Vec<String> {
+    memories
+        .iter()
+        .filter_map(|memory| memory.skill_id.clone())
+        .collect()
+}
+
+#[test]
+fn test_retrieve_for_context_includes_owned_private_skill_with_budget() {
+    let graph = test_graph();
+    let skill = skill_for_agent(
+        "Redis JWT migration",
+        "Use JWT for stateless auth migrations after Redis session bottlenecks.",
+        SkillScope::Private,
+        "apex",
+    );
+    let skill_id = skill.id.clone();
+    graph.storage.create_skill(&skill).unwrap();
+
+    let (memories, tokens_spent) = graph
+        .retrieve_for_context("Redis JWT migration", "apex", 1_000)
+        .unwrap();
+
+    let skill_memory = memories
+        .iter()
+        .find(|memory| memory.skill_id.as_deref() == Some(skill_id.as_str()))
+        .expect("owned private skill should be selected into context");
+    assert!(
+        skill_memory.score >= 0.8,
+        "skill score should keep the documented floor"
+    );
+    assert!(tokens_spent <= 1_000);
+    assert_eq!(skill_memory.entity_id, None);
+    assert_eq!(skill_memory.edge_id, None);
+}
+
+#[test]
+fn test_retrieve_for_context_respects_skill_visibility() {
+    let graph = test_graph();
+    let private_skill = skill_for_agent(
+        "Private billing runbook",
+        "Only Apex should see the billing recovery procedure.",
+        SkillScope::Private,
+        "apex",
+    );
+    let shared_skill = skill_for_agent(
+        "Shared deploy checklist",
+        "All agents can use the deploy checklist before production rollout.",
+        SkillScope::Shared,
+        "apex",
+    );
+    let private_id = private_skill.id.clone();
+    let shared_id = shared_skill.id.clone();
+    graph.storage.create_skill(&private_skill).unwrap();
+    graph.storage.create_skill(&shared_skill).unwrap();
+
+    let (memories, _) = graph
+        .retrieve_for_context("deploy checklist", "lux", 1_000)
+        .unwrap();
+    let skill_ids = ranked_skill_ids(&memories);
+
+    assert!(!skill_ids.contains(&private_id));
+    assert!(skill_ids.contains(&shared_id));
+}
+
+#[test]
+fn test_retrieve_for_context_skips_skill_that_exceeds_budget() {
+    let graph = test_graph();
+    let skill = skill_for_agent(
+        "Large incident playbook",
+        &"repeat the incident response steps ".repeat(80),
+        SkillScope::Shared,
+        "apex",
+    );
+    let skill_id = skill.id.clone();
+    graph.storage.create_skill(&skill).unwrap();
+
+    let (memories, tokens_spent) = graph
+        .retrieve_for_context("incident playbook", "lux", 5)
+        .unwrap();
+    let skill_ids = ranked_skill_ids(&memories);
+
+    assert!(!skill_ids.contains(&skill_id));
+    assert!(tokens_spent <= 5);
+}
