@@ -235,6 +235,18 @@ api_key_env = "OPENROUTER_API_KEY"
 
 Without this, everything runs locally at 0.846 F1 on tech text.
 
+### Examples
+
+Run the offline auto-learn trigger example to see the short-interval learning path
+create skills without API keys or model downloads:
+
+```bash
+cargo run -p ctxgraph --example auto_learn --no-default-features
+```
+
+The example stages repeated graph evidence, crosses a three-episode learn interval,
+and prints the reset counter plus `learned_skills` count.
+
 ---
 
 ## MCP Server
