@@ -464,7 +464,7 @@ impl Graph {
         // --- FTS5 ranked list ---
         // Fetch a generous pool for RRF (up to 10x limit or 200)
         let fts_pool = (limit * 10).max(200);
-        let fts_results = self.storage.search_episodes(query, fts_pool, source);
+        let fts_results = self.storage.search_episodes(query, fts_pool, None, source);
         if let Ok(fts) = fts_results {
             for (rank, (episode, _)) in fts.into_iter().enumerate() {
                 let rrf = 1.0 / (K + rank as f64 + 1.0);
@@ -537,7 +537,21 @@ impl Graph {
         limit: usize,
         source: Option<&str>,
     ) -> Result<Vec<(Episode, f64)>> {
-        self.storage.search_episodes(query, limit, source)
+        self.search_filtered(query, limit, None, source)
+    }
+
+    /// Search episodes via FTS5 full-text search with optional date and source filters.
+    ///
+    /// When `after` is `Some(dt)`, only episodes recorded at or after `dt` are returned.
+    /// When `source` is `Some(s)`, only episodes from that source are returned.
+    pub fn search_filtered(
+        &self,
+        query: &str,
+        limit: usize,
+        after: Option<DateTime<Utc>>,
+        source: Option<&str>,
+    ) -> Result<Vec<(Episode, f64)>> {
+        self.storage.search_episodes(query, limit, after, source)
     }
 
     /// Search entities via FTS5.
