@@ -77,6 +77,81 @@ async fn test_list_episodes() {
     assert_eq!(offset.len(), 2);
 }
 
+#[tokio::test]
+async fn test_search_episodes_after_filter_returns_matching_only() {
+    let graph = test_graph();
+    let old_time = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let new_time = chrono::DateTime::parse_from_rfc3339("2026-06-01T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let cutoff = chrono::DateTime::parse_from_rfc3339("2026-05-01T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+
+    let mut old_episode = Episode::builder("JWT auth decision uses bearer tokens")
+        .source("adr")
+        .build();
+    old_episode.recorded_at = old_time;
+    graph.add_episode(old_episode).await.unwrap();
+
+    let mut new_episode = Episode::builder("JWT auth decision adds key rotation")
+        .source("adr")
+        .build();
+    new_episode.recorded_at = new_time;
+    let new_id = new_episode.id.clone();
+    graph.add_episode(new_episode).await.unwrap();
+
+    let results = graph
+        .search_filtered("JWT auth decision", 10, Some(cutoff), None)
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0.id, new_id);
+}
+
+#[tokio::test]
+async fn test_search_episodes_after_filter_combines_with_source_filter() {
+    let graph = test_graph();
+    let cutoff = chrono::DateTime::parse_from_rfc3339("2026-05-01T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let before_cutoff = chrono::DateTime::parse_from_rfc3339("2026-04-01T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let after_cutoff = chrono::DateTime::parse_from_rfc3339("2026-06-01T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+
+    let mut old_adr = Episode::builder("Billing cache strategy keeps Redis")
+        .source("adr")
+        .build();
+    old_adr.recorded_at = before_cutoff;
+    graph.add_episode(old_adr).await.unwrap();
+
+    let mut new_slack = Episode::builder("Billing cache strategy tests Dragonfly")
+        .source("slack")
+        .build();
+    new_slack.recorded_at = after_cutoff;
+    graph.add_episode(new_slack).await.unwrap();
+
+    let mut new_adr = Episode::builder("Billing cache strategy chooses Valkey")
+        .source("adr")
+        .build();
+    new_adr.recorded_at = after_cutoff;
+    let expected_id = new_adr.id.clone();
+    graph.add_episode(new_adr).await.unwrap();
+
+    let results = graph
+        .search_filtered("Billing cache strategy", 10, Some(cutoff), Some("adr"))
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0.id, expected_id);
+    assert_eq!(results[0].0.source.as_deref(), Some("adr"));
+}
+
 #[test]
 fn test_episode_not_found() {
     let graph = test_graph();
