@@ -219,6 +219,8 @@ ctxgraph log "Alice chose PostgreSQL"  # extract + store
 ctxgraph query "why PostgreSQL?"       # search the graph
 ```
 
+Operational guide: [backup and restore a ctxgraph SQLite database](docs/usage/backup-restore.md).
+
 ### Optional: LLM for cross-domain quality
 
 ```toml
