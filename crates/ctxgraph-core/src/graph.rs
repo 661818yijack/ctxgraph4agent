@@ -1093,8 +1093,21 @@ impl Graph {
             });
         }
 
+        let candidates_limited: Vec<_> = candidates.into_iter().take(limit).collect();
+        if candidates_limited.is_empty() {
+            return Ok(LearningOutcome {
+                patterns_found,
+                patterns_new: patterns_found,
+                skills_created: 0,
+                skills_updated: 0,
+                skill_ids: Vec::new(),
+            });
+        }
+
         // Stage 5: Build source_summaries map: pattern_id -> Vec<episode content>
-        let all_episode_ids: Vec<String> = candidates
+        // Only summarize candidates that can be converted in this run. This keeps
+        // one-call LLM labeling bounded by the caller's limit.
+        let all_episode_ids: Vec<String> = candidates_limited
             .iter()
             .flat_map(|c| c.source_groups.iter().cloned())
             .collect::<std::collections::HashSet<_>>()
@@ -1103,7 +1116,7 @@ impl Graph {
 
         let mut source_summaries: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
-        for candidate in &candidates {
+        for candidate in &candidates_limited {
             let mut summaries = Vec::new();
             for gid in &candidate.source_groups {
                 if let Ok(Some(ep)) = self.storage.get_episode(gid) {
@@ -1113,9 +1126,9 @@ impl Graph {
             source_summaries.insert(candidate.id.clone(), summaries);
         }
 
-        // Stage 6: One batch LLM call for all candidates
+        // Stage 6: One batch LLM call for the candidates selected for this run.
         let label_pairs = describer
-            .describe_batch(&candidates, &source_summaries)
+            .describe_batch(&candidates_limited, &source_summaries)
             .await?;
         let descriptions: std::collections::HashMap<String, String> =
             label_pairs.into_iter().collect();
@@ -1135,7 +1148,6 @@ impl Graph {
         }
 
         let skill_config = SkillCreatorConfig::default();
-        let candidates_limited: Vec<_> = candidates.into_iter().take(limit).collect();
         let new_skills = SkillCreator::create_skills(
             &candidates_limited,
             &all_edges,
@@ -1225,9 +1237,138 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pattern::BatchLabelDescriber;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
     fn new_test_graph() -> Graph {
         Graph::in_memory().expect("failed to create in-memory graph")
+    }
+
+    #[derive(Default)]
+    struct RecordingBatchLabelDescriber {
+        observed_candidate_count: Arc<Mutex<Option<usize>>>,
+        observed_summary_count: Arc<Mutex<Option<usize>>>,
+    }
+
+    impl RecordingBatchLabelDescriber {
+        fn observed_candidate_count(&self) -> Option<usize> {
+            *self.observed_candidate_count.lock().unwrap()
+        }
+
+        fn observed_summary_count(&self) -> Option<usize> {
+            *self.observed_summary_count.lock().unwrap()
+        }
+    }
+
+    impl BatchLabelDescriber for RecordingBatchLabelDescriber {
+        async fn describe_batch(
+            &self,
+            candidates: &[PatternCandidate],
+            source_summaries: &HashMap<String, Vec<String>>,
+        ) -> Result<Vec<(String, String)>> {
+            *self.observed_candidate_count.lock().unwrap() = Some(candidates.len());
+            *self.observed_summary_count.lock().unwrap() = Some(source_summaries.len());
+
+            Ok(candidates
+                .iter()
+                .map(|candidate| {
+                    (
+                        candidate.id.clone(),
+                        format!("Apply learned pattern {}", candidate.id),
+                    )
+                })
+                .collect())
+        }
+    }
+
+    async fn seed_recurring_learning_patterns(graph: &Graph) {
+        for index in 0..3 {
+            let episode = Episode::builder(&format!("Recurring learning episode {index}")).build();
+            let episode_id = episode.id.clone();
+            graph.add_episode(episode).await.unwrap();
+
+            let problem = Entity::new("Recurring Problem", "Problem");
+            let solution = Entity::new("Recurring Solution", "Solution");
+            let outcome = Entity::new("Recurring Outcome", "Outcome");
+            graph.storage.insert_entity(&problem).unwrap();
+            graph.storage.insert_entity(&solution).unwrap();
+            graph.storage.insert_entity(&outcome).unwrap();
+            graph
+                .storage
+                .link_episode_entity(&episode_id, &problem.id, None, None)
+                .unwrap();
+            graph
+                .storage
+                .link_episode_entity(&episode_id, &solution.id, None, None)
+                .unwrap();
+            graph
+                .storage
+                .link_episode_entity(&episode_id, &outcome.id, None, None)
+                .unwrap();
+
+            let mut fixed_edge = Edge::new(&problem.id, &solution.id, "fixed");
+            fixed_edge.episode_id = Some(episode_id.clone());
+            graph.storage.insert_edge(&fixed_edge).unwrap();
+
+            let mut resolved_edge = Edge::new(&solution.id, &outcome.id, "resolved");
+            resolved_edge.episode_id = Some(episode_id);
+            graph.storage.insert_edge(&resolved_edge).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_learning_pipeline_applies_limit_before_describing_candidates() {
+        let graph = new_test_graph();
+        seed_recurring_learning_patterns(&graph).await;
+        let describer = RecordingBatchLabelDescriber::default();
+
+        let outcome = graph
+            .run_learning_pipeline("test-agent", SkillScope::Private, &describer, 1)
+            .await
+            .unwrap();
+
+        assert!(
+            outcome.patterns_new > 1,
+            "fixture should discover more candidates than the run limit"
+        );
+        assert_eq!(
+            describer.observed_candidate_count(),
+            Some(1),
+            "describer should not receive candidates beyond the run limit"
+        );
+        assert_eq!(
+            describer.observed_summary_count(),
+            Some(1),
+            "source summaries should be built only for described candidates"
+        );
+        assert!(
+            outcome.skills_created <= 1,
+            "skill creation should be bounded by the run limit"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_learning_pipeline_zero_limit_skips_describer_call() {
+        let graph = new_test_graph();
+        seed_recurring_learning_patterns(&graph).await;
+        let describer = RecordingBatchLabelDescriber::default();
+
+        let outcome = graph
+            .run_learning_pipeline("test-agent", SkillScope::Private, &describer, 0)
+            .await
+            .unwrap();
+
+        assert!(
+            outcome.patterns_new > 0,
+            "fixture should prove there were candidates available before limiting"
+        );
+        assert_eq!(outcome.skills_created, 0);
+        assert_eq!(
+            describer.observed_candidate_count(),
+            None,
+            "zero limit should avoid unnecessary LLM description calls"
+        );
     }
 
     // ── Lazy trigger tests ──
