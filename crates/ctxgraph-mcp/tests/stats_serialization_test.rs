@@ -1,3 +1,5 @@
+use ctxgraph::Graph;
+use ctxgraph_mcp::tools::ToolContext;
 use serde_json::{Map, Number, Value, json};
 
 /// Helper that the stats() handler should use to convert Vec<(String, usize)>
@@ -102,4 +104,35 @@ fn test_stats_values_are_integers_not_strings() {
     let val = &result["source"];
     assert!(val.is_number(), "Value must be an integer, got: {val}");
     assert_eq!(val.as_u64().unwrap(), 42);
+}
+
+#[tokio::test]
+async fn test_stats_cleanup_fields_for_fresh_graph() {
+    let graph = Graph::in_memory().expect("in-memory graph opens");
+    let ctx = ToolContext::new(graph, None);
+
+    let stats = ctx.stats(json!({})).await.expect("stats response");
+
+    assert_eq!(stats["last_cleanup_at"], "never");
+    assert_eq!(stats["queries_since_cleanup"].as_u64(), Some(0));
+    assert_eq!(stats["cleanup_interval"].as_u64(), Some(100));
+    assert_eq!(stats["next_cleanup_in"].as_u64(), Some(100));
+    assert_eq!(stats["cleanup_in_progress"].as_bool(), Some(false));
+}
+
+#[tokio::test]
+async fn test_stats_cleanup_fields_are_client_friendly_types() {
+    let graph = Graph::in_memory().expect("in-memory graph opens");
+    graph
+        .set_cleanup_interval(1)
+        .expect("cleanup interval can be set for test");
+    let ctx = ToolContext::new(graph, None);
+
+    let stats = ctx.stats(json!({})).await.expect("stats response");
+
+    assert!(stats["last_cleanup_at"].is_string());
+    assert!(stats["queries_since_cleanup"].is_u64());
+    assert!(stats["cleanup_interval"].is_u64());
+    assert!(stats["next_cleanup_in"].is_u64());
+    assert!(stats["cleanup_in_progress"].is_boolean());
 }
