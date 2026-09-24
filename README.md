@@ -259,9 +259,19 @@ Without this, everything runs locally at 0.846 F1 on tech text.
 ## Rust SDK
 
 ```rust
-let graph = ctxgraph::Graph::init(".ctxgraph")?;
-graph.add_episode(Episode::builder("Chose Postgres for billing").build())?;
-let results = graph.search("why Postgres?", 10)?;
+let graph = ctxgraph::Graph::init(std::path::Path::new("."))?;
+graph.add_episode(ctxgraph::Episode::builder("Chose Postgres for billing").build()).await?;
+let results = graph.search("Postgres", 10, None)?;
+```
+
+For a compile-checked multi-agent example, see
+[`crates/ctxgraph-core/examples/source_filtered_recall.rs`](crates/ctxgraph-core/examples/source_filtered_recall.rs).
+It demonstrates using episode `source` values to recall only one agent's notes
+while preserving broad recall when no source filter is supplied:
+
+```bash
+cargo run -p ctxgraph --example source_filtered_recall --no-default-features
+cargo test -p ctxgraph --example source_filtered_recall --no-default-features
 ```
 
 ## Project Structure
