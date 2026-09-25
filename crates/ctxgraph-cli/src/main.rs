@@ -1,7 +1,7 @@
 mod commands;
 mod display;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(name = "ctxgraph", about = "Local-first context graph engine")]
@@ -65,7 +65,11 @@ enum Commands {
     },
 
     /// Show graph statistics
-    Stats,
+    Stats {
+        /// Output format
+        #[arg(long, value_enum, default_value_t = StatsFormatArg::Text)]
+        format: StatsFormatArg,
+    },
 
     /// Run the learning pipeline to extract patterns and create skills
     Learn {
@@ -107,6 +111,21 @@ enum Commands {
         #[command(subcommand)]
         action: McpAction,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum StatsFormatArg {
+    Text,
+    Json,
+}
+
+impl From<StatsFormatArg> for commands::stats::StatsFormat {
+    fn from(value: StatsFormatArg) -> Self {
+        match value {
+            StatsFormatArg::Text => Self::Text,
+            StatsFormatArg::Json => Self::Json,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -249,7 +268,7 @@ async fn main() {
             } => commands::decisions::list(after, source, limit),
             DecisionsAction::Show { id } => commands::decisions::show(id),
         },
-        Commands::Stats => commands::stats::run(),
+        Commands::Stats { format } => commands::stats::run(format.into()),
         Commands::Learn {
             dry_run,
             scope,
