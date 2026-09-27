@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -199,7 +198,9 @@ impl Storage {
     pub fn get_entity(&self, id: &str) -> Result<Option<Entity>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata, usage_count, last_recalled_at
-             FROM entities WHERE id = ?1",
+             FROM entities
+             WHERE id = ?1
+               AND COALESCE(json_extract(metadata, '$.marked_for_deletion'), 0) = 0",
         )?;
 
         let result = stmt
@@ -227,7 +228,9 @@ impl Storage {
     pub fn get_entity_by_name(&self, name: &str) -> Result<Option<Entity>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, entity_type, memory_type, ttl_seconds, summary, created_at, metadata, usage_count, last_recalled_at
-             FROM entities WHERE name = ?1",
+             FROM entities
+             WHERE name = ?1
+               AND COALESCE(json_extract(metadata, '$.marked_for_deletion'), 0) = 0",
         )?;
 
         let result = stmt

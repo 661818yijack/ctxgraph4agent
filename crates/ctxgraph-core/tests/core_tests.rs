@@ -113,6 +113,40 @@ fn test_entity_by_name() {
 }
 
 #[test]
+fn test_soft_deleted_entity_hidden_from_direct_lookup() {
+    let graph = test_graph();
+    let entity = Entity::new("Archived Decision", "Decision");
+    let id = entity.id.clone();
+    graph.add_entity(entity).unwrap();
+
+    assert!(graph.get_entity(&id).unwrap().is_some());
+    assert!(
+        graph
+            .get_entity_by_name("Archived Decision")
+            .unwrap()
+            .is_some()
+    );
+
+    assert!(graph.storage.mark_for_deletion(&id).unwrap());
+
+    assert!(
+        graph.get_entity(&id).unwrap().is_none(),
+        "marked-for-deletion entities should not be returned by id lookup"
+    );
+    assert!(
+        graph
+            .get_entity_by_name("Archived Decision")
+            .unwrap()
+            .is_none(),
+        "marked-for-deletion entities should not be returned by name lookup"
+    );
+    assert!(
+        graph.list_entities(None, 100).unwrap().is_empty(),
+        "direct lookup and list visibility should agree"
+    );
+}
+
+#[test]
 fn test_list_entities_with_type_filter() {
     let graph = test_graph();
 

@@ -29,3 +29,29 @@
 {"ts": "2026-04-13T02:09:41.228625+00:00", "action": "updated", "ticket_id": "T6", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:42.501823+00:00", "action": "updated", "ticket_id": "T7", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:43.775889+00:00", "action": "updated", "ticket_id": "T8", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-09-27T02:02:30.033660+00:00", "action": "created", "ticket_id": "BUG-1"}
+{"ts": "2026-09-27T02:02:47.587352+00:00", "action": "created", "ticket_id": "BUG-2"}
+{"ts": "2026-09-27T02:02:47.720874+00:00", "action": "created", "ticket_id": "BUG-3"}
+{"ts": "2026-09-27T02:02:47.853321+00:00", "action": "created", "ticket_id": "BUG-4"}
+{"ts": "2026-09-27T02:02:47.987411+00:00", "action": "created", "ticket_id": "BUG-5"}
+{"ts": "2026-09-27T02:02:48.120472+00:00", "action": "created", "ticket_id": "BUG-6"}
+{"ts": "2026-09-27T02:02:48.254214+00:00", "action": "created", "ticket_id": "BUG-7"}
+{"ts": "2026-09-27T02:02:48.387537+00:00", "action": "created", "ticket_id": "BUG-8"}
+{"ts": "2026-09-27T02:02:48.526232+00:00", "action": "created", "ticket_id": "BUG-9"}
+{"ts": "2026-09-27T02:02:48.662372+00:00", "action": "created", "ticket_id": "BUG-10"}
+{"ts": "2026-09-27T02:02:48.801210+00:00", "action": "created", "ticket_id": "BUG-11"}
+{"ts": "2026-09-27T02:02:48.936311+00:00", "action": "created", "ticket_id": "BUG-12"}
+{"ts": "2026-09-27T02:02:49.071653+00:00", "action": "created", "ticket_id": "BUG-13"}
+{"ts": "2026-09-27T02:05:15.948760+00:00", "action": "updated", "ticket_id": "BUG-1", "fields": {"fix": "Fixed in this branch: direct entity id/name lookups now exclude metadata.marked_for_deletion=true, with regression coverage and workspace tests passing.", "status": "done"}}
+{"ts": "2026-09-27T02:05:16.085403+00:00", "action": "updated", "ticket_id": "BUG-2", "fields": {"fix": "Fixed in this branch: direct entity id/name lookups now exclude metadata.marked_for_deletion=true, with regression coverage and workspace tests passing.", "status": "done"}}
+{"ts": "2026-09-27T02:05:16.230335+00:00", "action": "updated", "ticket_id": "BUG-3", "fields": {"fix": "Fixed in this branch: direct entity id/name lookups now exclude metadata.marked_for_deletion=true, with regression coverage and workspace tests passing.", "status": "done"}}
+{"ts": "2026-09-27T02:05:16.376321+00:00", "action": "updated", "ticket_id": "BUG-4", "fields": {"fix": "Fixed in this branch: direct entity id/name lookups now exclude metadata.marked_for_deletion=true, with regression coverage and workspace tests passing.", "status": "done"}}
+{"ts": "2026-09-27T02:05:16.522177+00:00", "action": "updated", "ticket_id": "BUG-5", "fields": {"fix": "Fixed in this branch: direct entity id/name lookups now exclude metadata.marked_for_deletion=true, with regression coverage and workspace tests passing.", "status": "done"}}
+{"ts": "2026-09-27T02:05:16.680431+00:00", "action": "updated", "ticket_id": "BUG-6", "fields": {"fix": "Fixed in this branch: direct entity id/name lookups now exclude metadata.marked_for_deletion=true, with regression coverage and workspace tests passing.", "status": "done"}}
+{"ts": "2026-09-27T02:05:15.071871+00:00", "action": "updated", "ticket_id": "BUG-7", "fields": {"fix": "Fixed in this branch: direct entity id/name lookups now exclude metadata.marked_for_deletion=true, with regression coverage and workspace tests passing.", "status": "done"}}
+{"ts": "2026-09-27T02:05:15.218567+00:00", "action": "updated", "ticket_id": "BUG-8", "fields": {"fix": "Fixed in this branch: direct entity id/name lookups now exclude metadata.marked_for_deletion=true, with regression coverage and workspace tests passing.", "status": "done"}}
+{"ts": "2026-09-27T02:05:15.369483+00:00", "action": "updated", "ticket_id": "BUG-9", "fields": {"fix": "Fixed in this branch: direct entity id/name lookups now exclude metadata.marked_for_deletion=true, with regression coverage and workspace tests passing.", "status": "done"}}
+{"ts": "2026-09-27T02:05:15.524581+00:00", "action": "updated", "ticket_id": "BUG-10", "fields": {"fix": "Fixed in this branch: direct entity id/name lookups now exclude metadata.marked_for_deletion=true, with regression coverage and workspace tests passing.", "status": "done"}}
+{"ts": "2026-09-27T02:05:15.662473+00:00", "action": "updated", "ticket_id": "BUG-11", "fields": {"fix": "Fixed in this branch: direct entity id/name lookups now exclude metadata.marked_for_deletion=true, with regression coverage and workspace tests passing.", "status": "done"}}
+{"ts": "2026-09-27T02:05:15.798779+00:00", "action": "updated", "ticket_id": "BUG-12", "fields": {"fix": "Fixed in this branch: direct entity id/name lookups now exclude metadata.marked_for_deletion=true, with regression coverage and workspace tests passing.", "status": "done"}}
+{"ts": "2026-09-27T02:05:15.942103+00:00", "action": "updated", "ticket_id": "BUG-13", "fields": {"fix": "Fixed in this branch: direct entity id/name lookups now exclude metadata.marked_for_deletion=true, with regression coverage and workspace tests passing.", "status": "done"}}
