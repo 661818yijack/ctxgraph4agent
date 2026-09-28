@@ -29,3 +29,23 @@
 {"ts": "2026-04-13T02:09:41.228625+00:00", "action": "updated", "ticket_id": "T6", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:42.501823+00:00", "action": "updated", "ticket_id": "T7", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:43.775889+00:00", "action": "updated", "ticket_id": "T8", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-09-28T02:02:46.170156+00:00", "action": "created", "ticket_id": "ENHANCEMENT-1"}
+{"ts": "2026-09-28T02:02:46.304956+00:00", "action": "created", "ticket_id": "ENHANCEMENT-2"}
+{"ts": "2026-09-28T02:02:46.438821+00:00", "action": "created", "ticket_id": "ENHANCEMENT-3"}
+{"ts": "2026-09-28T02:02:46.573468+00:00", "action": "created", "ticket_id": "ENHANCEMENT-4"}
+{"ts": "2026-09-28T02:02:46.710451+00:00", "action": "created", "ticket_id": "ENHANCEMENT-5"}
+{"ts": "2026-09-28T02:02:46.844922+00:00", "action": "created", "ticket_id": "ENHANCEMENT-6"}
+{"ts": "2026-09-28T02:02:46.980225+00:00", "action": "created", "ticket_id": "ENHANCEMENT-7"}
+{"ts": "2026-09-28T02:02:47.113693+00:00", "action": "created", "ticket_id": "ENHANCEMENT-8"}
+{"ts": "2026-09-28T02:02:47.246668+00:00", "action": "created", "ticket_id": "ENHANCEMENT-9"}
+{"ts": "2026-09-28T02:02:47.381870+00:00", "action": "created", "ticket_id": "ENHANCEMENT-10"}
+{"ts": "2026-09-28T02:04:42.533403+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-1", "fields": {"fix": "Implemented EpisodeBuilder tag normalization: trim tag values, skip blank tags, preserve untagged/custom metadata behavior; verified with focused and workspace Rust tests.", "status": "done"}}
+{"ts": "2026-09-28T02:04:42.676104+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-2", "fields": {"fix": "Implemented EpisodeBuilder tag normalization: trim tag values, skip blank tags, preserve untagged/custom metadata behavior; verified with focused and workspace Rust tests.", "status": "done"}}
+{"ts": "2026-09-28T02:04:42.820810+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-3", "fields": {"fix": "Implemented EpisodeBuilder tag normalization: trim tag values, skip blank tags, preserve untagged/custom metadata behavior; verified with focused and workspace Rust tests.", "status": "done"}}
+{"ts": "2026-09-28T02:04:42.963921+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-4", "fields": {"fix": "Implemented EpisodeBuilder tag normalization: trim tag values, skip blank tags, preserve untagged/custom metadata behavior; verified with focused and workspace Rust tests.", "status": "done"}}
+{"ts": "2026-09-28T02:04:43.104300+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-5", "fields": {"fix": "Implemented EpisodeBuilder tag normalization: trim tag values, skip blank tags, preserve untagged/custom metadata behavior; verified with focused and workspace Rust tests.", "status": "done"}}
+{"ts": "2026-09-28T02:04:43.240115+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-6", "fields": {"fix": "Implemented EpisodeBuilder tag normalization: trim tag values, skip blank tags, preserve untagged/custom metadata behavior; verified with focused and workspace Rust tests.", "status": "done"}}
+{"ts": "2026-09-28T02:04:43.378022+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-7", "fields": {"fix": "Implemented EpisodeBuilder tag normalization: trim tag values, skip blank tags, preserve untagged/custom metadata behavior; verified with focused and workspace Rust tests.", "status": "done"}}
+{"ts": "2026-09-28T02:04:43.514413+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-8", "fields": {"fix": "Implemented EpisodeBuilder tag normalization: trim tag values, skip blank tags, preserve untagged/custom metadata behavior; verified with focused and workspace Rust tests.", "status": "done"}}
+{"ts": "2026-09-28T02:04:43.651025+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-9", "fields": {"fix": "Implemented EpisodeBuilder tag normalization: trim tag values, skip blank tags, preserve untagged/custom metadata behavior; verified with focused and workspace Rust tests.", "status": "done"}}
+{"ts": "2026-09-28T02:04:43.790989+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-10", "fields": {"fix": "Implemented EpisodeBuilder tag normalization: trim tag values, skip blank tags, preserve untagged/custom metadata behavior; verified with focused and workspace Rust tests.", "status": "done"}}
