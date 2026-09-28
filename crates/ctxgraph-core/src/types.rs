@@ -235,7 +235,10 @@ impl EpisodeBuilder {
     }
 
     pub fn tag(mut self, t: &str) -> Self {
-        self.tags.push(t.to_string());
+        let normalized = t.trim();
+        if !normalized.is_empty() {
+            self.tags.push(normalized.to_string());
+        }
         self
     }
 
@@ -1553,6 +1556,62 @@ mod tests {
         assert_eq!(contradiction.old_value, "PostgreSQL");
         assert_eq!(contradiction.new_value, "MySQL");
         assert_eq!(contradiction.existing_confidence, 0.9);
+    }
+
+    #[test]
+    fn test_episode_builder_trims_and_drops_empty_tags() {
+        let episode = Episode::builder("Chose SQLite for local graph storage")
+            .tag(" docs ")
+            .tag("")
+            .tag("  ")
+            .tag("cli")
+            .build();
+
+        let metadata = episode.metadata.expect("tags metadata should exist");
+        let tags = metadata
+            .get("tags")
+            .and_then(|value| value.as_array())
+            .expect("tags should be an array");
+
+        assert_eq!(
+            tags,
+            &vec![
+                serde_json::Value::String("docs".to_string()),
+                serde_json::Value::String("cli".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_episode_builder_omits_tags_metadata_when_all_tags_blank() {
+        let episode = Episode::builder("No meaningful tag input")
+            .tag(" ")
+            .tag("\t")
+            .build();
+
+        assert!(episode.metadata.is_none());
+    }
+
+    #[test]
+    fn test_episode_builder_preserves_custom_metadata_with_normalized_tags() {
+        let episode = Episode::builder("Custom metadata with tags")
+            .meta("source_kind", "manual")
+            .tag(" daily-cron ")
+            .build();
+
+        let metadata = episode.metadata.expect("metadata should exist");
+        assert_eq!(metadata.get("source_kind"), Some(&"manual".into()));
+        assert_eq!(
+            metadata.get("tags").and_then(|value| value.as_array()),
+            Some(&vec![serde_json::Value::String("daily-cron".to_string())])
+        );
+    }
+
+    #[test]
+    fn test_episode_builder_untagged_metadata_remains_none() {
+        let episode = Episode::builder("Untagged episode").build();
+
+        assert!(episode.metadata.is_none());
     }
 
     #[test]
