@@ -537,7 +537,20 @@ impl Graph {
         limit: usize,
         source: Option<&str>,
     ) -> Result<Vec<(Episode, f64)>> {
-        self.storage.search_episodes(query, limit, source)
+        self.search_after(query, limit, None, source)
+    }
+
+    /// Search episodes via FTS5, optionally restricting to episodes recorded at
+    /// or after `after` and/or from a specific source.
+    pub fn search_after(
+        &self,
+        query: &str,
+        limit: usize,
+        after: Option<DateTime<Utc>>,
+        source: Option<&str>,
+    ) -> Result<Vec<(Episode, f64)>> {
+        self.storage
+            .search_episodes_after(query, limit, after, source)
     }
 
     /// Search entities via FTS5.
