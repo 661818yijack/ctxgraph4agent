@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use ctxgraph::*;
 
 fn test_graph() -> Graph {
@@ -380,6 +380,87 @@ async fn test_search_episodes_source_filter_nonexistent_returns_empty() {
 
     let results = graph.search("Deployed", 10, Some("nonexistent")).unwrap();
     assert!(results.is_empty());
+}
+
+#[tokio::test]
+async fn test_search_episodes_after_filter_excludes_older_matches() {
+    let graph = test_graph();
+    let old_time = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+    let cutoff = Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap();
+    let new_time = Utc.with_ymd_and_hms(2025, 9, 1, 0, 0, 0).unwrap();
+
+    let mut old_episode = Episode::builder("Redis cache migration completed").build();
+    old_episode.recorded_at = old_time;
+    graph.add_episode(old_episode).await.unwrap();
+
+    let mut new_episode = Episode::builder("Redis cache invalidation policy updated").build();
+    new_episode.recorded_at = new_time;
+    graph.add_episode(new_episode).await.unwrap();
+
+    let unfiltered = graph.search("Redis cache", 10, None).unwrap();
+    assert_eq!(unfiltered.len(), 2);
+
+    let filtered = graph
+        .search_after("Redis cache", 10, Some(cutoff), None)
+        .unwrap();
+    assert_eq!(filtered.len(), 1);
+    assert!(filtered[0].0.content.contains("invalidation policy"));
+}
+
+#[tokio::test]
+async fn test_search_episodes_after_filter_combines_with_source() {
+    let graph = test_graph();
+    let cutoff = Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap();
+    let old_time = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+    let new_time = Utc.with_ymd_and_hms(2025, 9, 1, 0, 0, 0).unwrap();
+
+    let mut old_slack = Episode::builder("Vector cache rollout planned")
+        .source("slack")
+        .build();
+    old_slack.recorded_at = old_time;
+    graph.add_episode(old_slack).await.unwrap();
+
+    let mut new_meeting = Episode::builder("Vector cache rollout approved")
+        .source("meeting")
+        .build();
+    new_meeting.recorded_at = new_time;
+    graph.add_episode(new_meeting).await.unwrap();
+
+    let mut new_slack = Episode::builder("Vector cache rollout shipped")
+        .source("slack")
+        .build();
+    new_slack.recorded_at = new_time;
+    graph.add_episode(new_slack).await.unwrap();
+
+    let filtered = graph
+        .search_after("Vector cache", 10, Some(cutoff), Some("slack"))
+        .unwrap();
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].0.source.as_deref(), Some("slack"));
+    assert!(filtered[0].0.content.contains("shipped"));
+}
+
+#[tokio::test]
+async fn test_search_episodes_after_filter_applies_before_limit() {
+    let graph = test_graph();
+    let cutoff = Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap();
+
+    for day in 1..=3 {
+        let mut old_episode =
+            Episode::builder(&format!("Searchlimit cache old match {day}")).build();
+        old_episode.recorded_at = Utc.with_ymd_and_hms(2025, 1, day, 0, 0, 0).unwrap();
+        graph.add_episode(old_episode).await.unwrap();
+    }
+
+    let mut new_episode = Episode::builder("Searchlimit cache new eligible match").build();
+    new_episode.recorded_at = Utc.with_ymd_and_hms(2025, 9, 1, 0, 0, 0).unwrap();
+    graph.add_episode(new_episode).await.unwrap();
+
+    let filtered = graph
+        .search_after("Searchlimit cache", 1, Some(cutoff), None)
+        .unwrap();
+    assert_eq!(filtered.len(), 1);
+    assert!(filtered[0].0.content.contains("new eligible"));
 }
 
 // ── Entity Context ──
