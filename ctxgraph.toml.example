@@ -4,7 +4,7 @@
 # Entity labels are passed to GLiNER at inference time (zero-shot).
 # Relation labels constrain which entity pairs can form edges.
 #
-# Copy this file to .ctxgraph/ctxgraph.toml to customize.
+# Copy this file to ctxgraph.toml in your project root to customize.
 
 [schema]
 name = "default"
