@@ -29,3 +29,29 @@
 {"ts": "2026-04-13T02:09:41.228625+00:00", "action": "updated", "ticket_id": "T6", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:42.501823+00:00", "action": "updated", "ticket_id": "T7", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:43.775889+00:00", "action": "updated", "ticket_id": "T8", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-10-03T02:03:24.571105+00:00", "action": "created", "ticket_id": "ENHANCEMENT-1"}
+{"ts": "2026-10-03T02:03:24.715411+00:00", "action": "created", "ticket_id": "ENHANCEMENT-2"}
+{"ts": "2026-10-03T02:03:24.859375+00:00", "action": "created", "ticket_id": "ENHANCEMENT-3"}
+{"ts": "2026-10-03T02:03:25.003942+00:00", "action": "created", "ticket_id": "ENHANCEMENT-4"}
+{"ts": "2026-10-03T02:03:25.147384+00:00", "action": "created", "ticket_id": "ENHANCEMENT-5"}
+{"ts": "2026-10-03T02:03:25.292000+00:00", "action": "created", "ticket_id": "ENHANCEMENT-6"}
+{"ts": "2026-10-03T02:03:25.433832+00:00", "action": "created", "ticket_id": "ENHANCEMENT-7"}
+{"ts": "2026-10-03T02:03:25.575819+00:00", "action": "created", "ticket_id": "ENHANCEMENT-8"}
+{"ts": "2026-10-03T02:03:25.717006+00:00", "action": "created", "ticket_id": "ENHANCEMENT-9"}
+{"ts": "2026-10-03T02:03:25.860745+00:00", "action": "created", "ticket_id": "ENHANCEMENT-10"}
+{"ts": "2026-10-03T02:03:26.007051+00:00", "action": "created", "ticket_id": "ENHANCEMENT-11"}
+{"ts": "2026-10-03T02:03:26.149781+00:00", "action": "created", "ticket_id": "ENHANCEMENT-12"}
+{"ts": "2026-10-03T02:03:26.298771+00:00", "action": "created", "ticket_id": "ENHANCEMENT-13"}
+{"ts": "2026-10-03T02:05:41.772637+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-1", "fields": {"fix": "Refreshed ctxgraph entities empty-state guidance to remove stale v0.2 promise and point users to ctxgraph log/model workflow plus Rust API.", "status": "done"}}
+{"ts": "2026-10-03T02:05:41.916767+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-2", "fields": {"fix": "Empty-state guidance now explains entities appear by logging episodes for extraction or through Rust API insertion.", "status": "done"}}
+{"ts": "2026-10-03T02:05:42.061953+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-3", "fields": {"fix": "Fresh graph entities list now gives ctxgraph log as the next action.", "status": "done"}}
+{"ts": "2026-10-03T02:05:42.210652+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-4", "fields": {"fix": "Message references downloading models before auto-extraction through ctxgraph log.", "status": "done"}}
+{"ts": "2026-10-03T02:05:42.363858+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-5", "fields": {"fix": "Message keeps the Rust API insertion path for library users.", "status": "done"}}
+{"ts": "2026-10-03T02:05:42.515607+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-6", "fields": {"fix": "Removed stale v0.2 future-release text from entities empty-state output.", "status": "done"}}
+{"ts": "2026-10-03T02:05:42.667364+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-7", "fields": {"fix": "Added regression coverage ensuring v0.2 is absent from entities guidance source.", "status": "done"}}
+{"ts": "2026-10-03T02:05:42.817610+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-8", "fields": {"fix": "Replaced release-specific future promise with current workflow guidance.", "status": "done"}}
+{"ts": "2026-10-03T02:05:42.970822+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-9", "fields": {"fix": "Kept empty-state output to two concise lines.", "status": "done"}}
+{"ts": "2026-10-03T02:05:43.123609+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-10", "fields": {"fix": "Added ctxgraph-cli entities guidance regression tests.", "status": "done"}}
+{"ts": "2026-10-03T02:05:43.273475+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-11", "fields": {"fix": "Regression test fails if v0.2 returns to entities empty-state guidance.", "status": "done"}}
+{"ts": "2026-10-03T02:05:43.423497+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-12", "fields": {"fix": "Regression test requires ctxgraph log hint in entities empty-state guidance.", "status": "done"}}
+{"ts": "2026-10-03T02:05:43.573701+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-13", "fields": {"fix": "Regression test requires Rust API hint in entities empty-state guidance.", "status": "done"}}
