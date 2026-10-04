@@ -138,36 +138,41 @@ impl BatchLabelDescriber for RealBatchLabelDescriber {
 
         let max_tokens = (candidates.len() as u32) * 60 + 100;
         let raw = self.call_llm(&prompt, max_tokens).await?;
-
-        // Parse JSON array response
-        let parsed: serde_json::Value = serde_json::from_str(raw.trim()).map_err(|e| {
-            CtxGraphError::Extraction(format!("Failed to parse batch labels JSON: {}", e))
-        })?;
-
-        let arr = parsed
-            .as_array()
-            .ok_or_else(|| CtxGraphError::Extraction("Expected JSON array from LLM".to_string()))?;
-
-        let mut results = Vec::new();
-        for item in arr {
-            let id_str = item["id"]
-                .as_str()
-                .or_else(|| item["id"].as_u64().map(|_| ""))
-                .unwrap_or("")
-                .to_string();
-            let label = item["label"].as_str().unwrap_or("").to_string();
-
-            // Map 1-based index back to candidate id
-            if let Ok(idx) = id_str.parse::<usize>()
-                && idx >= 1
-                && idx <= candidates.len()
-            {
-                results.push((candidates[idx - 1].id.clone(), label));
-            }
-        }
-
-        Ok(results)
+        parse_batch_label_response(&raw, candidates)
     }
+}
+
+fn parse_batch_label_response(
+    raw: &str,
+    candidates: &[PatternCandidate],
+) -> Result<Vec<(String, String)>> {
+    let parsed: serde_json::Value = serde_json::from_str(raw.trim()).map_err(|e| {
+        CtxGraphError::Extraction(format!("Failed to parse batch labels JSON: {}", e))
+    })?;
+
+    let arr = parsed
+        .as_array()
+        .ok_or_else(|| CtxGraphError::Extraction("Expected JSON array from LLM".to_string()))?;
+
+    let mut results = Vec::new();
+    for item in arr {
+        let id = &item["id"];
+        let idx = id
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .or_else(|| id.as_str().and_then(|value| value.parse::<usize>().ok()));
+        let label = item["label"].as_str().unwrap_or("").to_string();
+
+        // Map 1-based index back to candidate id
+        if let Some(idx) = idx
+            && idx >= 1
+            && idx <= candidates.len()
+        {
+            results.push((candidates[idx - 1].id.clone(), label));
+        }
+    }
+
+    Ok(results)
 }
 
 pub struct LearnOptions {
@@ -228,4 +233,79 @@ pub async fn run(options: LearnOptions) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidate(id: &str) -> PatternCandidate {
+        PatternCandidate {
+            id: id.to_string(),
+            entity_types: vec!["decision".to_string()],
+            entity_pair: None,
+            relation_triplet: None,
+            occurrence_count: 1,
+            source_groups: vec!["episode-1".to_string()],
+            confidence: 1.0,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn parses_numeric_label_ids() {
+        let candidates = vec![candidate("candidate-a"), candidate("candidate-b")];
+        let raw = r#"[
+            {"id": 1, "label": "first label"},
+            {"id": 2, "label": "second label"}
+        ]"#;
+
+        let parsed = parse_batch_label_response(raw, &candidates).unwrap();
+
+        assert_eq!(
+            parsed,
+            vec![
+                ("candidate-a".to_string(), "first label".to_string()),
+                ("candidate-b".to_string(), "second label".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_string_label_ids() {
+        let candidates = vec![candidate("candidate-a"), candidate("candidate-b")];
+        let raw = r#"[
+            {"id": "1", "label": "first label"},
+            {"id": "2", "label": "second label"}
+        ]"#;
+
+        let parsed = parse_batch_label_response(raw, &candidates).unwrap();
+
+        assert_eq!(
+            parsed,
+            vec![
+                ("candidate-a".to_string(), "first label".to_string()),
+                ("candidate-b".to_string(), "second label".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_invalid_label_ids() {
+        let candidates = vec![candidate("candidate-a")];
+        let raw = r#"[
+            {"id": 0, "label": "zero"},
+            {"id": 2, "label": "out of range"},
+            {"id": "abc", "label": "not numeric"},
+            {"label": "missing"},
+            {"id": 1, "label": "valid"}
+        ]"#;
+
+        let parsed = parse_batch_label_response(raw, &candidates).unwrap();
+
+        assert_eq!(
+            parsed,
+            vec![("candidate-a".to_string(), "valid".to_string())]
+        );
+    }
 }
