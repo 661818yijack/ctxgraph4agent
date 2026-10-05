@@ -29,3 +29,29 @@
 {"ts": "2026-04-13T02:09:41.228625+00:00", "action": "updated", "ticket_id": "T6", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:42.501823+00:00", "action": "updated", "ticket_id": "T7", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:43.775889+00:00", "action": "updated", "ticket_id": "T8", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-10-05T02:03:08.133726+00:00", "action": "created", "ticket_id": "BUG-1"}
+{"ts": "2026-10-05T02:03:08.275102+00:00", "action": "created", "ticket_id": "BUG-2"}
+{"ts": "2026-10-05T02:03:08.420689+00:00", "action": "created", "ticket_id": "BUG-3"}
+{"ts": "2026-10-05T02:03:08.562486+00:00", "action": "created", "ticket_id": "BUG-4"}
+{"ts": "2026-10-05T02:03:08.701664+00:00", "action": "created", "ticket_id": "BUG-5"}
+{"ts": "2026-10-05T02:03:08.845548+00:00", "action": "created", "ticket_id": "BUG-6"}
+{"ts": "2026-10-05T02:03:08.990786+00:00", "action": "created", "ticket_id": "BUG-7"}
+{"ts": "2026-10-05T02:03:09.135661+00:00", "action": "created", "ticket_id": "BUG-8"}
+{"ts": "2026-10-05T02:03:09.275877+00:00", "action": "created", "ticket_id": "BUG-9"}
+{"ts": "2026-10-05T02:03:09.415356+00:00", "action": "created", "ticket_id": "BUG-10"}
+{"ts": "2026-10-05T02:03:09.554652+00:00", "action": "created", "ticket_id": "BUG-11"}
+{"ts": "2026-10-05T02:03:09.696408+00:00", "action": "created", "ticket_id": "BUG-12"}
+{"ts": "2026-10-05T02:03:09.836331+00:00", "action": "created", "ticket_id": "BUG-13"}
+{"ts": "2026-10-05T02:08:01.080552+00:00", "action": "updated", "ticket_id": "BUG-1", "fields": {"fix": "Fixed MCP JSON limit parsing so non-positive and malformed limits use documented defaults instead of returning accidental empty result sets.", "status": "done"}}
+{"ts": "2026-10-05T02:08:01.229314+00:00", "action": "updated", "ticket_id": "BUG-2", "fields": {"fix": "Added shared positive_usize_arg parser for MCP JSON arguments.", "status": "done"}}
+{"ts": "2026-10-05T02:08:01.377352+00:00", "action": "updated", "ticket_id": "BUG-3", "fields": {"fix": "Verified missing limit still uses each tool default.", "status": "done"}}
+{"ts": "2026-10-05T02:08:01.521180+00:00", "action": "updated", "ticket_id": "BUG-4", "fields": {"fix": "Changed limit=0 behavior to fall back to the tool default.", "status": "done"}}
+{"ts": "2026-10-05T02:08:01.665100+00:00", "action": "updated", "ticket_id": "BUG-5", "fields": {"fix": "Non-u64 JSON limit values are ignored by the shared parser and fall back to defaults.", "status": "done"}}
+{"ts": "2026-10-05T02:08:01.816765+00:00", "action": "updated", "ticket_id": "BUG-6", "fields": {"fix": "Applied shared positive limit parsing to search, find_precedents, and learn paths.", "status": "done"}}
+{"ts": "2026-10-05T02:08:01.961571+00:00", "action": "updated", "ticket_id": "BUG-7", "fields": {"fix": "Added test proving MCP search limit=0 returns the same default result page as omitted limit.", "status": "done"}}
+{"ts": "2026-10-05T02:08:02.113270+00:00", "action": "updated", "ticket_id": "BUG-8", "fields": {"fix": "find_precedents now uses shared positive limit parsing with default top-K fallback.", "status": "done"}}
+{"ts": "2026-10-05T02:08:02.265067+00:00", "action": "updated", "ticket_id": "BUG-9", "fields": {"fix": "Added test proving a positive MCP search limit still caps results.", "status": "done"}}
+{"ts": "2026-10-05T02:08:02.414021+00:00", "action": "updated", "ticket_id": "BUG-10", "fields": {"fix": "Applied shared positive limit parsing to list_entities and export_graph.", "status": "done"}}
+{"ts": "2026-10-05T02:08:02.565274+00:00", "action": "updated", "ticket_id": "BUG-11", "fields": {"fix": "Added test proving list_entities limit=0 returns the default page.", "status": "done"}}
+{"ts": "2026-10-05T02:08:02.719194+00:00", "action": "updated", "ticket_id": "BUG-12", "fields": {"fix": "Added test proving export_graph limit=0 uses the default export cap.", "status": "done"}}
+{"ts": "2026-10-05T02:08:02.865023+00:00", "action": "updated", "ticket_id": "BUG-13", "fields": {"fix": "Added test proving list_entities offset is preserved after zero-limit defaulting.", "status": "done"}}

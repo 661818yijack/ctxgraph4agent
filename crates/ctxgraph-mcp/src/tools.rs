@@ -21,6 +21,19 @@ fn vec_pairs_to_json_object(pairs: &[(String, usize)]) -> Value {
     Value::Object(map)
 }
 
+/// Read a positive usize argument from MCP JSON input.
+///
+/// MCP clients may send `0`, null, or non-integer values while probing schemas.
+/// Treat those the same as a missing field so list/search tools keep returning
+/// their documented default page instead of a surprising empty result.
+fn positive_usize_arg(args: &Value, name: &str, default: usize) -> usize {
+    args.get(name)
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
 /// LLM-based batch label describer for the MCP server.
 ///
 /// Makes a single LLM call for all candidates and returns one label per candidate.
@@ -328,7 +341,7 @@ impl ToolContext {
             .as_str()
             .ok_or("missing required field: query")?
             .to_string();
-        let limit = args["limit"].as_u64().unwrap_or(10) as usize;
+        let limit = positive_usize_arg(&args, "limit", 10);
         let source = args["source"].as_str();
 
         let items: Vec<Value> = if let Some(ref embed) = self.embed {
@@ -447,7 +460,7 @@ impl ToolContext {
             .as_str()
             .ok_or("missing required field: context")?
             .to_string();
-        let limit = args["limit"].as_u64().unwrap_or(5) as usize;
+        let limit = positive_usize_arg(&args, "limit", 5);
 
         let embed = match self.embed {
             Some(ref e) => e,
@@ -502,7 +515,7 @@ impl ToolContext {
     /// List entities in the graph, optionally filtered by type.
     pub async fn list_entities(&self, args: Value) -> Result<Value, String> {
         let entity_type = args["entity_type"].as_str().map(|s| s.to_string());
-        let limit = args["limit"].as_u64().unwrap_or(100) as usize;
+        let limit = positive_usize_arg(&args, "limit", 100);
         let offset = args["offset"].as_u64().unwrap_or(0) as usize;
 
         let graph = self.graph.lock().await;
@@ -529,7 +542,7 @@ impl ToolContext {
     pub async fn export_graph(&self, args: Value) -> Result<Value, String> {
         let entity_type = args["entity_type"].as_str().map(|s| s.to_string());
         let include_episodes = args["include_episodes"].as_bool().unwrap_or(false);
-        let limit = args["limit"].as_u64().unwrap_or(10000) as usize;
+        let limit = positive_usize_arg(&args, "limit", 10000);
 
         let graph = self.graph.lock().await;
 
@@ -569,7 +582,9 @@ impl ToolContext {
         });
 
         if include_episodes {
-            let episodes = graph.list_episodes(limit, 0, None, None).map_err(|e| e.to_string())?;
+            let episodes = graph
+                .list_episodes(limit, 0, None, None)
+                .map_err(|e| e.to_string())?;
             let episodes_json: Vec<Value> = episodes
                 .into_iter()
                 .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
@@ -648,7 +663,7 @@ impl ToolContext {
         } else {
             SkillScope::Private
         };
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+        let limit = positive_usize_arg(&args, "limit", 50);
 
         let graph = self.graph.lock().await;
 
