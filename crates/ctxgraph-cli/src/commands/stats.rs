@@ -68,11 +68,50 @@ pub fn run() -> ctxgraph::Result<()> {
 }
 
 fn format_bytes(bytes: u64) -> String {
-    if bytes < 1024 {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+    const TIB: u64 = GIB * 1024;
+
+    if bytes < KIB {
         format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < MIB {
+        format!("{:.1} KB", bytes as f64 / KIB as f64)
+    } else if bytes < GIB {
+        format!("{:.1} MB", bytes as f64 / MIB as f64)
+    } else if bytes < TIB {
+        format!("{:.1} GB", bytes as f64 / GIB as f64)
     } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+        format!("{:.1} TB", bytes as f64 / TIB as f64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_bytes;
+
+    #[test]
+    fn formats_bytes_and_kilobytes() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(999), "999 B");
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn formats_megabytes_below_one_gibibyte() {
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(format_bytes(1024 * 1024 + 512 * 1024), "1.5 MB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024 - 1), "1024.0 MB");
+    }
+
+    #[test]
+    fn formats_gigabytes_and_terabytes() {
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GB");
+        assert_eq!(
+            format_bytes(1024 * 1024 * 1024 + 512 * 1024 * 1024),
+            "1.5 GB"
+        );
+        assert_eq!(format_bytes(1024_u64 * 1024 * 1024 * 1024), "1.0 TB");
     }
 }

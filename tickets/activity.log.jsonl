@@ -29,3 +29,29 @@
 {"ts": "2026-04-13T02:09:41.228625+00:00", "action": "updated", "ticket_id": "T6", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:42.501823+00:00", "action": "updated", "ticket_id": "T7", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:43.775889+00:00", "action": "updated", "ticket_id": "T8", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-10-07T02:02:21.899566+00:00", "action": "created", "ticket_id": "ENHANCEMENT-1"}
+{"ts": "2026-10-07T02:02:22.141916+00:00", "action": "created", "ticket_id": "ENHANCEMENT-2"}
+{"ts": "2026-10-07T02:02:22.384678+00:00", "action": "created", "ticket_id": "ENHANCEMENT-3"}
+{"ts": "2026-10-07T02:02:22.626164+00:00", "action": "created", "ticket_id": "ENHANCEMENT-4"}
+{"ts": "2026-10-07T02:02:37.551762+00:00", "action": "created", "ticket_id": "TESTING-5"}
+{"ts": "2026-10-07T02:02:37.793902+00:00", "action": "created", "ticket_id": "TESTING-6"}
+{"ts": "2026-10-07T02:02:38.037506+00:00", "action": "created", "ticket_id": "TESTING-7"}
+{"ts": "2026-10-07T02:02:38.280591+00:00", "action": "created", "ticket_id": "TESTING-8"}
+{"ts": "2026-10-07T02:02:54.162974+00:00", "action": "created", "ticket_id": "TESTING-9"}
+{"ts": "2026-10-07T02:02:54.408953+00:00", "action": "created", "ticket_id": "TESTING-10"}
+{"ts": "2026-10-07T02:02:54.655149+00:00", "action": "created", "ticket_id": "TESTING-11"}
+{"ts": "2026-10-07T02:02:54.897637+00:00", "action": "created", "ticket_id": "TESTING-12"}
+{"ts": "2026-10-07T02:02:55.140270+00:00", "action": "created", "ticket_id": "TESTING-13"}
+{"ts": "2026-10-07T02:05:44.640087+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-1", "fields": {"fix": "Implemented scalable stats DB-size formatting with preserved B/KB/MB behavior plus GB/TB support and tests.", "status": "done"}}
+{"ts": "2026-10-07T02:05:45.017818+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-2", "fields": {"fix": "Covered zero-byte, sub-KB, and KB cases in unit tests; existing output remains stable.", "status": "done"}}
+{"ts": "2026-10-07T02:05:45.270916+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-3", "fields": {"fix": "Covered 1.0 MB, fractional MB, and just-below-GB cases in unit tests; MB behavior remains stable.", "status": "done"}}
+{"ts": "2026-10-07T02:05:45.522406+00:00", "action": "updated", "ticket_id": "ENHANCEMENT-4", "fields": {"fix": "Added GB and TB branches to format_bytes and unit coverage for 1.0 GB, 1.5 GB, and 1.0 TB.", "status": "done"}}
+{"ts": "2026-10-07T02:05:45.857158+00:00", "action": "updated", "ticket_id": "TESTING-5", "fields": {"fix": "Unit test asserts 0 bytes formats as 0 B.", "status": "done"}}
+{"ts": "2026-10-07T02:05:55.656425+00:00", "action": "updated", "ticket_id": "TESTING-6", "fields": {"fix": "Unit test asserts sub-kilobyte values format as exact B values.", "status": "done"}}
+{"ts": "2026-10-07T02:05:56.071867+00:00", "action": "updated", "ticket_id": "TESTING-7", "fields": {"fix": "Unit test asserts 1024 and 1536 bytes format as one-decimal KB.", "status": "done"}}
+{"ts": "2026-10-07T02:05:56.335308+00:00", "action": "updated", "ticket_id": "TESTING-8", "fields": {"fix": "Unit test asserts 1 MiB formats as 1.0 MB.", "status": "done"}}
+{"ts": "2026-10-07T02:05:56.665037+00:00", "action": "updated", "ticket_id": "TESTING-9", "fields": {"fix": "Unit test asserts 1.5 MiB formats as 1.5 MB.", "status": "done"}}
+{"ts": "2026-10-07T02:05:56.905891+00:00", "action": "updated", "ticket_id": "TESTING-10", "fields": {"fix": "Unit test asserts bytes just below 1 GiB remain formatted as MB.", "status": "done"}}
+{"ts": "2026-10-07T02:06:01.563021+00:00", "action": "updated", "ticket_id": "TESTING-11", "fields": {"fix": "Unit test asserts 1 GiB formats as 1.0 GB.", "status": "done"}}
+{"ts": "2026-10-07T02:06:01.806089+00:00", "action": "updated", "ticket_id": "TESTING-12", "fields": {"fix": "Unit test asserts 1.5 GiB formats as 1.5 GB.", "status": "done"}}
+{"ts": "2026-10-07T02:06:02.068598+00:00", "action": "updated", "ticket_id": "TESTING-13", "fields": {"fix": "Unit test asserts 1 TiB formats as 1.0 TB.", "status": "done"}}
