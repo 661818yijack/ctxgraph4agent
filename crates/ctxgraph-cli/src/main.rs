@@ -3,6 +3,16 @@ mod display;
 
 use clap::{Parser, Subcommand};
 
+fn validate_positive_limit(option_name: &str, limit: usize) -> ctxgraph::Result<()> {
+    if limit == 0 {
+        return Err(ctxgraph::CtxGraphError::InvalidInput(format!(
+            "{option_name} must be greater than 0"
+        )));
+    }
+
+    Ok(())
+}
+
 #[derive(Parser)]
 #[command(name = "ctxgraph", about = "Local-first context graph engine")]
 #[command(version, propagate_version = true)]
@@ -312,5 +322,29 @@ async fn main() {
     if let Err(e) = result {
         eprintln!("error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_positive_limit;
+
+    #[test]
+    fn validate_positive_limit_rejects_zero_with_option_name() {
+        let err = validate_positive_limit("--limit", 0)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("--limit"), "error should name option: {err}");
+        assert!(
+            err.contains("greater than 0"),
+            "error should explain bound: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_positive_limit_accepts_positive_values() {
+        assert!(validate_positive_limit("--limit", 1).is_ok());
+        assert!(validate_positive_limit("--limit", 50).is_ok());
     }
 }
