@@ -1,8 +1,11 @@
 use crate::display;
+use crate::validate_positive_limit;
 
 use super::open_graph;
 
 pub fn list(entity_type: Option<String>, limit: usize) -> ctxgraph::Result<()> {
+    validate_positive_limit("--limit", limit)?;
+
     let graph = open_graph()?;
     let entities = graph.list_entities(entity_type.as_deref(), limit)?;
 

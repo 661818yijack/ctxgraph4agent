@@ -29,3 +29,29 @@
 {"ts": "2026-04-13T02:09:41.228625+00:00", "action": "updated", "ticket_id": "T6", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:42.501823+00:00", "action": "updated", "ticket_id": "T7", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:43.775889+00:00", "action": "updated", "ticket_id": "T8", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-10-12T02:01:55.699131+00:00", "action": "created", "ticket_id": "BUG-14"}
+{"ts": "2026-10-12T02:01:59.544455+00:00", "action": "created", "ticket_id": "BUG-15"}
+{"ts": "2026-10-12T02:01:59.681699+00:00", "action": "created", "ticket_id": "BUG-16"}
+{"ts": "2026-10-12T02:01:59.818169+00:00", "action": "created", "ticket_id": "BUG-17"}
+{"ts": "2026-10-12T02:01:59.954194+00:00", "action": "created", "ticket_id": "BUG-18"}
+{"ts": "2026-10-12T02:02:07.809666+00:00", "action": "created", "ticket_id": "BUG-19"}
+{"ts": "2026-10-12T02:02:07.948462+00:00", "action": "created", "ticket_id": "BUG-20"}
+{"ts": "2026-10-12T02:02:08.085452+00:00", "action": "created", "ticket_id": "BUG-21"}
+{"ts": "2026-10-12T02:02:08.219495+00:00", "action": "created", "ticket_id": "BUG-22"}
+{"ts": "2026-10-12T02:02:11.995414+00:00", "action": "created", "ticket_id": "BUG-23"}
+{"ts": "2026-10-12T02:02:12.141247+00:00", "action": "created", "ticket_id": "BUG-24"}
+{"ts": "2026-10-12T02:02:12.283143+00:00", "action": "created", "ticket_id": "BUG-25"}
+{"ts": "2026-10-12T02:02:12.422263+00:00", "action": "created", "ticket_id": "BUG-26"}
+{"ts": "2026-10-12T02:04:49.917901+00:00", "action": "updated", "ticket_id": "BUG-14", "fields": {"fix": "Validated --limit values before CLI graph access; zero limits now return invalid input.", "status": "done"}}
+{"ts": "2026-10-12T02:04:50.068617+00:00", "action": "updated", "ticket_id": "BUG-15", "fields": {"fix": "Added shared positive-limit validation to query, entities list, and decisions list.", "status": "done"}}
+{"ts": "2026-10-12T02:04:50.221212+00:00", "action": "updated", "ticket_id": "BUG-16", "fields": {"fix": "ctxgraph query --limit 0 now fails with invalid input before opening the graph.", "status": "done"}}
+{"ts": "2026-10-12T02:04:50.365581+00:00", "action": "updated", "ticket_id": "BUG-17", "fields": {"fix": "ctxgraph entities list --limit 0 now fails with invalid input before opening the graph.", "status": "done"}}
+{"ts": "2026-10-12T02:04:53.829634+00:00", "action": "updated", "ticket_id": "BUG-18", "fields": {"fix": "ctxgraph decisions list --limit 0 now fails with invalid input before opening the graph.", "status": "done"}}
+{"ts": "2026-10-12T02:04:53.980961+00:00", "action": "updated", "ticket_id": "BUG-19", "fields": {"fix": "Added the same positive-limit validation to reverify list pagination.", "status": "done"}}
+{"ts": "2026-10-12T02:04:54.139031+00:00", "action": "updated", "ticket_id": "BUG-20", "fields": {"fix": "ctxgraph reverify list --limit 0 now fails with invalid input before opening the graph.", "status": "done"}}
+{"ts": "2026-10-12T02:04:54.302368+00:00", "action": "updated", "ticket_id": "BUG-21", "fields": {"fix": "Positive limits still pass validation and continue to normal command execution.", "status": "done"}}
+{"ts": "2026-10-12T02:04:59.466824+00:00", "action": "updated", "ticket_id": "BUG-22", "fields": {"fix": "Shared validator reports: --limit must be greater than 0.", "status": "done"}}
+{"ts": "2026-10-12T02:04:59.615120+00:00", "action": "updated", "ticket_id": "BUG-23", "fields": {"fix": "Added unit tests for zero-limit rejection and positive-limit acceptance.", "status": "done"}}
+{"ts": "2026-10-12T02:04:59.763119+00:00", "action": "updated", "ticket_id": "BUG-24", "fields": {"fix": "Regression test asserts zero limit returns an InvalidInput error.", "status": "done"}}
+{"ts": "2026-10-12T02:04:59.913562+00:00", "action": "updated", "ticket_id": "BUG-25", "fields": {"fix": "Regression test asserts positive limits 1 and 50 are accepted.", "status": "done"}}
+{"ts": "2026-10-12T02:05:00.057513+00:00", "action": "updated", "ticket_id": "BUG-26", "fields": {"fix": "cargo test -p ctxgraph-cli and cargo test --workspace --no-default-features now exercise the validator.", "status": "done"}}

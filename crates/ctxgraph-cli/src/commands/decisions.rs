@@ -1,10 +1,13 @@
 use chrono::{DateTime, Utc};
 
 use crate::display;
+use crate::validate_positive_limit;
 
 use super::open_graph;
 
 pub fn list(after: Option<String>, source: Option<String>, limit: usize) -> ctxgraph::Result<()> {
+    validate_positive_limit("--limit", limit)?;
+
     let graph = open_graph()?;
 
     let after_dt = after

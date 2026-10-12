@@ -1,4 +1,5 @@
 use crate::display;
+use crate::validate_positive_limit;
 
 use super::open_graph;
 
@@ -8,6 +9,8 @@ pub fn run(
     _after: Option<String>,
     source: Option<String>,
 ) -> ctxgraph::Result<()> {
+    validate_positive_limit("--limit", limit)?;
+
     let graph = open_graph()?;
     let results = graph.search(&text, limit, source.as_deref())?;
 

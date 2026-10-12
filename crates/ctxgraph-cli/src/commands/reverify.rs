@@ -2,6 +2,8 @@
 
 use ctxgraph::{MemoryType, StaleMemory};
 
+use crate::validate_positive_limit;
+
 use super::open_graph;
 
 pub struct ReverifyListOptions {
@@ -28,6 +30,8 @@ pub struct ReverifyExpireOptions {
 
 /// List stale memories for re-verification.
 pub fn list(options: ReverifyListOptions) -> ctxgraph::Result<()> {
+    validate_positive_limit("--limit", options.limit)?;
+
     let graph = open_graph()?;
     let stale_memories =
         graph
