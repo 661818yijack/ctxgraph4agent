@@ -29,3 +29,29 @@
 {"ts": "2026-04-13T02:09:41.228625+00:00", "action": "updated", "ticket_id": "T6", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:42.501823+00:00", "action": "updated", "ticket_id": "T7", "agent": null, "fields": {"status": "closed"}}
 {"ts": "2026-04-13T02:09:43.775889+00:00", "action": "updated", "ticket_id": "T8", "agent": null, "fields": {"status": "closed"}}
+{"ts": "2026-10-13T02:01:51.013665+00:00", "action": "created", "ticket_id": "BUG-1"}
+{"ts": "2026-10-13T02:01:51.161207+00:00", "action": "created", "ticket_id": "BUG-2"}
+{"ts": "2026-10-13T02:01:51.304878+00:00", "action": "created", "ticket_id": "BUG-3"}
+{"ts": "2026-10-13T02:01:51.446874+00:00", "action": "created", "ticket_id": "BUG-4"}
+{"ts": "2026-10-13T02:01:51.590220+00:00", "action": "created", "ticket_id": "BUG-5"}
+{"ts": "2026-10-13T02:01:51.737316+00:00", "action": "created", "ticket_id": "BUG-6"}
+{"ts": "2026-10-13T02:01:51.877695+00:00", "action": "created", "ticket_id": "BUG-7"}
+{"ts": "2026-10-13T02:01:52.021599+00:00", "action": "created", "ticket_id": "BUG-8"}
+{"ts": "2026-10-13T02:01:52.166500+00:00", "action": "created", "ticket_id": "BUG-9"}
+{"ts": "2026-10-13T02:01:52.314074+00:00", "action": "created", "ticket_id": "BUG-10"}
+{"ts": "2026-10-13T02:01:52.458131+00:00", "action": "created", "ticket_id": "BUG-11"}
+{"ts": "2026-10-13T02:01:52.601497+00:00", "action": "created", "ticket_id": "BUG-12"}
+{"ts": "2026-10-13T02:01:52.748768+00:00", "action": "created", "ticket_id": "BUG-13"}
+{"ts": "2026-10-13T02:04:30.090941+00:00", "action": "updated", "ticket_id": "BUG-1", "fields": {"fix": "Added character-boundary-safe preview helper for reverify CLI table and tests covering non-ASCII IDs/content plus ASCII compatibility.", "status": "done"}}
+{"ts": "2026-10-13T02:04:30.235791+00:00", "action": "updated", "ticket_id": "BUG-2", "fields": {"fix": "Content preview now uses chars rather than byte indexes.", "status": "done"}}
+{"ts": "2026-10-13T02:04:30.382844+00:00", "action": "updated", "ticket_id": "BUG-3", "fields": {"fix": "Added Chinese content regression test; table printing no longer panics.", "status": "done"}}
+{"ts": "2026-10-13T02:04:30.527767+00:00", "action": "updated", "ticket_id": "BUG-4", "fields": {"fix": "Added emoji content regression test; table printing no longer panics.", "status": "done"}}
+{"ts": "2026-10-13T02:04:30.674147+00:00", "action": "updated", "ticket_id": "BUG-5", "fields": {"fix": "Added short non-ASCII value test; unshortened values are preserved.", "status": "done"}}
+{"ts": "2026-10-13T02:04:30.820881+00:00", "action": "updated", "ticket_id": "BUG-6", "fields": {"fix": "ID preview now uses chars rather than byte indexes.", "status": "done"}}
+{"ts": "2026-10-13T02:04:30.964519+00:00", "action": "updated", "ticket_id": "BUG-7", "fields": {"fix": "Added long non-ASCII ID regression test; table printing no longer panics.", "status": "done"}}
+{"ts": "2026-10-13T02:04:31.107137+00:00", "action": "updated", "ticket_id": "BUG-8", "fields": {"fix": "Added short non-ASCII ID coverage through shared short-value test.", "status": "done"}}
+{"ts": "2026-10-13T02:04:31.251574+00:00", "action": "updated", "ticket_id": "BUG-9", "fields": {"fix": "Added ASCII compatibility assertion preserving first eight visible characters plus ellipsis.", "status": "done"}}
+{"ts": "2026-10-13T02:04:31.396037+00:00", "action": "updated", "ticket_id": "BUG-10", "fields": {"fix": "Kept table headers, action mapping, and existing output structure unchanged.", "status": "done"}}
+{"ts": "2026-10-13T02:04:31.542672+00:00", "action": "updated", "ticket_id": "BUG-11", "fields": {"fix": "Header printing code was left unchanged.", "status": "done"}}
+{"ts": "2026-10-13T02:04:31.687881+00:00", "action": "updated", "ticket_id": "BUG-12", "fields": {"fix": "Action label mapping was left unchanged and exercised by table tests.", "status": "done"}}
+{"ts": "2026-10-13T02:04:31.830198+00:00", "action": "updated", "ticket_id": "BUG-13", "fields": {"fix": "Added short ASCII compatibility assertion; existing content remains unmodified.", "status": "done"}}

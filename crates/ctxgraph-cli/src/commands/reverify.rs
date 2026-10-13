@@ -101,6 +101,18 @@ pub fn expire(options: ReverifyExpireOptions) -> ctxgraph::Result<()> {
     Ok(())
 }
 
+/// Return a character-boundary-safe preview, appending an ASCII ellipsis when shortened.
+fn shorten_with_ellipsis(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let preview: String = chars.by_ref().take(max_chars).collect();
+
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        value.to_string()
+    }
+}
+
 /// Print a human-readable table of stale memories.
 fn print_stale_table(memories: &[StaleMemory]) {
     // Header
@@ -111,17 +123,8 @@ fn print_stale_table(memories: &[StaleMemory]) {
     println!("{}", "-".repeat(100));
 
     for memory in memories {
-        let id_short = if memory.id.len() > 8 {
-            format!("{}...", &memory.id[..8])
-        } else {
-            memory.id.clone()
-        };
-
-        let content = if memory.content.len() > 40 {
-            format!("{}...", &memory.content[..37])
-        } else {
-            memory.content.clone()
-        };
+        let id_short = shorten_with_ellipsis(&memory.id, 8);
+        let content = shorten_with_ellipsis(&memory.content, 37);
 
         let action_str = match memory.suggested_action {
             ctxgraph::StaleAction::Renew => "renew",
@@ -139,5 +142,88 @@ fn print_stale_table(memories: &[StaleMemory]) {
             action_str,
             content
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ctxgraph::{MemoryType, StaleAction};
+
+    fn stale_memory(id: &str, content: &str, suggested_action: StaleAction) -> StaleMemory {
+        StaleMemory {
+            id: id.to_string(),
+            memory_type: MemoryType::Fact,
+            content: content.to_string(),
+            age_days: 42.0,
+            decay_score: 0.25,
+            suggested_action,
+        }
+    }
+
+    #[test]
+    fn shorten_with_ellipsis_preserves_ascii_compatibility() {
+        assert_eq!(shorten_with_ellipsis("abcdefghijk", 8), "abcdefgh...");
+        assert_eq!(
+            shorten_with_ellipsis("short ascii content", 37),
+            "short ascii content"
+        );
+    }
+
+    #[test]
+    fn shorten_with_ellipsis_preserves_short_non_ascii_values() {
+        assert_eq!(shorten_with_ellipsis("短內容", 37), "短內容");
+        assert_eq!(shorten_with_ellipsis("短id", 8), "短id");
+    }
+
+    #[test]
+    fn print_stale_table_handles_long_chinese_content() {
+        let memories = vec![stale_memory(
+            "ascii-id",
+            "這是一段很長的中文記憶內容，用來確認表格預覽不會在多位元組字元中間切開造成恐慌",
+            StaleAction::Update,
+        )];
+
+        let result = std::panic::catch_unwind(|| print_stale_table(&memories));
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_stale_table_handles_long_emoji_content() {
+        let memories = vec![stale_memory(
+            "ascii-id",
+            "🧠🚀✨🔥🌊🌙⭐️🍀🎯📚🛠️🧪💡🧭🧩🪄🎨🎵🌈🐉",
+            StaleAction::Renew,
+        )];
+
+        let result = std::panic::catch_unwind(|| print_stale_table(&memories));
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_stale_table_handles_long_non_ascii_id() {
+        let memories = vec![stale_memory(
+            "記憶識別碼非常長超過八個字元",
+            "short ascii content",
+            StaleAction::Expire,
+        )];
+
+        let result = std::panic::catch_unwind(|| print_stale_table(&memories));
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_stale_table_keeps_short_values_working() {
+        let memories = vec![
+            stale_memory("短id", "短內容", StaleAction::Keep),
+            stale_memory("abcdefghijk", "short ascii content", StaleAction::Update),
+        ];
+
+        let result = std::panic::catch_unwind(|| print_stale_table(&memories));
+
+        assert!(result.is_ok());
     }
 }
