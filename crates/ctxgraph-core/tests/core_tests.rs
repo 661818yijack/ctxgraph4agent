@@ -43,6 +43,60 @@ async fn test_episode_with_source_and_tags() {
 }
 
 #[tokio::test]
+async fn test_episode_source_trims_surrounding_whitespace() {
+    let graph = test_graph();
+    let episode = Episode::builder("Priya approved the discount")
+        .source("  slack\n")
+        .build();
+    let id = episode.id.clone();
+
+    graph.add_episode(episode).await.unwrap();
+
+    let retrieved = graph.get_episode(&id).unwrap().unwrap();
+    assert_eq!(retrieved.source.as_deref(), Some("slack"));
+
+    let matched = graph.list_episodes(10, 0, None, Some("slack")).unwrap();
+    assert_eq!(matched.len(), 1);
+    assert_eq!(matched[0].id, id);
+}
+
+#[tokio::test]
+async fn test_episode_source_omits_blank_labels() {
+    let graph = test_graph();
+    let episode = Episode::builder("Blank source should not create a source bucket")
+        .source(" \t\n ")
+        .build();
+    let id = episode.id.clone();
+
+    graph.add_episode(episode).await.unwrap();
+
+    let retrieved = graph.get_episode(&id).unwrap().unwrap();
+    assert_eq!(retrieved.source, None);
+    assert!(
+        graph
+            .list_episodes(10, 0, None, Some(" "))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn test_episode_source_preserves_meaningful_internal_text() {
+    let clean = Episode::builder("Clean source").source("slack:eng").build();
+    assert_eq!(clean.source.as_deref(), Some("slack:eng"));
+
+    let multi_word = Episode::builder("Multi-word source")
+        .source("team chat")
+        .build();
+    assert_eq!(multi_word.source.as_deref(), Some("team chat"));
+
+    let non_ascii = Episode::builder("Non-ASCII source")
+        .source("  claw room😊  ")
+        .build();
+    assert_eq!(non_ascii.source.as_deref(), Some("claw room😊"));
+}
+
+#[tokio::test]
 async fn test_episode_with_metadata() {
     let graph = test_graph();
     let episode = Episode::builder("Budget approved for Q3")
